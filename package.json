@@ -1,0 +1,75 @@
+{
+  "name": "ki-assistant",
+  "displayName": "KI Assistant",
+  "description": "A VS Code assistant prototype for compact AI-supported project guidance.",
+  "version": "0.0.1",
+  "publisher": "local",
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:kiAssistant.openChat"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "kiAssistant.openChat",
+        "title": "KI Assistant: Open Chat",
+        "category": "KI Assistant"
+      }
+    ],
+    "configuration": {
+      "title": "KI Assistant",
+      "properties": {
+        "kiAssistant.provider": {
+          "type": "string",
+          "default": "openai",
+          "enum": [
+            "openai",
+            "ollama"
+          ],
+          "description": "LLM provider used by the assistant in later implementation steps."
+        },
+        "kiAssistant.model": {
+          "type": "string",
+          "default": "gpt-4.1-mini",
+          "description": "Model name used by the configured provider."
+        },
+        "kiAssistant.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for the configured provider. This placeholder is not used in step 1."
+        },
+        "kiAssistant.maxTokens": {
+          "type": "number",
+          "default": 1200,
+          "minimum": 128,
+          "maximum": 8000,
+          "description": "Maximum response tokens for later LLM requests."
+        },
+        "kiAssistant.temperature": {
+          "type": "number",
+          "default": 0.2,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Sampling temperature for later LLM requests."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.8",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.4.5"
+  }
+}
