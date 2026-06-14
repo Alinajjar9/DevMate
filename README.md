@@ -1,43 +1,40 @@
 # DevMate
 
-VS Code extension prototype for compact AI-supported project guidance.
+DevMate is a VS Code extension prototype for AI-assisted project help.
 
-## Step 1
+## Current Features
 
-This slice provides a runnable chat webview only. RAG, backend services, library documentation retrieval, and real LLM calls are intentionally deferred.
+- Activity Bar chat view
+- Modes: Ideas, Programming, Debugging
+- Attach active file
+- Attach selected code
+- Placeholder answers
 
-## How to Run It in VS Code
+Real LLM calls, RAG, and library docs are not connected yet.
 
-Open this project as a normal VS Code extension workspace:
+## Run
 
 1. Start VS Code.
-2. Choose **File > Open Folder...**.
-3. Select this folder:
+2. Open this project folder.
+3. Install dependencies:
 
-   ```text
-   C:\Users\ali\Desktop\KI_PROJEKT
-   ```
-
-4. Open the VS Code terminal and install the dependencies:
-
-   ```powershell
+   ```bash
    npm install
    ```
 
-5. Compile the extension:
+4. Compile:
 
-   ```powershell
+   ```bash
    npm run compile
    ```
 
-6. Press `F5`. This opens a second VS Code window called the **Extension Development Host**.
-7. In that new window, open the command palette with `Ctrl + Shift + P`.
-8. Search for and run:
+5. Press `F5`.
+6. In the new VS Code window, click the DevMate icon in the Activity Bar.
 
-   ```text
-   DevMate: Open Chat
-   ```
+You can also use the command palette:
 
-The DevMate chat panel should open. At this stage it can switch modes, attach the active file or selected code as context metadata, and return a placeholder answer.
+```text
+DevMate: Focus Chat
+```
 
-If `npm` is not recognized after installing Node.js, close VS Code completely and open it again. Windows sometimes needs a fresh terminal session before the updated PATH is available.
+If `npm` is not found, install Node.js and restart VS Code.
