@@ -1,6 +1,6 @@
 {
-  "name": "ki-assistant",
-  "displayName": "KI Assistant",
+  "name": "devmate",
+  "displayName": "DevMate",
   "description": "A VS Code assistant prototype for compact AI-supported project guidance.",
   "version": "0.0.1",
   "publisher": "local",
@@ -12,21 +12,21 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:kiAssistant.openChat"
+    "onCommand:devMate.openChat"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "kiAssistant.openChat",
-        "title": "KI Assistant: Open Chat",
-        "category": "KI Assistant"
+        "command": "devMate.openChat",
+        "title": "DevMate: Open Chat",
+        "category": "DevMate"
       }
     ],
     "configuration": {
-      "title": "KI Assistant",
+      "title": "DevMate",
       "properties": {
-        "kiAssistant.provider": {
+        "devMate.provider": {
           "type": "string",
           "default": "openai",
           "enum": [
@@ -35,24 +35,24 @@
           ],
           "description": "LLM provider used by the assistant in later implementation steps."
         },
-        "kiAssistant.model": {
+        "devMate.model": {
           "type": "string",
           "default": "gpt-4.1-mini",
           "description": "Model name used by the configured provider."
         },
-        "kiAssistant.apiKey": {
+        "devMate.apiKey": {
           "type": "string",
           "default": "",
           "description": "API key for the configured provider. This placeholder is not used in step 1."
         },
-        "kiAssistant.maxTokens": {
+        "devMate.maxTokens": {
           "type": "number",
           "default": 1200,
           "minimum": 128,
           "maximum": 8000,
           "description": "Maximum response tokens for later LLM requests."
         },
-        "kiAssistant.temperature": {
+        "devMate.temperature": {
           "type": "number",
           "default": 0.2,
           "minimum": 0,

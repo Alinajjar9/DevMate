@@ -19,7 +19,7 @@ type WebviewMessage =
   | { command: 'attachSelection' };
 
 export function activate(context: vscode.ExtensionContext): void {
-  const disposable = vscode.commands.registerCommand('kiAssistant.openChat', () => {
+  const disposable = vscode.commands.registerCommand('devMate.openChat', () => {
     ChatPanel.createOrShow();
   });
 
@@ -56,8 +56,8 @@ class ChatPanel {
     }
 
     const panel = vscode.window.createWebviewPanel(
-      'kiAssistantChat',
-      'KI Assistant',
+      'devMateChat',
+      'DevMate',
       column,
       {
         enableScripts: true,
@@ -151,7 +151,7 @@ class ChatPanel {
     this.postStatus('Generating answer');
     await wait(350);
 
-    const config = vscode.workspace.getConfiguration('kiAssistant');
+    const config = vscode.workspace.getConfiguration('devMate');
     const provider = config.get<string>('provider', 'openai');
     const model = config.get<string>('model', 'gpt-4.1-mini');
     const maxTokens = config.get<number>('maxTokens', 1200);
@@ -192,7 +192,7 @@ class ChatPanel {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
-  <title>KI Assistant</title>
+  <title>DevMate</title>
   <style>
     :root {
       color-scheme: light dark;
@@ -416,7 +416,7 @@ class ChatPanel {
 <body>
   <main class="app">
     <header class="toolbar">
-      <div class="title">KI Assistant</div>
+      <div class="title">DevMate</div>
       <div class="mode-tabs" role="group" aria-label="Assistant mode">
         <button class="mode-button" type="button" data-mode="ideas" aria-pressed="true">Ideas</button>
         <button class="mode-button" type="button" data-mode="programming" aria-pressed="false">Programming</button>
