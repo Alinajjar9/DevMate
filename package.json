@@ -12,7 +12,8 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:devMate.openChat"
+    "onCommand:devMate.openChat",
+    "onView:devmate.chatView"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -23,6 +24,25 @@
         "category": "DevMate"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "devmate",
+          "title": "DevMate",
+          "icon": "media/devmate.svg"
+        }
+      ]
+    },
+    "views": {
+      "devmate": [
+        {
+          "id": "devmate.chatView",
+          "name": "Chat",
+          "type": "webview",
+          "visibility": "visible"
+        }
+      ]
+    },
     "configuration": {
       "title": "DevMate",
       "properties": {
@@ -63,7 +83,8 @@
     }
   },
   "scripts": {
-    "compile": "tsc -p ./",
+    "compile": "tsc -p ./ --listEmittedFiles",
+    "check": "tsc -p ./ --noEmit",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile"
   },
