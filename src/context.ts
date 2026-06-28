@@ -6,9 +6,11 @@ export function createBoundedContextItem(
   source: ContextSource,
   filePath: string,
   languageId: string,
-  content: string
+  content: string,
+  maxCharacters = MAX_CONTEXT_CHARACTERS
 ): AskContextItem {
-  const boundedContent = content.slice(0, MAX_CONTEXT_CHARACTERS);
+  const safeLimit = Math.min(Math.max(0, maxCharacters), MAX_CONTEXT_CHARACTERS);
+  const boundedContent = content.slice(0, safeLimit);
 
   return {
     source,

@@ -8,6 +8,9 @@ AssistantMode = Literal["ideas", "code", "debug"]
 ScopeType = Literal["project", "file", "selection"]
 ContextSource = Literal["file", "selection"]
 MAX_CONTEXT_CHARACTERS = 20_000
+MAX_PROJECT_CONTEXT_FILES = 5
+MAX_PROJECT_FILE_CHARACTERS = 8_000
+MAX_PROJECT_CONTEXT_CHARACTERS = 40_000
 
 
 def _utf16_character_count(value: str) -> int:
@@ -58,6 +61,17 @@ class AskScope(BaseModel):
             raise ValueError("selection scope requires exactly one selection context item")
         if self.type == "project" and any(item.source != "file" for item in self.items):
             raise ValueError("project scope can only contain file context items")
+        if self.type == "project" and len(self.items) > MAX_PROJECT_CONTEXT_FILES:
+            raise ValueError("project scope contains too many context files")
+        if self.type == "project" and sum(
+            item.includedCharacters for item in self.items
+        ) > MAX_PROJECT_CONTEXT_CHARACTERS:
+            raise ValueError("project scope exceeds the total context limit")
+        if self.type == "project" and any(
+            item.includedCharacters > MAX_PROJECT_FILE_CHARACTERS
+            for item in self.items
+        ):
+            raise ValueError("project scope contains an oversized context file")
         return self
 
 
@@ -88,7 +102,7 @@ class AskResult(BaseModel):
     data: AskData
 
 
-app = FastAPI(title="DevMate Backend", version="0.2.0")
+app = FastAPI(title="DevMate Backend", version="0.3.0")
 
 
 @app.get("/health", response_model=HealthResult)

@@ -12,6 +12,7 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 - Configurable backend URL and clear offline feedback
 - Deterministic backend answers for transport testing
 - Bounded Selection and active File context with language and truncation metadata
+- Bounded Project context with safe file discovery and deterministic relevance ranking
 
 Real LLM calls, RAG, and library docs are not connected yet.
 
@@ -25,7 +26,9 @@ DevMate requires Visual Studio Code 1.90+, Node.js 20+, npm 9+, and Python 3.10+
 - **File** sends the active editor's current in-memory content, including unsaved changes.
 - Each context item is limited to the first 20,000 characters. DevMate displays when content was truncated.
 - The webview receives only scope metadata; source content stays in the extension-host-to-backend request path.
-- **Project** context discovery is not implemented yet.
+- **Project** considers at most 200 text files up to 200 KB each, ranks them using question keywords, paths, and content, and sends at most five files.
+- Project context is limited to 8,000 characters per file and 40,000 characters in total.
+- Dependency, build, cache, binary, lock, environment, credential, and private-key files are excluded from automatic discovery.
 
 ## Run the backend
 

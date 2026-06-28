@@ -3,6 +3,16 @@ import * as vscode from 'vscode';
 import { ask, health } from './api/client';
 import type { AskRequest, AskScope, AssistantMode } from './api/types';
 import { createBoundedContextItem } from './context';
+import {
+  containsBinaryData,
+  languageIdForPath,
+  MAX_PROJECT_CANDIDATES,
+  MAX_PROJECT_FILE_BYTES,
+  PROJECT_EXCLUDE_GLOB,
+  selectProjectContext,
+  shouldSkipProjectFile
+} from './projectContext';
+import type { ProjectFileCandidate } from './projectContext';
 
 type ScopeKind = 'project' | 'activeFile' | 'selection';
 
@@ -87,7 +97,7 @@ class DevMateChatProvider implements vscode.WebviewViewProvider {
   private async updateScope(scope: ScopeKind): Promise<void> {
     this.postStatus('Collecting context');
 
-    const collectedScope = this.collectScope(scope);
+    const collectedScope = await this.collectScope(scope);
     if (!collectedScope) {
       this.postStatus(scope === 'selection' ? 'Select code first.' : 'Open a file first.', 'warning');
       return;
@@ -97,7 +107,7 @@ class DevMateChatProvider implements vscode.WebviewViewProvider {
     this.postStatus('Ready');
   }
 
-  private collectScope(scope: ScopeKind): CollectedScope | undefined {
+  private async collectScope(scope: ScopeKind, question?: string): Promise<CollectedScope | undefined> {
     if (scope === 'project') {
       const folder = vscode.workspace.workspaceFolders?.[0];
       if (!folder) {
@@ -114,16 +124,27 @@ class DevMateChatProvider implements vscode.WebviewViewProvider {
         };
       }
 
+      const items = question
+        ? await this.collectProjectItems(folder, question)
+        : [];
+      const includedCharacters = items.reduce(
+        (total, item) => total + item.includedCharacters,
+        0
+      );
+      const detail = question
+        ? `Project: ${folder.name} · ${formatFileCount(items.length)} · ${includedCharacters} chars`
+        : `Project: ${folder.name}`;
+
       return {
         info: {
           kind: 'project',
           label: folder.name,
-          detail: `Project: ${folder.name}`
+          detail
         },
         apiScope: {
           type: 'project',
           workspacePath: folder.uri.fsPath,
-          items: []
+          items
         }
       };
     }
@@ -189,6 +210,66 @@ class DevMateChatProvider implements vscode.WebviewViewProvider {
     };
   }
 
+  private async collectProjectItems(
+    folder: vscode.WorkspaceFolder,
+    question: string
+  ): Promise<AskScope['items']> {
+    let uris: vscode.Uri[];
+    try {
+      uris = await vscode.workspace.findFiles(
+        new vscode.RelativePattern(folder, '**/*'),
+        PROJECT_EXCLUDE_GLOB,
+        MAX_PROJECT_CANDIDATES
+      );
+    } catch {
+      return [];
+    }
+
+    const candidates: ProjectFileCandidate[] = [];
+    const batchSize = 20;
+    for (let offset = 0; offset < uris.length; offset += batchSize) {
+      const batch = uris.slice(offset, offset + batchSize);
+      const batchCandidates = await Promise.all(
+        batch.map((uri) => this.readProjectCandidate(uri))
+      );
+      for (const candidate of batchCandidates) {
+        if (candidate) {
+          candidates.push(candidate);
+        }
+      }
+    }
+
+    return selectProjectContext(candidates, question);
+  }
+
+  private async readProjectCandidate(uri: vscode.Uri): Promise<ProjectFileCandidate | undefined> {
+    const relativePath = vscode.workspace.asRelativePath(uri, false);
+    if (shouldSkipProjectFile(relativePath)) {
+      return undefined;
+    }
+
+    try {
+      const stat = await vscode.workspace.fs.stat(uri);
+      if ((stat.type & vscode.FileType.File) === 0 || stat.size > MAX_PROJECT_FILE_BYTES) {
+        return undefined;
+      }
+
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      if (containsBinaryData(bytes)) {
+        return undefined;
+      }
+
+      return {
+        filePath: uri.scheme === 'file' ? uri.fsPath : uri.toString(),
+        relativePath,
+        languageId: languageIdForPath(relativePath),
+        content: new TextDecoder('utf-8').decode(bytes)
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
   private async checkBackendHealth(): Promise<void> {
     const result = await health(getBackendUrl());
     if (result.status === 'error') {
@@ -204,7 +285,7 @@ class DevMateChatProvider implements vscode.WebviewViewProvider {
     }
 
     this.postStatus('Collecting context');
-    const collectedScope = this.collectScope(message.scope.kind);
+    const collectedScope = await this.collectScope(message.scope.kind, question);
     if (!collectedScope) {
       this.postStatus(
         message.scope.kind === 'selection' ? 'Select code first.' : 'Open a file first.',
@@ -682,4 +763,8 @@ function formatContextSize(includedCharacters: number, totalCharacters: number, 
   }
 
   return `${totalCharacters} chars`;
+}
+
+function formatFileCount(count: number): string {
+  return count === 1 ? '1 file' : `${count} files`;
 }

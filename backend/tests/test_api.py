@@ -2,7 +2,12 @@ import unittest
 
 from fastapi.testclient import TestClient
 
-from backend.app.main import MAX_CONTEXT_CHARACTERS, app
+from backend.app.main import (
+    MAX_CONTEXT_CHARACTERS,
+    MAX_PROJECT_CONTEXT_FILES,
+    MAX_PROJECT_FILE_CHARACTERS,
+    app,
+)
 
 
 class DevMateApiTests(unittest.TestCase):
@@ -16,7 +21,7 @@ class DevMateApiTests(unittest.TestCase):
             response.json(),
             {
                 "status": "ok",
-                "data": {"backend": "online", "version": "0.2.0"},
+                "data": {"backend": "online", "version": "0.3.0"},
             },
         )
 
@@ -120,6 +125,74 @@ class DevMateApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["data"]["usedFiles"], [])
+
+    def test_project_scope_reports_ranked_context_files(self) -> None:
+        items = [
+            self._context_item(
+                source="file",
+                content="export function login() {}",
+                file_path="C:\\repo\\src\\auth.ts",
+            ),
+            self._context_item(
+                source="file",
+                content="# Authentication",
+                file_path="C:\\repo\\README.md",
+            ),
+        ]
+        response = self.client.post(
+            "/ask",
+            json=self._ask_payload(scope_type="project", items=items),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["data"]["usedFiles"],
+            ["C:\\repo\\src\\auth.ts", "C:\\repo\\README.md"],
+        )
+
+    def test_project_scope_rejects_too_many_files(self) -> None:
+        items = [
+            self._context_item(
+                source="file",
+                content=f"file {index}",
+                file_path=f"C:\\repo\\src\\file{index}.ts",
+            )
+            for index in range(MAX_PROJECT_CONTEXT_FILES + 1)
+        ]
+        response = self.client.post(
+            "/ask",
+            json=self._ask_payload(scope_type="project", items=items),
+        )
+
+        self.assertEqual(response.status_code, 422)
+
+    def test_project_scope_rejects_excessive_total_context(self) -> None:
+        items = [
+            self._context_item(
+                source="file",
+                content="a" * 15_000,
+                file_path=f"C:\\repo\\src\\file{index}.ts",
+            )
+            for index in range(3)
+        ]
+        response = self.client.post(
+            "/ask",
+            json=self._ask_payload(scope_type="project", items=items),
+        )
+
+        self.assertEqual(response.status_code, 422)
+
+    def test_project_scope_rejects_oversized_individual_file(self) -> None:
+        item = self._context_item(
+            source="file",
+            content="a" * (MAX_PROJECT_FILE_CHARACTERS + 1),
+        )
+        response = self.client.post(
+            "/ask",
+            json=self._ask_payload(scope_type="project", items=[item]),
+        )
+
+        self.assertEqual(response.status_code, 422)
 
     @staticmethod
     def _ask_payload(scope_type: str, items: list[dict[str, object]]) -> dict[str, object]:
