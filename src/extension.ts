@@ -1,7 +1,8 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ask, health } from './api/client';
-import type { AskRequest, AssistantMode, ScopeType } from './api/types';
+import type { AskRequest, AskScope, AssistantMode } from './api/types';
+import { createBoundedContextItem } from './context';
 
 type ScopeKind = 'project' | 'activeFile' | 'selection';
 
@@ -9,10 +10,11 @@ type ScopeInfo = {
   kind: ScopeKind;
   label: string;
   detail: string;
-  fileName?: string;
-  filePath?: string;
-  selectedText?: string;
-  selectedCharacters?: number;
+};
+
+type CollectedScope = {
+  info: ScopeInfo;
+  apiScope: AskScope;
 };
 
 type WebviewMessage =
@@ -75,7 +77,7 @@ class DevMateChatProvider implements vscode.WebviewViewProvider {
         await this.updateScope(message.scope);
         return;
       case 'ask':
-        await this.answerPlaceholder(message);
+        await this.answerQuestion(message);
         return;
       default:
         this.postStatus('Unsupported command received.', 'error');
@@ -85,31 +87,44 @@ class DevMateChatProvider implements vscode.WebviewViewProvider {
   private async updateScope(scope: ScopeKind): Promise<void> {
     this.postStatus('Collecting context');
 
-    const scopeInfo = this.createScopeInfo(scope);
-    if (!scopeInfo) {
+    const collectedScope = this.collectScope(scope);
+    if (!collectedScope) {
       this.postStatus(scope === 'selection' ? 'Select code first.' : 'Open a file first.', 'warning');
       return;
     }
 
-    this.postMessage({ command: 'scopeUpdated', scope: scopeInfo });
+    this.postMessage({ command: 'scopeUpdated', scope: collectedScope.info });
     this.postStatus('Ready');
   }
 
-  private createScopeInfo(scope: ScopeKind): ScopeInfo | undefined {
+  private collectScope(scope: ScopeKind): CollectedScope | undefined {
     if (scope === 'project') {
       const folder = vscode.workspace.workspaceFolders?.[0];
       if (!folder) {
         return {
-          kind: 'project',
-          label: 'No folder',
-          detail: ''
+          info: {
+            kind: 'project',
+            label: 'No folder',
+            detail: ''
+          },
+          apiScope: {
+            type: 'project',
+            items: []
+          }
         };
       }
 
       return {
-        kind: 'project',
-        label: folder.name,
-        detail: `Project: ${folder.name}`
+        info: {
+          kind: 'project',
+          label: folder.name,
+          detail: `Project: ${folder.name}`
+        },
+        apiScope: {
+          type: 'project',
+          workspacePath: folder.uri.fsPath,
+          items: []
+        }
       };
     }
 
@@ -118,33 +133,59 @@ class DevMateChatProvider implements vscode.WebviewViewProvider {
       return undefined;
     }
 
-    const filePath = editor.document.uri.fsPath;
+    const filePath = editor.document.uri.scheme === 'file'
+      ? editor.document.uri.fsPath
+      : editor.document.fileName;
     const relativePath = vscode.workspace.asRelativePath(editor.document.uri, false);
     const fileName = path.basename(filePath);
+    const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const source = scope === 'activeFile' ? 'file' : 'selection';
+    const content = scope === 'activeFile'
+      ? editor.document.getText()
+      : editor.document.getText(editor.selection);
 
-    if (scope === 'activeFile') {
-      return {
-        kind: 'activeFile',
-        label: fileName,
-        fileName,
-        filePath,
-        detail: `File: ${relativePath}`
-      };
-    }
-
-    const selectedText = editor.document.getText(editor.selection);
-    if (!selectedText.trim()) {
+    if (scope === 'selection' && !content.trim()) {
       return undefined;
     }
 
-    return {
-      kind: 'selection',
-      label: `${fileName} selection`,
-      fileName,
+    const contextItem = createBoundedContextItem(
+      source,
       filePath,
-      selectedText,
-      selectedCharacters: selectedText.length,
-      detail: `Selection: ${selectedText.length} chars from ${relativePath}`
+      editor.document.languageId,
+      content
+    );
+    const size = formatContextSize(
+      contextItem.includedCharacters,
+      contextItem.totalCharacters,
+      contextItem.truncated
+    );
+
+    if (scope === 'activeFile') {
+      return {
+        info: {
+          kind: 'activeFile',
+          label: fileName,
+          detail: `File: ${relativePath} · ${size}`
+        },
+        apiScope: {
+          type: 'file',
+          workspacePath,
+          items: [contextItem]
+        }
+      };
+    }
+
+    return {
+      info: {
+        kind: 'selection',
+        label: `${fileName} selection`,
+        detail: `Selection: ${size} from ${relativePath}`
+      },
+      apiScope: {
+        type: 'selection',
+        workspacePath,
+        items: [contextItem]
+      }
     };
   }
 
@@ -155,7 +196,7 @@ class DevMateChatProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async answerPlaceholder(message: Extract<WebviewMessage, { command: 'ask' }>): Promise<void> {
+  private async answerQuestion(message: Extract<WebviewMessage, { command: 'ask' }>): Promise<void> {
     const question = message.question.trim();
     if (!question) {
       this.postStatus('Enter a question before asking.', 'warning');
@@ -163,6 +204,16 @@ class DevMateChatProvider implements vscode.WebviewViewProvider {
     }
 
     this.postStatus('Collecting context');
+    const collectedScope = this.collectScope(message.scope.kind);
+    if (!collectedScope) {
+      this.postStatus(
+        message.scope.kind === 'selection' ? 'Select code first.' : 'Open a file first.',
+        'warning'
+      );
+      return;
+    }
+
+    this.postMessage({ command: 'scopeUpdated', scope: collectedScope.info });
     await wait(250);
     this.postStatus('Generating answer');
     await wait(350);
@@ -176,13 +227,7 @@ class DevMateChatProvider implements vscode.WebviewViewProvider {
     const request: AskRequest = {
       question,
       mode: message.mode,
-      scope: {
-        type: toApiScopeType(message.scope.kind),
-        workspacePath: getWorkspacePath(),
-        filePath: message.scope.filePath,
-        selectedText: message.scope.selectedText,
-        selectedCharacters: message.scope.selectedCharacters
-      },
+      scope: collectedScope.apiScope,
       settings: {
         provider,
         model,
@@ -607,34 +652,8 @@ function createNonce(): string {
   return nonce;
 }
 
-function formatMode(mode: AssistantMode): string {
-  switch (mode) {
-    case 'ideas':
-      return 'Ideas';
-    case 'code':
-      return 'Code';
-    case 'debug':
-      return 'Debug';
-  }
-}
-
-function formatScope(scope: ScopeKind): string {
-  switch (scope) {
-    case 'project':
-      return 'Project';
-    case 'activeFile':
-      return 'Active file';
-    case 'selection':
-      return 'Selection';
-  }
-}
-
 function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-function getWorkspacePath(): string | undefined {
-  return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 }
 
 function getBackendUrl(): string {
@@ -642,17 +661,6 @@ function getBackendUrl(): string {
     .getConfiguration('devMate')
     .get<string>('backendUrl', 'http://127.0.0.1:8000')
     .trim();
-}
-
-function toApiScopeType(scope: ScopeKind): ScopeType {
-  switch (scope) {
-    case 'project':
-      return 'project';
-    case 'activeFile':
-      return 'file';
-    case 'selection':
-      return 'selection';
-  }
 }
 
 function formatAskResponse(answer: string, usedFiles: string[]): string {
@@ -666,4 +674,12 @@ function formatAskResponse(answer: string, usedFiles: string[]): string {
     'Used files:',
     ...usedFiles.map((file) => `- ${file}`)
   ].join('\n');
+}
+
+function formatContextSize(includedCharacters: number, totalCharacters: number, truncated: boolean): string {
+  if (truncated) {
+    return `${includedCharacters} of ${totalCharacters} chars`;
+  }
+
+  return `${totalCharacters} chars`;
 }

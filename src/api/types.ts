@@ -1,5 +1,6 @@
 export type AssistantMode = 'ideas' | 'code' | 'debug';
 export type ScopeType = 'project' | 'file' | 'selection';
+export type ContextSource = 'file' | 'selection';
 export type ApiStatus = 'ok' | 'error';
 export type BackendState = 'online' | 'offline' | 'mock';
 
@@ -21,12 +22,20 @@ export type LlmSettings = {
   temperature: number;
 };
 
+export type AskContextItem = {
+  source: ContextSource;
+  filePath: string;
+  languageId: string;
+  content: string;
+  includedCharacters: number;
+  totalCharacters: number;
+  truncated: boolean;
+};
+
 export type AskScope = {
   type: ScopeType;
   workspacePath?: string;
-  filePath?: string;
-  selectedText?: string;
-  selectedCharacters?: number;
+  items: AskContextItem[];
 };
 
 export type AskRequest = {

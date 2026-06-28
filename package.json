@@ -92,6 +92,7 @@
   "scripts": {
     "compile": "tsc -p ./ --listEmittedFiles",
     "check": "tsc -p ./ --noEmit",
+    "test": "npm run compile && node --test tests/context.test.js",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile"
   },

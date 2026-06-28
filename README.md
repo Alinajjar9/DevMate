@@ -11,12 +11,21 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 - Local FastAPI backend with `/health` and `/ask`
 - Configurable backend URL and clear offline feedback
 - Deterministic backend answers for transport testing
+- Bounded Selection and active File context with language and truncation metadata
 
 Real LLM calls, RAG, and library docs are not connected yet.
 
 ## Requirements
 
 DevMate requires Visual Studio Code 1.90+, Node.js 20+, npm 9+, and Python 3.10+. Git is also recommended for development. See [REQUIREMENTS.md](REQUIREMENTS.md) for the complete tool list, version commands, and dependency-file overview.
+
+## Context behavior
+
+- **Selection** sends the currently highlighted text to the local backend.
+- **File** sends the active editor's current in-memory content, including unsaved changes.
+- Each context item is limited to the first 20,000 characters. DevMate displays when content was truncated.
+- The webview receives only scope metadata; source content stays in the extension-host-to-backend request path.
+- **Project** context discovery is not implemented yet.
 
 ## Run the backend
 
@@ -62,6 +71,8 @@ Run the backend contract tests with:
    ```bash
    npm run check
    ```
+
+   Run the frontend context tests with `npm test`.
 
 6. Press `F5`.
 7. In the new VS Code window, click the DevMate icon in the Activity Bar.

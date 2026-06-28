@@ -38,6 +38,7 @@ exports.deactivate = deactivate;
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const client_1 = require("./api/client");
+const context_1 = require("./context");
 function activate(context) {
     const chatProvider = new DevMateChatProvider(context.extensionUri);
     context.subscriptions.push(vscode.window.registerWebviewViewProvider(DevMateChatProvider.viewType, chatProvider, {
@@ -83,7 +84,7 @@ class DevMateChatProvider {
                 await this.updateScope(message.scope);
                 return;
             case 'ask':
-                await this.answerPlaceholder(message);
+                await this.answerQuestion(message);
                 return;
             default:
                 this.postStatus('Unsupported command received.', 'error');
@@ -91,58 +92,87 @@ class DevMateChatProvider {
     }
     async updateScope(scope) {
         this.postStatus('Collecting context');
-        const scopeInfo = this.createScopeInfo(scope);
-        if (!scopeInfo) {
+        const collectedScope = this.collectScope(scope);
+        if (!collectedScope) {
             this.postStatus(scope === 'selection' ? 'Select code first.' : 'Open a file first.', 'warning');
             return;
         }
-        this.postMessage({ command: 'scopeUpdated', scope: scopeInfo });
+        this.postMessage({ command: 'scopeUpdated', scope: collectedScope.info });
         this.postStatus('Ready');
     }
-    createScopeInfo(scope) {
+    collectScope(scope) {
         if (scope === 'project') {
             const folder = vscode.workspace.workspaceFolders?.[0];
             if (!folder) {
                 return {
-                    kind: 'project',
-                    label: 'No folder',
-                    detail: ''
+                    info: {
+                        kind: 'project',
+                        label: 'No folder',
+                        detail: ''
+                    },
+                    apiScope: {
+                        type: 'project',
+                        items: []
+                    }
                 };
             }
             return {
-                kind: 'project',
-                label: folder.name,
-                detail: `Project: ${folder.name}`
+                info: {
+                    kind: 'project',
+                    label: folder.name,
+                    detail: `Project: ${folder.name}`
+                },
+                apiScope: {
+                    type: 'project',
+                    workspacePath: folder.uri.fsPath,
+                    items: []
+                }
             };
         }
         const editor = vscode.window.activeTextEditor;
         if (!editor) {
             return undefined;
         }
-        const filePath = editor.document.uri.fsPath;
+        const filePath = editor.document.uri.scheme === 'file'
+            ? editor.document.uri.fsPath
+            : editor.document.fileName;
         const relativePath = vscode.workspace.asRelativePath(editor.document.uri, false);
         const fileName = path.basename(filePath);
-        if (scope === 'activeFile') {
-            return {
-                kind: 'activeFile',
-                label: fileName,
-                fileName,
-                filePath,
-                detail: `File: ${relativePath}`
-            };
-        }
-        const selectedText = editor.document.getText(editor.selection);
-        if (!selectedText.trim()) {
+        const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        const source = scope === 'activeFile' ? 'file' : 'selection';
+        const content = scope === 'activeFile'
+            ? editor.document.getText()
+            : editor.document.getText(editor.selection);
+        if (scope === 'selection' && !content.trim()) {
             return undefined;
         }
+        const contextItem = (0, context_1.createBoundedContextItem)(source, filePath, editor.document.languageId, content);
+        const size = formatContextSize(contextItem.includedCharacters, contextItem.totalCharacters, contextItem.truncated);
+        if (scope === 'activeFile') {
+            return {
+                info: {
+                    kind: 'activeFile',
+                    label: fileName,
+                    detail: `File: ${relativePath} · ${size}`
+                },
+                apiScope: {
+                    type: 'file',
+                    workspacePath,
+                    items: [contextItem]
+                }
+            };
+        }
         return {
-            kind: 'selection',
-            label: `${fileName} selection`,
-            fileName,
-            filePath,
-            selectedText,
-            selectedCharacters: selectedText.length,
-            detail: `Selection: ${selectedText.length} chars from ${relativePath}`
+            info: {
+                kind: 'selection',
+                label: `${fileName} selection`,
+                detail: `Selection: ${size} from ${relativePath}`
+            },
+            apiScope: {
+                type: 'selection',
+                workspacePath,
+                items: [contextItem]
+            }
         };
     }
     async checkBackendHealth() {
@@ -151,13 +181,19 @@ class DevMateChatProvider {
             this.postStatus(result.message ?? 'Backend unavailable.', 'warning');
         }
     }
-    async answerPlaceholder(message) {
+    async answerQuestion(message) {
         const question = message.question.trim();
         if (!question) {
             this.postStatus('Enter a question before asking.', 'warning');
             return;
         }
         this.postStatus('Collecting context');
+        const collectedScope = this.collectScope(message.scope.kind);
+        if (!collectedScope) {
+            this.postStatus(message.scope.kind === 'selection' ? 'Select code first.' : 'Open a file first.', 'warning');
+            return;
+        }
+        this.postMessage({ command: 'scopeUpdated', scope: collectedScope.info });
         await wait(250);
         this.postStatus('Generating answer');
         await wait(350);
@@ -169,13 +205,7 @@ class DevMateChatProvider {
         const request = {
             question,
             mode: message.mode,
-            scope: {
-                type: toApiScopeType(message.scope.kind),
-                workspacePath: getWorkspacePath(),
-                filePath: message.scope.filePath,
-                selectedText: message.scope.selectedText,
-                selectedCharacters: message.scope.selectedCharacters
-            },
+            scope: collectedScope.apiScope,
             settings: {
                 provider,
                 model,
@@ -592,47 +622,14 @@ function createNonce() {
     }
     return nonce;
 }
-function formatMode(mode) {
-    switch (mode) {
-        case 'ideas':
-            return 'Ideas';
-        case 'code':
-            return 'Code';
-        case 'debug':
-            return 'Debug';
-    }
-}
-function formatScope(scope) {
-    switch (scope) {
-        case 'project':
-            return 'Project';
-        case 'activeFile':
-            return 'Active file';
-        case 'selection':
-            return 'Selection';
-    }
-}
 function wait(milliseconds) {
     return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-function getWorkspacePath() {
-    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 }
 function getBackendUrl() {
     return vscode.workspace
         .getConfiguration('devMate')
         .get('backendUrl', 'http://127.0.0.1:8000')
         .trim();
-}
-function toApiScopeType(scope) {
-    switch (scope) {
-        case 'project':
-            return 'project';
-        case 'activeFile':
-            return 'file';
-        case 'selection':
-            return 'selection';
-    }
 }
 function formatAskResponse(answer, usedFiles) {
     if (usedFiles.length === 0) {
@@ -644,5 +641,11 @@ function formatAskResponse(answer, usedFiles) {
         'Used files:',
         ...usedFiles.map((file) => `- ${file}`)
     ].join('\n');
+}
+function formatContextSize(includedCharacters, totalCharacters, truncated) {
+    if (truncated) {
+        return `${includedCharacters} of ${totalCharacters} chars`;
+    }
+    return `${totalCharacters} chars`;
 }
 //# sourceMappingURL=extension.js.map
