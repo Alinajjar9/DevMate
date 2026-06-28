@@ -37,6 +37,7 @@ exports.activate = activate;
 exports.deactivate = deactivate;
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
+const client_1 = require("./api/client");
 function activate(context) {
     const chatProvider = new DevMateChatProvider(context.extensionUri);
     context.subscriptions.push(vscode.window.registerWebviewViewProvider(DevMateChatProvider.viewType, chatProvider, {
@@ -74,6 +75,7 @@ class DevMateChatProvider {
         };
         webviewView.webview.html = this.getHtml(webviewView.webview);
         webviewView.webview.onDidReceiveMessage((message) => this.handleMessage(message), null, this.disposables);
+        void this.checkBackendHealth();
     }
     async handleMessage(message) {
         switch (message.command) {
@@ -110,7 +112,6 @@ class DevMateChatProvider {
             return {
                 kind: 'project',
                 label: folder.name,
-                filePath: folder.uri.fsPath,
                 detail: `Project: ${folder.name}`
             };
         }
@@ -139,9 +140,16 @@ class DevMateChatProvider {
             label: `${fileName} selection`,
             fileName,
             filePath,
+            selectedText,
             selectedCharacters: selectedText.length,
             detail: `Selection: ${selectedText.length} chars from ${relativePath}`
         };
+    }
+    async checkBackendHealth() {
+        const result = await (0, client_1.health)(getBackendUrl());
+        if (result.status === 'error') {
+            this.postStatus(result.message ?? 'Backend unavailable.', 'warning');
+        }
     }
     async answerPlaceholder(message) {
         const question = message.question.trim();
@@ -158,22 +166,31 @@ class DevMateChatProvider {
         const model = config.get('model', 'gpt-4.1-mini');
         const maxTokens = config.get('maxTokens', 1200);
         const temperature = config.get('temperature', 0.2);
-        const response = [
-            `Mode: ${formatMode(message.mode)}`,
-            `Scope: ${formatScope(message.scope.kind)}`,
-            `Target: ${message.scope.detail}`,
-            `Provider: ${provider}`,
-            `Model: ${model}`,
-            `Max tokens: ${maxTokens}`,
-            `Temperature: ${temperature}`,
-            '',
-            `Question: ${question}`,
-            '',
-            'Prototype response. Project search, RAG, docs, and real LLM calls are not connected yet.'
-        ].join('\n');
+        const request = {
+            question,
+            mode: message.mode,
+            scope: {
+                type: toApiScopeType(message.scope.kind),
+                workspacePath: getWorkspacePath(),
+                filePath: message.scope.filePath,
+                selectedText: message.scope.selectedText,
+                selectedCharacters: message.scope.selectedCharacters
+            },
+            settings: {
+                provider,
+                model,
+                maxTokens,
+                temperature
+            }
+        };
+        const result = await (0, client_1.ask)(getBackendUrl(), request);
+        if (result.status === 'error' || !result.data) {
+            this.postStatus(result.message ?? 'Ask request failed.', 'error');
+            return;
+        }
         this.postMessage({
             command: 'assistantResponse',
-            response
+            response: formatAskResponse(result.data.answer, result.data.usedFiles)
         });
         this.postStatus('Ready');
     }
@@ -438,8 +455,8 @@ class DevMateChatProvider {
     <header class="toolbar">
       <div class="mode-tabs" role="group" aria-label="Assistant mode">
         <button class="mode-button" type="button" data-mode="ideas" aria-pressed="true">Ideas</button>
-        <button class="mode-button" type="button" data-mode="programming" aria-pressed="false">Code</button>
-        <button class="mode-button" type="button" data-mode="debugging" aria-pressed="false">Fix</button>
+        <button class="mode-button" type="button" data-mode="code" aria-pressed="false">Code</button>
+        <button class="mode-button" type="button" data-mode="debug" aria-pressed="false">Debug</button>
       </div>
     </header>
 
@@ -579,10 +596,10 @@ function formatMode(mode) {
     switch (mode) {
         case 'ideas':
             return 'Ideas';
-        case 'programming':
+        case 'code':
             return 'Code';
-        case 'debugging':
-            return 'Fix';
+        case 'debug':
+            return 'Debug';
     }
 }
 function formatScope(scope) {
@@ -597,5 +614,35 @@ function formatScope(scope) {
 }
 function wait(milliseconds) {
     return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+function getWorkspacePath() {
+    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+}
+function getBackendUrl() {
+    return vscode.workspace
+        .getConfiguration('devMate')
+        .get('backendUrl', 'http://127.0.0.1:8000')
+        .trim();
+}
+function toApiScopeType(scope) {
+    switch (scope) {
+        case 'project':
+            return 'project';
+        case 'activeFile':
+            return 'file';
+        case 'selection':
+            return 'selection';
+    }
+}
+function formatAskResponse(answer, usedFiles) {
+    if (usedFiles.length === 0) {
+        return answer;
+    }
+    return [
+        answer,
+        '',
+        'Used files:',
+        ...usedFiles.map((file) => `- ${file}`)
+    ].join('\n');
 }
 //# sourceMappingURL=extension.js.map

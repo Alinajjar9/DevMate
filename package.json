@@ -6,7 +6,9 @@
   "publisher": "local",
   "private": true,
   "engines": {
-    "vscode": "^1.90.0"
+    "vscode": "^1.90.0",
+    "node": ">=20.0.0",
+    "npm": ">=9.0.0"
   },
   "categories": [
     "Other"
@@ -46,6 +48,11 @@
     "configuration": {
       "title": "DevMate",
       "properties": {
+        "devMate.backendUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8000",
+          "description": "Base URL of the local DevMate backend service."
+        },
         "devMate.provider": {
           "type": "string",
           "default": "openai",
