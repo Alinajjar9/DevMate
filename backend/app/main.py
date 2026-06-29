@@ -23,6 +23,7 @@ def _utf16_character_count(value: str) -> int:
 class LlmSettings(BaseModel):
     provider: str
     model: str
+    baseUrl: str | None = None
     maxTokens: int = Field(ge=128, le=8_000)
     temperature: float = Field(ge=0, le=2)
 
@@ -154,6 +155,11 @@ def _build_deterministic_answer(request: AskRequest) -> str:
         f"Scope: {request.scope.type}",
         f"Provider: {request.settings.provider}",
         f"Model: {request.settings.model}",
+        *(
+            [f"Base URL: {request.settings.baseUrl}"]
+            if request.settings.baseUrl
+            else []
+        ),
         f"Max tokens: {request.settings.maxTokens}",
         f"Temperature: {request.settings.temperature}",
     ]

@@ -1,8 +1,19 @@
+import { randomUUID } from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ask, health } from './api/client';
 import type { AskContextItem, AskRequest, AskScope, AssistantMode } from './api/types';
 import { createBoundedContextItem } from './context';
+import {
+  ACTIVE_LLM_PROFILE_STORAGE_KEY,
+  LLM_PROFILES_STORAGE_KEY,
+  normalizeProfileDraft,
+  parseStoredProfiles,
+  PROVIDER_LABELS,
+  secretKeyForProfile,
+  validateProfileDraft
+} from './llmProfiles';
+import type { LlmProfile, LlmProfileDraft, LlmProvider } from './llmProfiles';
 import {
   containsBinaryData,
   languageIdForPath,
@@ -42,15 +53,31 @@ type WorkspaceFilePickItem = vscode.QuickPickItem & {
   uri: vscode.Uri;
 };
 
+type LlmProfilePickItem = vscode.QuickPickItem & {
+  action: 'select' | 'add' | 'manage';
+  profileId?: string;
+};
+
+type LlmProfileFormSubmission = {
+  id?: string;
+  name: string;
+  provider: LlmProvider;
+  model: string;
+  baseUrl?: string;
+  apiKey?: string;
+};
+
 type WebviewMessage =
   | { command: 'ask'; mode: AssistantMode; question: string; scope: ScopeInfo }
   | { command: 'setScope'; scope: ScopeKind }
   | { command: 'pickFiles' }
   | { command: 'removeAttachment'; id: string }
+  | { command: 'chooseLlmProfile' }
+  | { command: 'saveLlmProfile'; profile: LlmProfileFormSubmission }
   | { command: 'ready' };
 
 export function activate(context: vscode.ExtensionContext): void {
-  const chatPanel = new DevMateChatPanel(context.extensionUri);
+  const chatPanel = new DevMateChatPanel(context);
   const openChatCommand = vscode.commands.registerCommand('devMate.openChat', () => {
     chatPanel.show();
   });
@@ -77,8 +104,11 @@ class DevMateChatPanel implements vscode.Disposable {
   private panel?: vscode.WebviewPanel;
   private readonly attachedFiles = new Map<string, vscode.Uri>();
   private readonly panelDisposables: vscode.Disposable[] = [];
+  private readonly extensionUri: vscode.Uri;
 
-  constructor(private readonly extensionUri: vscode.Uri) {}
+  constructor(private readonly extensionContext: vscode.ExtensionContext) {
+    this.extensionUri = extensionContext.extensionUri;
+  }
 
   show(): void {
     if (this.panel) {
@@ -143,8 +173,15 @@ class DevMateChatPanel implements vscode.Disposable {
         this.attachedFiles.delete(message.id);
         this.postAttachmentState();
         return;
+      case 'chooseLlmProfile':
+        await this.chooseLlmProfile();
+        return;
+      case 'saveLlmProfile':
+        await this.saveLlmProfile(message.profile);
+        return;
       case 'ready':
         this.postAttachmentState();
+        await this.postLlmProfileState();
         return;
       default:
         this.postStatus('Unsupported command received.', 'error');
@@ -459,6 +496,316 @@ class DevMateChatPanel implements vscode.Disposable {
     this.postMessage({ command: 'attachmentsUpdated', attachments });
   }
 
+  private getLlmProfiles(): LlmProfile[] {
+    return parseStoredProfiles(
+      this.extensionContext.globalState.get<unknown>(LLM_PROFILES_STORAGE_KEY)
+    );
+  }
+
+  private getActiveLlmProfile(profiles = this.getLlmProfiles()): LlmProfile | undefined {
+    const activeProfileId = this.extensionContext.globalState.get<string>(
+      ACTIVE_LLM_PROFILE_STORAGE_KEY
+    );
+    return profiles.find((profile) => profile.id === activeProfileId) ?? profiles[0];
+  }
+
+  private async chooseLlmProfile(): Promise<void> {
+    const profiles = this.getLlmProfiles();
+    if (profiles.length === 0) {
+      await this.showLlmProfileForm();
+      return;
+    }
+
+    const activeProfile = this.getActiveLlmProfile(profiles);
+    const choices: LlmProfilePickItem[] = profiles.map((profile) => ({
+      label: profile.name,
+      description: [
+        profile.id === activeProfile?.id ? 'Selected' : undefined,
+        PROVIDER_LABELS[profile.provider],
+        profile.model
+      ].filter(Boolean).join(' · '),
+      detail: profile.baseUrl,
+      action: 'select',
+      profileId: profile.id
+    }));
+    choices.push(
+      {
+        label: '$(add) Add model profile',
+        description: 'Save another provider and model',
+        action: 'add'
+      },
+      {
+        label: '$(gear) Manage model profiles',
+        description: 'Edit or delete saved profiles',
+        action: 'manage'
+      }
+    );
+
+    const selected = await vscode.window.showQuickPick(choices, {
+      matchOnDescription: true,
+      matchOnDetail: true,
+      placeHolder: 'Choose the model DevMate should use',
+      title: 'DevMate: Select model'
+    });
+    if (!selected) {
+      return;
+    }
+
+    if (selected.action === 'add') {
+      await this.showLlmProfileForm();
+      return;
+    }
+    if (selected.action === 'manage') {
+      await this.manageLlmProfiles();
+      return;
+    }
+    if (selected.profileId) {
+      await this.extensionContext.globalState.update(
+        ACTIVE_LLM_PROFILE_STORAGE_KEY,
+        selected.profileId
+      );
+      await this.postLlmProfileState();
+      this.postStatus('Ready');
+    }
+  }
+
+  private async showLlmProfileForm(profile?: LlmProfile): Promise<void> {
+    const hasApiKey = profile
+      ? Boolean(await this.extensionContext.secrets.get(secretKeyForProfile(profile.id)))
+      : false;
+
+    this.postMessage({
+      command: 'showLlmProfileForm',
+      profile: profile
+        ? {
+            id: profile.id,
+            name: profile.name,
+            provider: profile.provider,
+            model: profile.model,
+            baseUrl: profile.baseUrl
+          }
+        : undefined,
+      hasApiKey
+    });
+  }
+
+  private async saveLlmProfile(submission: LlmProfileFormSubmission): Promise<void> {
+    if (
+      (submission.id !== undefined && typeof submission.id !== 'string')
+      || typeof submission.name !== 'string'
+      || !['openai', 'ollama'].includes(submission.provider)
+      || typeof submission.model !== 'string'
+      || (submission.baseUrl !== undefined && typeof submission.baseUrl !== 'string')
+      || (submission.apiKey !== undefined && typeof submission.apiKey !== 'string')
+    ) {
+      this.postMessage({
+        command: 'llmProfileFormError',
+        message: 'The model profile contains invalid values.'
+      });
+      return;
+    }
+
+    const profiles = this.getLlmProfiles();
+    const existingProfile = submission.id
+      ? profiles.find((profile) => profile.id === submission.id)
+      : undefined;
+    if (submission.id && !existingProfile) {
+      this.postMessage({
+        command: 'llmProfileFormError',
+        message: 'That model profile no longer exists.'
+      });
+      return;
+    }
+
+    const draft: LlmProfileDraft = normalizeProfileDraft({
+      name: submission.name,
+      provider: submission.provider,
+      model: submission.model,
+      baseUrl: submission.baseUrl
+    });
+    const validationError = validateProfileDraft(draft, profiles, existingProfile?.id);
+    if (validationError) {
+      this.postMessage({ command: 'llmProfileFormError', message: validationError });
+      return;
+    }
+
+    const existingApiKey = existingProfile
+      ? await this.extensionContext.secrets.get(secretKeyForProfile(existingProfile.id))
+      : undefined;
+    const submittedApiKey = submission.apiKey?.trim();
+    if (draft.provider === 'openai' && !submittedApiKey && !existingApiKey) {
+      this.postMessage({
+        command: 'llmProfileFormError',
+        message: 'Enter an API key for this OpenAI profile.'
+      });
+      return;
+    }
+
+    const profile: LlmProfile = {
+      id: existingProfile?.id ?? randomUUID(),
+      ...draft
+    };
+    const secretKey = secretKeyForProfile(profile.id);
+    const updatedProfiles = existingProfile
+      ? profiles.map((candidate) => candidate.id === profile.id ? profile : candidate)
+      : [...profiles, profile];
+
+    try {
+      if (draft.provider === 'openai' && submittedApiKey) {
+        await this.extensionContext.secrets.store(secretKey, submittedApiKey);
+      }
+      await this.extensionContext.globalState.update(
+        LLM_PROFILES_STORAGE_KEY,
+        updatedProfiles
+      );
+      if (!existingProfile) {
+        await this.extensionContext.globalState.update(
+          ACTIVE_LLM_PROFILE_STORAGE_KEY,
+          profile.id
+        );
+      }
+      if (draft.provider === 'ollama') {
+        await this.extensionContext.secrets.delete(secretKey);
+      }
+    } catch {
+      if (!existingProfile) {
+        await this.extensionContext.secrets.delete(secretKey);
+      }
+      this.postMessage({
+        command: 'llmProfileFormError',
+        message: 'Could not save the model profile.'
+      });
+      return;
+    }
+
+    await this.postLlmProfileState();
+    this.postMessage({ command: 'closeLlmProfileForm' });
+    this.postStatus(existingProfile ? `${profile.name} updated.` : `${profile.name} selected.`);
+  }
+
+  private async manageLlmProfiles(): Promise<void> {
+    const profiles = this.getLlmProfiles();
+    if (profiles.length === 0) {
+      await this.showLlmProfileForm();
+      return;
+    }
+
+    const selected = await vscode.window.showQuickPick(
+      profiles.map((profile) => ({
+        label: profile.name,
+        description: `${PROVIDER_LABELS[profile.provider]} · ${profile.model}`,
+        detail: profile.baseUrl,
+        profile
+      })),
+      {
+        matchOnDescription: true,
+        matchOnDetail: true,
+        placeHolder: 'Choose a profile to manage',
+        title: 'DevMate: Manage model profiles'
+      }
+    );
+    if (!selected) {
+      return;
+    }
+
+    const activeProfile = this.getActiveLlmProfile(profiles);
+    const actions: Array<vscode.QuickPickItem & { action: 'select' | 'edit' | 'delete' }> = [];
+    if (selected.profile.id !== activeProfile?.id) {
+      actions.push({
+        label: '$(check) Set as selected model',
+        action: 'select'
+      });
+    }
+    actions.push(
+      { label: '$(edit) Edit profile', action: 'edit' },
+      { label: '$(trash) Delete profile', action: 'delete' }
+    );
+
+    const action = await vscode.window.showQuickPick(actions, {
+      placeHolder: `Manage ${selected.profile.name}`,
+      title: 'DevMate: Manage model profile'
+    });
+    if (!action) {
+      return;
+    }
+
+    if (action.action === 'select') {
+      await this.extensionContext.globalState.update(
+        ACTIVE_LLM_PROFILE_STORAGE_KEY,
+        selected.profile.id
+      );
+      await this.postLlmProfileState();
+      return;
+    }
+    if (action.action === 'edit') {
+      await this.showLlmProfileForm(selected.profile);
+      return;
+    }
+    await this.deleteLlmProfile(selected.profile);
+  }
+
+  private async deleteLlmProfile(profile: LlmProfile): Promise<void> {
+    const confirmation = await vscode.window.showWarningMessage(
+      `Delete the model profile "${profile.name}"?`,
+      { modal: true },
+      'Delete'
+    );
+    if (confirmation !== 'Delete') {
+      return;
+    }
+
+    const profiles = this.getLlmProfiles();
+    const remainingProfiles = profiles.filter((candidate) => candidate.id !== profile.id);
+    try {
+      await this.extensionContext.globalState.update(
+        LLM_PROFILES_STORAGE_KEY,
+        remainingProfiles
+      );
+      await this.extensionContext.secrets.delete(secretKeyForProfile(profile.id));
+      const activeProfile = this.getActiveLlmProfile(profiles);
+      if (activeProfile?.id === profile.id) {
+        await this.extensionContext.globalState.update(
+          ACTIVE_LLM_PROFILE_STORAGE_KEY,
+          remainingProfiles[0]?.id
+        );
+      }
+    } catch {
+      this.postStatus('Could not delete the model profile.', 'error');
+      return;
+    }
+
+    await this.postLlmProfileState();
+    this.postStatus(`${profile.name} deleted.`);
+  }
+
+  private async postLlmProfileState(): Promise<void> {
+    const profiles = this.getLlmProfiles();
+    const activeProfile = this.getActiveLlmProfile(profiles);
+    if (
+      activeProfile
+      && this.extensionContext.globalState.get<string>(ACTIVE_LLM_PROFILE_STORAGE_KEY) !== activeProfile.id
+    ) {
+      await this.extensionContext.globalState.update(
+        ACTIVE_LLM_PROFILE_STORAGE_KEY,
+        activeProfile.id
+      );
+    }
+
+    this.postMessage({
+      command: 'llmProfilesUpdated',
+      profileCount: profiles.length,
+      activeProfile: activeProfile
+        ? {
+            id: activeProfile.id,
+            name: activeProfile.name,
+            provider: activeProfile.provider,
+            providerLabel: PROVIDER_LABELS[activeProfile.provider],
+            model: activeProfile.model
+          }
+        : undefined
+    });
+  }
+
   private async readProjectCandidate(uri: vscode.Uri): Promise<ProjectFileCandidate | undefined> {
     const relativePath = vscode.workspace.asRelativePath(uri, false);
     if (shouldSkipProjectFile(relativePath)) {
@@ -501,6 +848,13 @@ class DevMateChatPanel implements vscode.Disposable {
       return;
     }
 
+    const activeProfile = this.getActiveLlmProfile();
+    if (!activeProfile) {
+      this.postStatus('Add a model profile before asking.', 'warning');
+      await this.showLlmProfileForm();
+      return;
+    }
+
     this.postStatus('Collecting context');
     const collectedScope = await this.collectScope(message.scope.kind, question);
     if (!collectedScope) {
@@ -517,8 +871,6 @@ class DevMateChatPanel implements vscode.Disposable {
     await wait(350);
 
     const config = vscode.workspace.getConfiguration('devMate');
-    const provider = config.get<string>('provider', 'openai');
-    const model = config.get<string>('model', 'gpt-4.1-mini');
     const maxTokens = config.get<number>('maxTokens', 1200);
     const temperature = config.get<number>('temperature', 0.2);
 
@@ -527,8 +879,9 @@ class DevMateChatPanel implements vscode.Disposable {
       mode: message.mode,
       scope: collectedScope.apiScope,
       settings: {
-        provider,
-        model,
+        provider: activeProfile.provider,
+        model: activeProfile.model,
+        baseUrl: activeProfile.baseUrl,
         maxTokens,
         temperature
       }
@@ -590,6 +943,8 @@ class DevMateChatPanel implements vscode.Disposable {
     }
 
     button,
+    input,
+    select,
     textarea {
       font: inherit;
     }
@@ -705,6 +1060,12 @@ class DevMateChatPanel implements vscode.Disposable {
     .mode-button:hover,
     .scope-button:hover {
       filter: brightness(1.08);
+    }
+
+    button:disabled {
+      cursor: default;
+      filter: none;
+      opacity: 0.55;
     }
 
     .status {
@@ -904,6 +1265,136 @@ class DevMateChatPanel implements vscode.Disposable {
     .composer-actions-spacer {
       flex: 1 1 auto;
     }
+
+    .model-selector {
+      max-width: min(260px, 70vw);
+      color: var(--vscode-foreground);
+      background: var(--vscode-input-background);
+    }
+
+    .model-selector-label {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .model-selector-chevron {
+      margin-left: 6px;
+      color: var(--muted);
+      font-size: 9px;
+    }
+
+    .profile-dialog {
+      width: min(520px, calc(100vw - 32px));
+      max-height: calc(100vh - 32px);
+      padding: 0;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--vscode-foreground);
+      background: var(--surface);
+      box-shadow: 0 14px 42px rgba(0, 0, 0, 0.38);
+    }
+
+    .profile-dialog::backdrop {
+      background: rgba(0, 0, 0, 0.52);
+    }
+
+    .profile-form {
+      display: grid;
+      gap: 0;
+    }
+
+    .profile-form-header {
+      padding: 16px 18px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .profile-form-header h2 {
+      margin: 0 0 4px;
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .profile-form-header p,
+    .field-help {
+      margin: 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.4;
+    }
+
+    .profile-form-body {
+      display: grid;
+      gap: 12px;
+      padding: 16px 18px;
+    }
+
+    .profile-form-row {
+      display: grid;
+      grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+      gap: 12px;
+    }
+
+    .profile-field {
+      display: grid;
+      gap: 5px;
+      min-width: 0;
+    }
+
+    .profile-field[hidden] {
+      display: none;
+    }
+
+    .profile-field label {
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .profile-field input,
+    .profile-field select {
+      width: 100%;
+      height: 32px;
+      padding: 0 9px;
+      border: 1px solid var(--vscode-input-border, var(--border));
+      border-radius: 4px;
+      color: var(--vscode-input-foreground);
+      background: var(--vscode-input-background);
+    }
+
+    .profile-field input:focus,
+    .profile-field select:focus {
+      outline: 1px solid var(--focus);
+      outline-offset: 0;
+    }
+
+    .profile-form-error {
+      padding: 8px 10px;
+      border: 1px solid var(--vscode-editorError-foreground);
+      border-radius: 4px;
+      color: var(--vscode-editorError-foreground);
+      background: var(--vscode-inputValidation-errorBackground);
+      font-size: 11px;
+    }
+
+    .profile-form-error[hidden] {
+      display: none;
+    }
+
+    .profile-form-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      padding: 12px 18px 16px;
+      border-top: 1px solid var(--border);
+    }
+
+    @media (max-width: 480px) {
+      .profile-form-row {
+        grid-template-columns: 1fr;
+      }
+    }
   </style>
 </head>
 <body>
@@ -948,12 +1439,89 @@ class DevMateChatPanel implements vscode.Disposable {
         </div>
         <textarea id="question" placeholder="Ask DevMate..."></textarea>
         <div class="composer-actions">
+          <button
+            id="llmProfileSelector"
+            class="scope-button model-selector"
+            type="button"
+            title="Add or select a model profile"
+          >
+            <span id="llmProfileLabel" class="model-selector-label">Add model</span>
+            <span class="model-selector-chevron" aria-hidden="true">▼</span>
+          </button>
           <span class="composer-actions-spacer"></span>
-          <button id="ask" class="action-button primary" type="button">Ask</button>
+          <button id="ask" class="action-button primary" type="button" disabled>Ask</button>
         </div>
       </div>
     </section>
   </main>
+
+  <dialog id="llmProfileDialog" class="profile-dialog" aria-labelledby="llmProfileFormTitle">
+    <form id="llmProfileForm" class="profile-form" novalidate>
+      <header class="profile-form-header">
+        <h2 id="llmProfileFormTitle">Add model profile</h2>
+        <p>Save a reusable model configuration for DevMate.</p>
+      </header>
+      <div class="profile-form-body">
+        <input id="llmProfileId" type="hidden">
+        <div class="profile-field">
+          <label for="llmProfileName">Display name</label>
+          <input
+            id="llmProfileName"
+            type="text"
+            maxlength="60"
+            autocomplete="off"
+            placeholder="OpenAI Fast or Local Ollama"
+            required
+          >
+        </div>
+        <div class="profile-form-row">
+          <div class="profile-field">
+            <label for="llmProfileProvider">Provider</label>
+            <select id="llmProfileProvider">
+              <option value="openai">OpenAI</option>
+              <option value="ollama">Ollama</option>
+            </select>
+          </div>
+          <div class="profile-field">
+            <label for="llmProfileModel">Model ID</label>
+            <input
+              id="llmProfileModel"
+              type="text"
+              maxlength="120"
+              autocomplete="off"
+              placeholder="gpt-4.1-mini"
+              required
+            >
+          </div>
+        </div>
+        <div class="profile-field">
+          <label for="llmProfileBaseUrl">Base URL</label>
+          <input
+            id="llmProfileBaseUrl"
+            type="url"
+            autocomplete="off"
+            placeholder="Optional — uses the provider default"
+          >
+          <p id="llmProfileBaseUrlHelp" class="field-help">Leave blank to use the OpenAI default.</p>
+        </div>
+        <div id="llmProfileApiKeyField" class="profile-field">
+          <label for="llmProfileApiKey">API key</label>
+          <input
+            id="llmProfileApiKey"
+            type="password"
+            autocomplete="new-password"
+            placeholder="Paste the provider API key"
+          >
+          <p id="llmProfileApiKeyHelp" class="field-help">The key is transferred to the extension and saved in VS Code SecretStorage.</p>
+        </div>
+        <div id="llmProfileFormError" class="profile-form-error" role="alert" hidden></div>
+      </div>
+      <footer class="profile-form-actions">
+        <button id="cancelLlmProfile" class="action-button secondary" type="button">Cancel</button>
+        <button id="saveLlmProfile" class="action-button primary" type="submit">Save profile</button>
+      </footer>
+    </form>
+  </dialog>
 
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
@@ -965,7 +1533,9 @@ class DevMateChatPanel implements vscode.Disposable {
         detail: ''
       },
       attachments: [],
-      attachmentsExpanded: false
+      attachmentsExpanded: false,
+      activeProfile: undefined,
+      profileCount: 0
     };
 
     const statusEl = document.getElementById('status');
@@ -975,6 +1545,24 @@ class DevMateChatPanel implements vscode.Disposable {
     const attachmentPanelEl = document.getElementById('attachmentPanel');
     const attachmentListEl = document.getElementById('attachmentList');
     const attachmentToggleEl = document.getElementById('toggleAttachments');
+    const llmProfileSelectorEl = document.getElementById('llmProfileSelector');
+    const llmProfileLabelEl = document.getElementById('llmProfileLabel');
+    const askEl = document.getElementById('ask');
+    const llmProfileDialogEl = document.getElementById('llmProfileDialog');
+    const llmProfileFormEl = document.getElementById('llmProfileForm');
+    const llmProfileFormTitleEl = document.getElementById('llmProfileFormTitle');
+    const llmProfileIdEl = document.getElementById('llmProfileId');
+    const llmProfileNameEl = document.getElementById('llmProfileName');
+    const llmProfileProviderEl = document.getElementById('llmProfileProvider');
+    const llmProfileModelEl = document.getElementById('llmProfileModel');
+    const llmProfileBaseUrlEl = document.getElementById('llmProfileBaseUrl');
+    const llmProfileBaseUrlHelpEl = document.getElementById('llmProfileBaseUrlHelp');
+    const llmProfileApiKeyFieldEl = document.getElementById('llmProfileApiKeyField');
+    const llmProfileApiKeyEl = document.getElementById('llmProfileApiKey');
+    const llmProfileApiKeyHelpEl = document.getElementById('llmProfileApiKeyHelp');
+    const llmProfileFormErrorEl = document.getElementById('llmProfileFormError');
+    const saveLlmProfileEl = document.getElementById('saveLlmProfile');
+    const ollamaDefaultBaseUrl = 'http://127.0.0.1:11434';
 
     document.querySelectorAll('.mode-button').forEach((button) => {
       button.addEventListener('click', () => {
@@ -994,7 +1582,7 @@ class DevMateChatPanel implements vscode.Disposable {
       });
     });
 
-    document.getElementById('ask').addEventListener('click', () => {
+    askEl.addEventListener('click', () => {
       const question = questionEl.value.trim();
       if (!question) {
         setStatus('Enter a question before asking.', 'warning');
@@ -1013,6 +1601,81 @@ class DevMateChatPanel implements vscode.Disposable {
 
     document.getElementById('attachFiles').addEventListener('click', () => {
       vscode.postMessage({ command: 'pickFiles' });
+    });
+
+    llmProfileSelectorEl.addEventListener('click', () => {
+      vscode.postMessage({ command: 'chooseLlmProfile' });
+    });
+
+    llmProfileProviderEl.addEventListener('change', () => {
+      renderLlmProfileProvider(true);
+    });
+
+    document.getElementById('cancelLlmProfile').addEventListener('click', () => {
+      closeLlmProfileForm();
+    });
+
+    llmProfileDialogEl.addEventListener('close', () => {
+      llmProfileApiKeyEl.value = '';
+      llmProfileDialogEl.dataset.hasApiKey = 'false';
+      setLlmProfileFormError('');
+      setLlmProfileFormSaving(false);
+    });
+
+    llmProfileFormEl.addEventListener('submit', (event) => {
+      event.preventDefault();
+      setLlmProfileFormError('');
+
+      const name = llmProfileNameEl.value.trim();
+      const provider = llmProfileProviderEl.value;
+      const model = llmProfileModelEl.value.trim();
+      const baseUrl = llmProfileBaseUrlEl.value.trim();
+      const apiKey = llmProfileApiKeyEl.value.trim();
+
+      if (!name) {
+        setLlmProfileFormError('Enter a display name.');
+        llmProfileNameEl.focus();
+        return;
+      }
+      if (!model) {
+        setLlmProfileFormError('Enter a model ID.');
+        llmProfileModelEl.focus();
+        return;
+      }
+      if (baseUrl) {
+        try {
+          const parsedUrl = new URL(baseUrl);
+          if (!['http:', 'https:'].includes(parsedUrl.protocol) || parsedUrl.username || parsedUrl.password) {
+            throw new Error('Invalid provider URL');
+          }
+        } catch {
+          setLlmProfileFormError('Enter a valid HTTP or HTTPS base URL without embedded credentials.');
+          llmProfileBaseUrlEl.focus();
+          return;
+        }
+      }
+      if (
+        provider === 'openai'
+        && !apiKey
+        && llmProfileDialogEl.dataset.hasApiKey !== 'true'
+      ) {
+        setLlmProfileFormError('Enter an API key for this OpenAI profile.');
+        llmProfileApiKeyEl.focus();
+        return;
+      }
+
+      setLlmProfileFormSaving(true);
+      vscode.postMessage({
+        command: 'saveLlmProfile',
+        profile: {
+          id: llmProfileIdEl.value || undefined,
+          name,
+          provider,
+          model,
+          baseUrl: baseUrl || undefined,
+          apiKey: provider === 'openai' && apiKey ? apiKey : undefined
+        }
+      });
     });
 
     attachmentToggleEl.addEventListener('click', () => {
@@ -1046,6 +1709,25 @@ class DevMateChatPanel implements vscode.Disposable {
         }
         renderAttachments();
       }
+
+      if (message.command === 'llmProfilesUpdated') {
+        state.activeProfile = message.activeProfile;
+        state.profileCount = message.profileCount;
+        renderLlmProfile();
+      }
+
+      if (message.command === 'showLlmProfileForm') {
+        showLlmProfileForm(message.profile, message.hasApiKey);
+      }
+
+      if (message.command === 'llmProfileFormError') {
+        setLlmProfileFormSaving(false);
+        setLlmProfileFormError(message.message);
+      }
+
+      if (message.command === 'closeLlmProfileForm') {
+        closeLlmProfileForm();
+      }
     });
 
     vscode.postMessage({ command: 'setScope', scope: 'project' });
@@ -1077,6 +1759,96 @@ class DevMateChatPanel implements vscode.Disposable {
       document.querySelectorAll('.scope-button[data-scope]').forEach((button) => {
         button.setAttribute('aria-pressed', String(button.dataset.scope === state.scope.kind));
       });
+    }
+
+    function renderLlmProfile() {
+      if (!state.activeProfile) {
+        llmProfileLabelEl.textContent = 'Add model';
+        llmProfileSelectorEl.title = 'Add a model profile';
+        askEl.disabled = true;
+        askEl.title = 'Add a model profile before asking';
+        return;
+      }
+
+      llmProfileLabelEl.textContent = state.activeProfile.name;
+      llmProfileSelectorEl.title = state.activeProfile.providerLabel
+        + ' · ' + state.activeProfile.model
+        + (state.profileCount > 1 ? ' · Select another model' : ' · Manage model');
+      askEl.disabled = false;
+      askEl.title = '';
+    }
+
+    function showLlmProfileForm(profile, hasApiKey) {
+      llmProfileFormEl.reset();
+      llmProfileIdEl.value = profile?.id || '';
+      llmProfileNameEl.value = profile?.name || '';
+      llmProfileProviderEl.value = profile?.provider || 'openai';
+      llmProfileModelEl.value = profile?.model || '';
+      llmProfileBaseUrlEl.value = profile?.baseUrl || '';
+      llmProfileApiKeyEl.value = '';
+      llmProfileDialogEl.dataset.hasApiKey = String(Boolean(hasApiKey));
+      llmProfileDialogEl.dataset.currentProvider = llmProfileProviderEl.value;
+      llmProfileFormTitleEl.textContent = profile ? 'Edit model profile' : 'Add model profile';
+      saveLlmProfileEl.textContent = profile ? 'Save changes' : 'Add model';
+      setLlmProfileFormError('');
+      setLlmProfileFormSaving(false);
+      renderLlmProfileProvider(false);
+      if (!llmProfileDialogEl.open) {
+        llmProfileDialogEl.showModal();
+      }
+      llmProfileNameEl.focus();
+    }
+
+    function closeLlmProfileForm() {
+      llmProfileApiKeyEl.value = '';
+      if (llmProfileDialogEl.open) {
+        llmProfileDialogEl.close();
+      }
+    }
+
+    function renderLlmProfileProvider(providerChanged) {
+      const provider = llmProfileProviderEl.value;
+      const previousProvider = llmProfileDialogEl.dataset.currentProvider;
+      const isOllama = provider === 'ollama';
+
+      if (providerChanged && isOllama && !llmProfileBaseUrlEl.value.trim()) {
+        llmProfileBaseUrlEl.value = ollamaDefaultBaseUrl;
+      }
+      if (
+        providerChanged
+        && !isOllama
+        && previousProvider === 'ollama'
+        && llmProfileBaseUrlEl.value.trim() === ollamaDefaultBaseUrl
+      ) {
+        llmProfileBaseUrlEl.value = '';
+      }
+
+      llmProfileDialogEl.dataset.currentProvider = provider;
+      llmProfileApiKeyFieldEl.hidden = isOllama;
+      llmProfileModelEl.placeholder = isOllama ? 'llama3.2' : 'gpt-4.1-mini';
+      llmProfileBaseUrlEl.placeholder = isOllama
+        ? ollamaDefaultBaseUrl
+        : 'Optional — uses the OpenAI default';
+      llmProfileBaseUrlHelpEl.textContent = isOllama
+        ? 'Enter the URL of the Ollama server.'
+        : 'Leave blank to use the OpenAI default.';
+      llmProfileApiKeyHelpEl.textContent = llmProfileDialogEl.dataset.hasApiKey === 'true'
+        ? 'A key is already stored. Leave this blank to keep it, or enter a replacement.'
+        : 'The key is transferred to the extension and saved in VS Code SecretStorage.';
+    }
+
+    function setLlmProfileFormError(message) {
+      llmProfileFormErrorEl.textContent = message;
+      llmProfileFormErrorEl.hidden = !message;
+    }
+
+    function setLlmProfileFormSaving(saving) {
+      saveLlmProfileEl.disabled = saving;
+      if (saving) {
+        saveLlmProfileEl.textContent = 'Saving...';
+      } else {
+        saveLlmProfileEl.textContent = llmProfileIdEl.value ? 'Save changes' : 'Add model';
+      }
     }
 
     function renderAttachments() {

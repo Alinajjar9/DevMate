@@ -34,25 +34,6 @@
           "default": "http://127.0.0.1:8000",
           "description": "Base URL of the local DevMate backend service."
         },
-        "devMate.provider": {
-          "type": "string",
-          "default": "openai",
-          "enum": [
-            "openai",
-            "ollama"
-          ],
-          "description": "LLM provider used by the assistant in later implementation steps."
-        },
-        "devMate.model": {
-          "type": "string",
-          "default": "gpt-4.1-mini",
-          "description": "Model name used by the configured provider."
-        },
-        "devMate.apiKey": {
-          "type": "string",
-          "default": "",
-          "description": "API key for the configured provider. This placeholder is not used in step 1."
-        },
         "devMate.maxTokens": {
           "type": "number",
           "default": 1200,
@@ -73,7 +54,7 @@
   "scripts": {
     "compile": "tsc -p ./ --listEmittedFiles",
     "check": "tsc -p ./ --noEmit",
-    "test": "npm run compile && node --test tests/context.test.js tests/projectContext.test.js",
+    "test": "npm run compile && node --test tests/context.test.js tests/llmProfiles.test.js tests/projectContext.test.js",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile"
   },

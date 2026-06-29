@@ -18,6 +18,7 @@ export type HealthResponse = {
 export type LlmSettings = {
   provider: string;
   model: string;
+  baseUrl?: string;
   maxTokens: number;
   temperature: number;
 };
