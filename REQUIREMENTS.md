@@ -4,7 +4,7 @@
 
 | Tool | Minimum version | Purpose |
 | --- | --- | --- |
-| Visual Studio Code | 1.90 | Run and debug the extension |
+| Visual Studio Code | 1.96.2 | Run and debug the extension with its Secondary Side Bar view |
 | Node.js | 20 | Build the TypeScript extension |
 | npm | 9 | Install the locked Node.js dependencies and run scripts |
 | Python | 3.10 | Run the local FastAPI backend |

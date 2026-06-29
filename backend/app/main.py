@@ -3,6 +3,7 @@ from typing import Annotated, Literal
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
+from .code_changes import CodeChangeParseError, parse_code_change_response
 from .prompts import AssistantMode, ScopeType, build_chat_messages
 from .providers import (
     ChatCompletionRequest,
@@ -31,7 +32,7 @@ class LlmSettings(BaseModel):
     provider: ProviderName
     model: str = Field(min_length=1, max_length=120)
     baseUrl: str | None = Field(default=None, max_length=2_048)
-    maxTokens: int = Field(ge=128, le=8_000)
+    maxTokens: int = Field(ge=128, le=32_000)
     temperature: float = Field(ge=0, le=2)
 
 
@@ -119,9 +120,15 @@ class HealthResult(BaseModel):
     data: HealthData
 
 
+class FileChange(BaseModel):
+    path: str
+    content: str
+
+
 class AskData(BaseModel):
     answer: str
     usedFiles: list[str]
+    changes: list[FileChange] = Field(default_factory=list)
 
 
 class AskResult(BaseModel):
@@ -129,7 +136,7 @@ class AskResult(BaseModel):
     data: AskData
 
 
-app = FastAPI(title="DevMate Backend", version="0.5.0")
+app = FastAPI(title="DevMate Backend", version="0.6.0")
 _chat_provider = OpenAICompatibleProvider()
 
 
@@ -177,11 +184,23 @@ async def ask(
     except ProviderError as error:
         raise HTTPException(status_code=error.status_code, detail=str(error)) from error
 
+    changes: list[FileChange] = []
+    if request.mode == "code":
+        try:
+            answer, parsed_changes = parse_code_change_response(answer)
+        except CodeChangeParseError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        changes = [
+            FileChange(path=change.path, content=change.content)
+            for change in parsed_changes
+        ]
+
     return AskResult(
         status="ok",
         data=AskData(
             answer=answer,
             usedFiles=used_files,
+            changes=changes,
         ),
     )
 

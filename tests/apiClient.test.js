@@ -42,7 +42,7 @@ test('sends the provider key in a header to the loopback backend', async () => {
     receivedHeaders = init.headers;
     return new Response(JSON.stringify({
       status: 'ok',
-      data: { answer: 'Real answer', usedFiles: [] }
+      data: { answer: 'Real answer', usedFiles: [], changes: [] }
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' }

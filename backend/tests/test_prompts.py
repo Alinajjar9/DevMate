@@ -18,7 +18,7 @@ class PromptTests(unittest.TestCase):
 
         self.assertEqual(len(set(system_messages.values())), 3)
         self.assertIn("tradeoffs", system_messages["ideas"])
-        self.assertIn("code examples", system_messages["code"])
+        self.assertIn("workspace-relative paths", system_messages["code"])
         self.assertIn("most likely cause", system_messages["debug"])
 
     def test_context_is_delimited_and_marked_as_untrusted_data(self) -> None:

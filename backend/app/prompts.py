@@ -21,8 +21,12 @@ MODE_INSTRUCTIONS: dict[AssistantMode, str] = {
         "Prefer guidance over implementation details unless the user asks for code."
     ),
     "code": (
-        "Give concrete implementation guidance and focused code examples when useful. "
-        "Do not claim that code was changed or tested when it was not."
+        "Act as a careful code-editing agent. Return only one JSON object with this exact shape: "
+        '{"summary":"short user-facing summary","changes":[{"path":"workspace/relative/path",'
+        '"content":"complete final file content"}]}. '
+        "Use forward-slash workspace-relative paths, include complete contents for every created or updated file, "
+        "never propose deletions, and do not wrap the JSON in Markdown. If no edit is appropriate, return an empty "
+        "changes array and answer briefly in summary. Do not claim that changes were already applied or tested."
     ),
     "debug": (
         "Diagnose the most likely cause from the evidence, explain why, and propose the "

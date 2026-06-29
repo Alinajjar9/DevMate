@@ -6,7 +6,7 @@
   "publisher": "local",
   "private": true,
   "engines": {
-    "vscode": "^1.90.0",
+    "vscode": "^1.96.2",
     "node": ">=20.0.0",
     "npm": ">=9.0.0"
   },
@@ -15,7 +15,8 @@
   ],
   "activationEvents": [
     "onStartupFinished",
-    "onCommand:devMate.openChat"
+    "onCommand:devMate.openChat",
+    "onView:devmate.dedicatedAssistantView"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -26,6 +27,26 @@
         "category": "DevMate"
       }
     ],
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "devmate-dedicated-chat",
+          "title": "DevMate",
+          "icon": "media/devmate.svg"
+        }
+      ]
+    },
+    "views": {
+      "devmate-dedicated-chat": [
+        {
+          "type": "webview",
+          "id": "devmate.dedicatedAssistantView",
+          "name": "Chat",
+          "contextualTitle": "DevMate",
+          "icon": "media/devmate.svg"
+        }
+      ]
+    },
     "configuration": {
       "title": "DevMate",
       "properties": {
@@ -36,10 +57,10 @@
         },
         "devMate.maxTokens": {
           "type": "number",
-          "default": 1200,
+          "default": 4000,
           "minimum": 128,
-          "maximum": 8000,
-          "description": "Maximum response tokens for later LLM requests."
+          "maximum": 32000,
+          "description": "Maximum response tokens for LLM answers and complete Code-mode file contents."
         },
         "devMate.temperature": {
           "type": "number",
@@ -54,13 +75,13 @@
   "scripts": {
     "compile": "tsc -p ./ --listEmittedFiles",
     "check": "tsc -p ./ --noEmit",
-    "test": "npm run compile && node --test tests/apiClient.test.js tests/context.test.js tests/llmProfiles.test.js tests/projectContext.test.js",
+    "test": "npm run compile && node --test tests/apiClient.test.js tests/context.test.js tests/fileChanges.test.js tests/llmProfiles.test.js tests/projectContext.test.js",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile"
   },
   "devDependencies": {
     "@types/node": "^20.14.8",
-    "@types/vscode": "^1.90.0",
+    "@types/vscode": "^1.96.2",
     "typescript": "^5.4.5"
   }
 }

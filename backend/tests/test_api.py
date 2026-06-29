@@ -1,3 +1,4 @@
+import json
 import unittest
 
 from fastapi.testclient import TestClient
@@ -17,12 +18,13 @@ class RecordingProvider:
     def __init__(self) -> None:
         self.requests: list[ChatCompletionRequest] = []
         self.error: ProviderError | None = None
+        self.answer = "Mock provider answer"
 
     async def complete(self, request: ChatCompletionRequest) -> str:
         self.requests.append(request)
         if self.error:
             raise self.error
-        return "Mock provider answer"
+        return self.answer
 
 
 class DevMateApiTests(unittest.TestCase):
@@ -43,6 +45,7 @@ class DevMateApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.provider.requests.clear()
         self.provider.error = None
+        self.provider.answer = "Mock provider answer"
 
     def test_health_reports_online_backend(self) -> None:
         response = self.client.get("/health")
@@ -52,7 +55,7 @@ class DevMateApiTests(unittest.TestCase):
             response.json(),
             {
                 "status": "ok",
-                "data": {"backend": "online", "version": "0.5.0"},
+                "data": {"backend": "online", "version": "0.6.0"},
             },
         )
 
@@ -318,11 +321,50 @@ class DevMateApiTests(unittest.TestCase):
             {"detail": "The provider rate limit was reached."},
         )
 
+    def test_code_mode_returns_validated_workspace_changes(self) -> None:
+        self.provider.answer = json.dumps(
+            {
+                "summary": "Added a greeting module.",
+                "changes": [
+                    {
+                        "path": "src/greeting.ts",
+                        "content": "export const greeting = 'hello';\n",
+                    }
+                ],
+            }
+        )
+
+        response = self.client.post(
+            "/ask",
+            json=self._ask_payload(scope_type="project", items=[], mode="code"),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["data"]
+        self.assertEqual(payload["answer"], "Added a greeting module.")
+        self.assertEqual(
+            payload["changes"],
+            [
+                {
+                    "path": "src/greeting.ts",
+                    "content": "export const greeting = 'hello';\n",
+                }
+            ],
+        )
+        self.assertIn(
+            "Return only one JSON object",
+            self.provider.requests[-1].messages[0].content,
+        )
+
     @staticmethod
-    def _ask_payload(scope_type: str, items: list[dict[str, object]]) -> dict[str, object]:
+    def _ask_payload(
+        scope_type: str,
+        items: list[dict[str, object]],
+        mode: str = "ideas",
+    ) -> dict[str, object]:
         return {
             "question": "What does this code do?",
-            "mode": "code",
+            "mode": mode,
             "scope": {
                 "type": scope_type,
                 "workspacePath": "C:\\repo",

@@ -4,7 +4,7 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 
 ## Current Features
 
-- Bottom-right Status Bar launcher that opens DevMate in a right-side editor tab
+- Bottom-right Status Bar launcher that opens DevMate as a sidebar Webview View
 - Modes: Ideas, Code, Debug
 - Scope tabs: Project, File, Selection
 - Shows where DevMate will focus
@@ -12,6 +12,9 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 - Configurable backend URL and clear offline feedback
 - Real OpenAI-compatible Chat Completions requests
 - Mode-aware prompts for Ideas, Code, and Debug
+- Enter-to-send composer with Shift+Enter for new lines
+- Distinct You and DevMate message bubbles
+- Confirmed workspace file creation and updates in Code mode
 - Bounded Selection and active File context with language and truncation metadata
 - Bounded Project context with safe file discovery and deterministic relevance ranking
 - Workspace-only multi-file attachments with a compact expandable selected-file list
@@ -19,6 +22,10 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 - API keys stored in VS Code SecretStorage instead of ordinary extension settings
 
 RAG and library-documentation retrieval are not connected yet.
+
+## DevMate view placement
+
+DevMate is contributed directly to VS Code's Secondary Side Bar in its own dedicated view container. Opening DevMate switches the right sidebar from Codex/Chat to DevMate; opening Codex or Chat hides DevMate in turn. It opens on the right without a placement prompt, and files opened from Explorer stay in the editor area.
 
 ## Model profiles
 
@@ -30,9 +37,17 @@ Profiles without a custom OpenAI base URL use `https://api.openai.com/v1`. OpenA
 
 Provider API keys are sent to the DevMate backend only when its configured URL points to the local computer (`localhost`, `127.x.x.x`, or `::1`). The backend forwards the key for that request without storing it, and provider redirects are disabled.
 
+## Code-mode changes
+
+Code mode asks the selected model for structured file changes instead of displaying implementation snippets as the answer. DevMate shows the proposed file list and requires confirmation before creating or updating files. Changes use a VS Code workspace edit so they participate in the editor's undo flow.
+
+After applying a change set, DevMate opens the first created or updated file in the main left editor group instead of beside the DevMate tab.
+
+Only workspace-relative text files in the first open folder can be changed. Absolute paths, parent traversal, duplicate paths, dependency/build folders, binary files, lock files, environment files, and credential/key files are rejected. Code mode does not delete files. A single response can change at most 10 files, with bounded per-file and total content sizes.
+
 ## Requirements
 
-DevMate requires Visual Studio Code 1.90+, Node.js 20+, npm 9+, and Python 3.10+. Git is also recommended for development. See [REQUIREMENTS.md](REQUIREMENTS.md) for the complete tool list, version commands, and dependency-file overview.
+DevMate requires Visual Studio Code 1.96.2+, Node.js 20+, npm 9+, and Python 3.10+. Git is also recommended for development. See [REQUIREMENTS.md](REQUIREMENTS.md) for the complete tool list, version commands, and dependency-file overview.
 
 ## Context behavior
 

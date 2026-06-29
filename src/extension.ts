@@ -4,6 +4,8 @@ import * as vscode from 'vscode';
 import { ask, health } from './api/client';
 import type { AskContextItem, AskRequest, AskScope, AssistantMode } from './api/types';
 import { createBoundedContextItem } from './context';
+import { validateFileChanges } from './fileChanges';
+import type { ValidatedFileChange } from './fileChanges';
 import {
   ACTIVE_LLM_PROFILE_STORAGE_KEY,
   LLM_PROFILES_STORAGE_KEY,
@@ -77,9 +79,24 @@ type WebviewMessage =
   | { command: 'ready' };
 
 export function activate(context: vscode.ExtensionContext): void {
-  const chatPanel = new DevMateChatPanel(context);
-  const openChatCommand = vscode.commands.registerCommand('devMate.openChat', () => {
-    chatPanel.show();
+  const chatViewProvider = new DevMateChatViewProvider(context);
+  const viewRegistration = vscode.window.registerWebviewViewProvider(
+    DevMateChatViewProvider.viewId,
+    chatViewProvider,
+    {
+      webviewOptions: {
+        retainContextWhenHidden: true
+      }
+    }
+  );
+  const openChatCommand = vscode.commands.registerCommand('devMate.openChat', async () => {
+    try {
+      await chatViewProvider.show();
+    } catch (error) {
+      void vscode.window.showErrorMessage(
+        error instanceof Error ? error.message : 'DevMate could not open its chat view.'
+      );
+    }
   });
   const statusBarItem = vscode.window.createStatusBarItem(
     'devMate.statusBar',
@@ -91,70 +108,75 @@ export function activate(context: vscode.ExtensionContext): void {
   statusBarItem.command = 'devMate.openChat';
   statusBarItem.show();
 
-  context.subscriptions.push(chatPanel, openChatCommand, statusBarItem);
+  context.subscriptions.push(
+    chatViewProvider,
+    viewRegistration,
+    openChatCommand,
+    statusBarItem
+  );
 }
 
 export function deactivate(): void {
-  // No cleanup is needed for the current prototype.
+  // VS Code disposes registered views and subscriptions.
 }
 
-class DevMateChatPanel implements vscode.Disposable {
-  static readonly viewType = 'devmate.chatPanel';
+class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
+  static readonly viewId = 'devmate.dedicatedAssistantView';
+  static readonly containerId = 'devmate-dedicated-chat';
 
-  private panel?: vscode.WebviewPanel;
+  private view?: vscode.WebviewView;
   private readonly attachedFiles = new Map<string, vscode.Uri>();
-  private readonly panelDisposables: vscode.Disposable[] = [];
+  private readonly viewDisposables: vscode.Disposable[] = [];
   private readonly extensionUri: vscode.Uri;
 
   constructor(private readonly extensionContext: vscode.ExtensionContext) {
     this.extensionUri = extensionContext.extensionUri;
   }
 
-  show(): void {
-    if (this.panel) {
-      this.panel.reveal(vscode.ViewColumn.Beside);
-      return;
-    }
+  resolveWebviewView(webviewView: vscode.WebviewView): void {
+    this.disposeViewDisposables();
+    this.view = webviewView;
+    webviewView.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [this.extensionUri]
+    };
+    webviewView.webview.html = this.getHtml(webviewView.webview);
 
-    const panel = vscode.window.createWebviewPanel(
-      DevMateChatPanel.viewType,
-      'DevMate',
-      {
-        viewColumn: vscode.ViewColumn.Beside,
-        preserveFocus: false
-      },
-      {
-        enableScripts: true,
-        retainContextWhenHidden: true,
-        localResourceRoots: [this.extensionUri]
-      }
-    );
-
-    panel.iconPath = vscode.Uri.joinPath(this.extensionUri, 'media', 'devmate.svg');
-    panel.webview.html = this.getHtml(panel.webview);
-    this.panel = panel;
-
-    this.panelDisposables.push(
-      panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
+    this.viewDisposables.push(
+      webviewView.webview.onDidReceiveMessage((message: WebviewMessage) => {
         void this.handleMessage(message);
       }),
-      panel.onDidDispose(() => {
-        this.panel = undefined;
-        this.disposePanelDisposables();
+      webviewView.onDidDispose(() => {
+        this.view = undefined;
+        this.disposeViewDisposables();
       })
     );
 
     void this.checkBackendHealth();
   }
 
-  dispose(): void {
-    this.panel?.dispose();
-    this.disposePanelDisposables();
+  async show(): Promise<void> {
+    await vscode.commands.executeCommand(
+      `workbench.view.extension.${DevMateChatViewProvider.containerId}`
+    );
+    await vscode.commands.executeCommand(`${DevMateChatViewProvider.viewId}.focus`);
+    const resolvedView = this.view as vscode.WebviewView | undefined;
+    if (!resolvedView) {
+      throw new Error(
+        'DevMate could not resolve its chat view. Run “Developer: Reload Window” and try again.'
+      );
+    }
+    resolvedView.show(false);
   }
 
-  private disposePanelDisposables(): void {
-    while (this.panelDisposables.length > 0) {
-      this.panelDisposables.pop()?.dispose();
+  dispose(): void {
+    this.view = undefined;
+    this.disposeViewDisposables();
+  }
+
+  private disposeViewDisposables(): void {
+    while (this.viewDisposables.length > 0) {
+      this.viewDisposables.pop()?.dispose();
     }
   }
 
@@ -871,7 +893,7 @@ class DevMateChatPanel implements vscode.Disposable {
     await wait(350);
 
     const config = vscode.workspace.getConfiguration('devMate');
-    const maxTokens = config.get<number>('maxTokens', 1200);
+    const maxTokens = config.get<number>('maxTokens', 4000);
     const temperature = config.get<number>('temperature', 0.2);
 
     const request: AskRequest = {
@@ -901,11 +923,120 @@ class DevMateChatPanel implements vscode.Disposable {
       return;
     }
 
+    let changeOutcome = '';
+    try {
+      const fileChanges = validateFileChanges(result.data.changes ?? []);
+      if (fileChanges.length > 0) {
+        changeOutcome = await this.confirmAndApplyFileChanges(fileChanges);
+      }
+    } catch (error) {
+      changeOutcome = error instanceof Error
+        ? `Changes were not applied: ${error.message}`
+        : 'Changes were not applied because the response was invalid.';
+      this.postStatus(changeOutcome, 'error');
+    }
+
+    const response = [
+      formatAskResponse(result.data.answer, result.data.usedFiles),
+      changeOutcome
+    ].filter(Boolean).join('\n\n');
+
     this.postMessage({
       command: 'assistantResponse',
-      response: formatAskResponse(result.data.answer, result.data.usedFiles)
+      response
     });
     this.postStatus('Ready');
+  }
+
+  private async confirmAndApplyFileChanges(changes: ValidatedFileChange[]): Promise<string> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      throw new Error('Open a workspace folder before applying file changes.');
+    }
+
+    const plannedChanges = await Promise.all(
+      changes.map(async (change) => {
+        const uri = vscode.Uri.joinPath(folder.uri, ...change.path.split('/'));
+        let exists = false;
+        try {
+          const stat = await vscode.workspace.fs.stat(uri);
+          if ((stat.type & vscode.FileType.Directory) !== 0) {
+            throw new Error(`${change.path} is a directory, not a file.`);
+          }
+          exists = true;
+        } catch (error) {
+          if (!(error instanceof vscode.FileSystemError && error.code === 'FileNotFound')) {
+            throw new Error(
+              error instanceof Error
+                ? `Could not inspect ${change.path}: ${error.message}`
+                : `Could not inspect ${change.path}.`
+            );
+          }
+        }
+        return { ...change, uri, exists };
+      })
+    );
+    const fileList = plannedChanges
+      .map((change) => `${change.exists ? 'Update' : 'Create'} ${change.path}`)
+      .join('\n');
+    const confirmation = await vscode.window.showWarningMessage(
+      `Apply ${formatFileCount(plannedChanges.length)} proposed by DevMate?`,
+      {
+        modal: true,
+        detail: fileList
+      },
+      'Apply changes'
+    );
+    if (confirmation !== 'Apply changes') {
+      return 'Proposed file changes were not applied.';
+    }
+
+    this.postStatus('Applying file changes');
+    for (const change of plannedChanges.filter((item) => !item.exists)) {
+      const parentSegments = change.path.split('/').slice(0, -1);
+      if (parentSegments.length > 0) {
+        await vscode.workspace.fs.createDirectory(
+          vscode.Uri.joinPath(folder.uri, ...parentSegments)
+        );
+      }
+    }
+
+    const workspaceEdit = new vscode.WorkspaceEdit();
+    for (const change of plannedChanges) {
+      if (change.exists) {
+        const document = await vscode.workspace.openTextDocument(change.uri);
+        const fullRange = new vscode.Range(
+          document.positionAt(0),
+          document.positionAt(document.getText().length)
+        );
+        workspaceEdit.replace(change.uri, fullRange, change.content);
+      } else {
+        workspaceEdit.createFile(change.uri, { ignoreIfExists: false, overwrite: false });
+        workspaceEdit.insert(change.uri, new vscode.Position(0, 0), change.content);
+      }
+    }
+
+    const applied = await vscode.workspace.applyEdit(workspaceEdit);
+    if (!applied) {
+      throw new Error('VS Code could not apply the proposed workspace edit.');
+    }
+
+    let openNote = '';
+    try {
+      const primaryDocument = await vscode.workspace.openTextDocument(plannedChanges[0].uri);
+      await vscode.window.showTextDocument(primaryDocument, {
+        viewColumn: vscode.ViewColumn.One,
+        preview: false,
+        preserveFocus: false
+      });
+    } catch {
+      openNote = '\n\nThe changes were applied, but VS Code could not open the first file.';
+    }
+
+    return [
+      'Applied file changes:',
+      ...plannedChanges.map((change) => `- ${change.exists ? 'Updated' : 'Created'} ${change.path}`)
+    ].join('\n') + openNote;
   }
 
   private postStatus(text: string, level: 'info' | 'warning' | 'error' = 'info'): void {
@@ -913,7 +1044,7 @@ class DevMateChatPanel implements vscode.Disposable {
   }
 
   private postMessage(message: unknown): void {
-    this.panel?.webview.postMessage(message);
+    this.view?.webview.postMessage(message);
   }
 
   private getHtml(webview: vscode.Webview): string {
@@ -1221,17 +1352,46 @@ class DevMateChatPanel implements vscode.Disposable {
     }
 
     .message {
-      width: 100%;
-      padding: 9px 10px;
+      width: fit-content;
+      max-width: min(86%, 760px);
+      padding: 8px 10px 9px;
       border: 1px solid var(--border);
-      border-radius: 6px;
+      border-radius: 10px;
       background: var(--surface-soft);
-      white-space: pre-wrap;
       line-height: 1.45;
+      overflow-wrap: anywhere;
     }
 
     .message.user {
-      background: var(--vscode-input-background);
+      align-self: flex-end;
+      border-color: var(--focus);
+      border-bottom-right-radius: 3px;
+      background: var(--vscode-button-secondaryBackground);
+    }
+
+    .message.assistant {
+      align-self: flex-start;
+      border-left: 3px solid var(--vscode-button-background);
+      border-bottom-left-radius: 3px;
+      background: var(--vscode-editorWidget-background, var(--surface-soft));
+    }
+
+    .message-author {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .message.user .message-author {
+      text-align: right;
+    }
+
+    .message-body {
+      white-space: pre-wrap;
     }
 
     .composer {
@@ -1543,7 +1703,8 @@ class DevMateChatPanel implements vscode.Disposable {
       attachments: [],
       attachmentsExpanded: false,
       activeProfile: undefined,
-      profileCount: 0
+      profileCount: 0,
+      askPending: false
     };
 
     const statusEl = document.getElementById('status');
@@ -1599,12 +1760,22 @@ class DevMateChatPanel implements vscode.Disposable {
       }
 
       appendMessage(question, 'user');
+      questionEl.value = '';
+      state.askPending = true;
+      renderAskAvailability();
       vscode.postMessage({
         command: 'ask',
         mode: state.mode,
         question,
         scope: state.scope
       });
+    });
+
+    questionEl.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        askEl.click();
+      }
     });
 
     document.getElementById('attachFiles').addEventListener('click', () => {
@@ -1696,6 +1867,13 @@ class DevMateChatPanel implements vscode.Disposable {
 
       if (message.command === 'status') {
         setStatus(message.text, message.level);
+        if (
+          state.askPending
+          && (message.text === 'Ready' || message.level === 'warning' || message.level === 'error')
+        ) {
+          state.askPending = false;
+          renderAskAvailability();
+        }
       }
 
       if (message.command === 'scopeUpdated') {
@@ -1705,6 +1883,8 @@ class DevMateChatPanel implements vscode.Disposable {
 
       if (message.command === 'assistantResponse') {
         appendMessage(message.response, 'assistant');
+        state.askPending = false;
+        renderAskAvailability();
       }
 
       if (message.command === 'attachmentsUpdated') {
@@ -1756,7 +1936,16 @@ class DevMateChatPanel implements vscode.Disposable {
     function appendMessage(text, role) {
       const item = document.createElement('article');
       item.className = 'message ' + role;
-      item.textContent = text;
+
+      const author = document.createElement('span');
+      author.className = 'message-author';
+      author.textContent = role === 'user' ? 'You' : 'DevMate';
+      item.appendChild(author);
+
+      const body = document.createElement('div');
+      body.className = 'message-body';
+      body.textContent = text;
+      item.appendChild(body);
       messagesEl.appendChild(item);
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
@@ -1773,8 +1962,7 @@ class DevMateChatPanel implements vscode.Disposable {
       if (!state.activeProfile) {
         llmProfileLabelEl.textContent = 'Add model';
         llmProfileSelectorEl.title = 'Add a model profile';
-        askEl.disabled = true;
-        askEl.title = 'Add a model profile before asking';
+        renderAskAvailability();
         return;
       }
 
@@ -1782,8 +1970,16 @@ class DevMateChatPanel implements vscode.Disposable {
       llmProfileSelectorEl.title = state.activeProfile.providerLabel
         + ' · ' + state.activeProfile.model
         + (state.profileCount > 1 ? ' · Select another model' : ' · Manage model');
-      askEl.disabled = false;
-      askEl.title = '';
+      renderAskAvailability();
+    }
+
+    function renderAskAvailability() {
+      askEl.disabled = !state.activeProfile || state.askPending;
+      askEl.title = !state.activeProfile
+        ? 'Add a model profile before asking'
+        : state.askPending
+          ? 'DevMate is working on your request'
+          : '';
     }
 
     function showLlmProfileForm(profile, hasApiKey) {

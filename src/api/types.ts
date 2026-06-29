@@ -49,4 +49,10 @@ export type AskRequest = {
 export type AskResponse = {
   answer: string;
   usedFiles: string[];
+  changes: FileChange[];
+};
+
+export type FileChange = {
+  path: string;
+  content: string;
 };
