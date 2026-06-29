@@ -7,7 +7,7 @@ import httpx
 
 
 ProviderName = Literal["openai", "ollama"]
-MessageRole = Literal["system", "user", "assistant"]
+MessageRole = Literal["system", "user", "assistant", "tool"]
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
 DEFAULT_PROVIDER_TIMEOUT_SECONDS = 300.0
@@ -35,9 +35,31 @@ PROVIDER_TIMEOUT_SECONDS = parse_provider_timeout_seconds(
 
 
 @dataclass(frozen=True)
+class ChatToolCall:
+    id: str
+    name: str
+    arguments: str
+
+
+@dataclass(frozen=True)
+class ChatToolDefinition:
+    name: str
+    description: str
+    parameters: dict[str, object]
+
+
+@dataclass(frozen=True)
 class ChatMessage:
     role: MessageRole
-    content: str
+    content: str | None
+    tool_calls: tuple[ChatToolCall, ...] = ()
+    tool_call_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ChatCompletion:
+    content: str | None
+    tool_calls: tuple[ChatToolCall, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -49,10 +71,11 @@ class ChatCompletionRequest:
     messages: tuple[ChatMessage, ...]
     max_tokens: int
     temperature: float
+    tools: tuple[ChatToolDefinition, ...] = ()
 
 
 class ChatProvider(Protocol):
-    async def complete(self, request: ChatCompletionRequest) -> str: ...
+    async def complete(self, request: ChatCompletionRequest) -> ChatCompletion | str: ...
 
 
 class ProviderError(Exception):
@@ -71,7 +94,7 @@ class OpenAICompatibleProvider:
         self._transport = transport
         self._timeout_seconds = timeout_seconds
 
-    async def complete(self, request: ChatCompletionRequest) -> str:
+    async def complete(self, request: ChatCompletionRequest) -> ChatCompletion:
         if request.provider == "openai" and not request.api_key:
             raise ProviderError("The selected model profile is missing an API key.", 400)
 
@@ -85,13 +108,27 @@ class OpenAICompatibleProvider:
 
         payload: dict[str, object] = {
             "model": request.model,
-            "messages": [
-                {"role": message.role, "content": message.content}
-                for message in request.messages
-            ],
+            "messages": [_serialize_message(message) for message in request.messages],
             "temperature": request.temperature,
             "stream": False,
         }
+        if request.tools:
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parameters,
+                    },
+                }
+                for tool in request.tools
+            ]
+            payload["tool_choice"] = "auto"
+            if request.model.casefold().startswith("nvidia/nemotron-3-"):
+                payload["chat_template_kwargs"] = {
+                    "force_nonempty_content": True,
+                }
         if request.provider == "openai" and request.base_url is None:
             payload["max_completion_tokens"] = request.max_tokens
         else:
@@ -132,13 +169,35 @@ class OpenAICompatibleProvider:
                 502,
             ) from error
 
-        answer = _read_answer(response_payload)
-        if not answer:
+        completion = _read_completion(response_payload)
+        if not completion:
             raise ProviderError(
                 "The model provider returned an empty or invalid answer.",
                 502,
             )
-        return answer
+        return completion
+
+
+def _serialize_message(message: ChatMessage) -> dict[str, object]:
+    serialized: dict[str, object] = {
+        "role": message.role,
+        "content": message.content,
+    }
+    if message.tool_calls:
+        serialized["tool_calls"] = [
+            {
+                "id": tool_call.id,
+                "type": "function",
+                "function": {
+                    "name": tool_call.name,
+                    "arguments": tool_call.arguments,
+                },
+            }
+            for tool_call in message.tool_calls
+        ]
+    if message.tool_call_id:
+        serialized["tool_call_id"] = message.tool_call_id
+    return serialized
 
 
 def create_chat_completions_url(
@@ -222,7 +281,7 @@ def _bounded_detail(value: str) -> str | None:
     return normalized[:500] or None
 
 
-def _read_answer(payload: object) -> str | None:
+def _read_completion(payload: object) -> ChatCompletion | None:
     if not isinstance(payload, dict):
         return None
     choices = payload.get("choices")
@@ -234,7 +293,40 @@ def _read_answer(payload: object) -> str | None:
     message = first_choice.get("message")
     if not isinstance(message, dict):
         return None
-    content = message.get("content")
-    if not isinstance(content, str):
+    content_value = message.get("content")
+    content = content_value.strip() if isinstance(content_value, str) else None
+    raw_tool_calls = message.get("tool_calls", [])
+    if not isinstance(raw_tool_calls, list) or len(raw_tool_calls) > 3:
         return None
-    return content.strip() or None
+
+    tool_calls: list[ChatToolCall] = []
+    for raw_tool_call in raw_tool_calls:
+        if not isinstance(raw_tool_call, dict):
+            return None
+        function = raw_tool_call.get("function")
+        call_id = raw_tool_call.get("id")
+        if not isinstance(function, dict) or not isinstance(call_id, str):
+            return None
+        name = function.get("name")
+        arguments = function.get("arguments")
+        if (
+            not call_id.strip()
+            or len(call_id) > 120
+            or not isinstance(name, str)
+            or not name.strip()
+            or len(name) > 120
+            or not isinstance(arguments, str)
+            or len(arguments) > 4_000
+        ):
+            return None
+        tool_calls.append(
+            ChatToolCall(
+                id=call_id.strip(),
+                name=name.strip(),
+                arguments=arguments,
+            )
+        )
+
+    if not content and not tool_calls:
+        return None
+    return ChatCompletion(content=content or None, tool_calls=tuple(tool_calls))

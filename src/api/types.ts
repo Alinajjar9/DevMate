@@ -44,15 +44,27 @@ export type AskRequest = {
   mode: AssistantMode;
   scope: AskScope;
   settings: LlmSettings;
+  toolsEnabled?: boolean;
+  toolHistory?: AgentToolStep[];
 };
 
 export type AskResponse = {
   answer: string;
   usedFiles: string[];
   changes: FileChange[];
+  toolCalls: AgentToolCall[];
+};
+
+export type AgentToolStep = {
+  callId: string;
+  name: AgentToolName;
+  arguments: Record<string, unknown>;
+  result: string;
+  isError: boolean;
 };
 
 export type FileChange = {
   path: string;
   content: string;
 };
+import type { AgentToolCall, AgentToolName } from '../agentTools';

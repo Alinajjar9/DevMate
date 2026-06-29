@@ -11,16 +11,21 @@ from backend.app.main import (
     app,
     get_chat_provider,
 )
-from backend.app.providers import ChatCompletionRequest, ProviderError
+from backend.app.providers import (
+    ChatCompletion,
+    ChatCompletionRequest,
+    ChatToolCall,
+    ProviderError,
+)
 
 
 class RecordingProvider:
     def __init__(self) -> None:
         self.requests: list[ChatCompletionRequest] = []
         self.error: ProviderError | None = None
-        self.answer = "Mock provider answer"
+        self.answer: str | ChatCompletion = "Mock provider answer"
 
-    async def complete(self, request: ChatCompletionRequest) -> str:
+    async def complete(self, request: ChatCompletionRequest) -> str | ChatCompletion:
         self.requests.append(request)
         if self.error:
             raise self.error
@@ -55,7 +60,7 @@ class DevMateApiTests(unittest.TestCase):
             response.json(),
             {
                 "status": "ok",
-                "data": {"backend": "online", "version": "0.6.0"},
+                "data": {"backend": "online", "version": "0.7.0"},
             },
         )
 
@@ -320,6 +325,82 @@ class DevMateApiTests(unittest.TestCase):
             response.json(),
             {"detail": "The provider rate limit was reached."},
         )
+
+    def test_ask_returns_validated_read_only_tool_calls(self) -> None:
+        self.provider.answer = ChatCompletion(
+            content=None,
+            tool_calls=(
+                ChatToolCall(
+                    id="call-1",
+                    name="search_code",
+                    arguments='{"query":"permission","path":"src"}',
+                ),
+            ),
+        )
+
+        response = self.client.post(
+            "/ask",
+            json=self._ask_payload(scope_type="project", items=[]),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertEqual(data["answer"], "")
+        self.assertEqual(data["changes"], [])
+        self.assertEqual(
+            data["toolCalls"],
+            [
+                {
+                    "id": "call-1",
+                    "name": "search_code",
+                    "arguments": {"query": "permission", "path": "src"},
+                }
+            ],
+        )
+        self.assertEqual(len(self.provider.requests[-1].tools), 3)
+
+    def test_ask_replays_tool_history_and_can_disable_more_tools(self) -> None:
+        payload = self._ask_payload(scope_type="project", items=[])
+        payload["toolsEnabled"] = False
+        payload["toolHistory"] = [
+            {
+                "callId": "call-1",
+                "name": "read_file",
+                "arguments": {"path": "src/app.ts"},
+                "result": "export const answer = 42;",
+                "isError": False,
+            }
+        ]
+
+        response = self.client.post("/ask", json=payload)
+
+        self.assertEqual(response.status_code, 200)
+        provider_request = self.provider.requests[-1]
+        self.assertEqual(provider_request.tools, ())
+        self.assertEqual(provider_request.messages[-2].role, "assistant")
+        self.assertEqual(provider_request.messages[-2].tool_calls[0].id, "call-1")
+        self.assertEqual(provider_request.messages[-1].role, "tool")
+        self.assertIn("answer = 42", provider_request.messages[-1].content)
+
+    def test_ask_rejects_model_requested_unsupported_tools(self) -> None:
+        self.provider.answer = ChatCompletion(
+            content=None,
+            tool_calls=(
+                ChatToolCall(
+                    id="call-unsafe",
+                    name="run_terminal",
+                    arguments='{"command":"npm test"}',
+                ),
+            ),
+        )
+
+        response = self.client.post(
+            "/ask",
+            json=self._ask_payload(scope_type="project", items=[]),
+        )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json(), {"detail": "The model requested an invalid tool."})
 
     def test_code_mode_returns_validated_workspace_changes(self) -> None:
         self.provider.answer = json.dumps(

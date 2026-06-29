@@ -1,8 +1,21 @@
 import { randomUUID } from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import {
+  MAX_AGENT_TOOL_CALLS,
+  parseAgentToolCall,
+  truncateAgentToolResult
+} from './agentTools';
+import type { AgentToolCall, ParsedAgentToolCall } from './agentTools';
 import { ask, health } from './api/client';
-import type { AskContextItem, AskRequest, AskScope, AssistantMode } from './api/types';
+import type {
+  AgentToolStep,
+  AskContextItem,
+  AskRequest,
+  AskResponse,
+  AskScope,
+  AssistantMode
+} from './api/types';
 import { createBoundedContextItem } from './context';
 import { validateFileChanges } from './fileChanges';
 import type { ValidatedFileChange } from './fileChanges';
@@ -81,6 +94,11 @@ type PendingPermissionRequest = {
   id: string;
   actions: Set<FilePermissionAction>;
   resolve: (allowed: boolean) => void;
+};
+
+type AgentToolExecution = {
+  step: AgentToolStep;
+  usedFiles: string[];
 };
 
 type WebviewMessage =
@@ -962,6 +980,200 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
   }
 
+  private async executeAgentToolCall(call: AgentToolCall): Promise<AgentToolExecution> {
+    let parsedCall: ParsedAgentToolCall;
+    try {
+      parsedCall = parseAgentToolCall(call);
+    } catch (error) {
+      const result = error instanceof Error ? error.message : 'The tool request was invalid.';
+      this.postAgentToolActivity(call.id, 'Tool request rejected', call.name, 'error', result);
+      return {
+        step: {
+          callId: call.id,
+          name: call.name,
+          arguments: call.arguments,
+          result: truncateAgentToolResult(result),
+          isError: true
+        },
+        usedFiles: []
+      };
+    }
+
+    const activity = describeAgentToolCall(parsedCall);
+    this.postAgentToolActivity(call.id, activity.title, activity.detail, 'running');
+
+    try {
+      const execution = await this.runAgentTool(parsedCall);
+      this.postAgentToolActivity(
+        call.id,
+        activity.title,
+        activity.detail,
+        'completed',
+        execution.resultSummary
+      );
+      return {
+        step: {
+          callId: parsedCall.id,
+          name: parsedCall.name,
+          arguments: parsedCall.arguments,
+          result: truncateAgentToolResult(execution.result),
+          isError: false
+        },
+        usedFiles: execution.usedFiles
+      };
+    } catch (error) {
+      const result = error instanceof Error ? error.message : 'The tool could not be completed.';
+      this.postAgentToolActivity(
+        call.id,
+        activity.title,
+        activity.detail,
+        'error',
+        result
+      );
+      return {
+        step: {
+          callId: parsedCall.id,
+          name: parsedCall.name,
+          arguments: parsedCall.arguments,
+          result: truncateAgentToolResult(result),
+          isError: true
+        },
+        usedFiles: []
+      };
+    }
+  }
+
+  private async runAgentTool(call: ParsedAgentToolCall): Promise<{
+    result: string;
+    resultSummary: string;
+    usedFiles: string[];
+  }> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      throw new Error('Open a workspace folder before using project tools.');
+    }
+
+    if (call.name === 'list_files') {
+      const uris = await this.findAgentFiles(folder, call.arguments.path);
+      const relativePaths = uris
+        .map((uri) => normalizeRelativeWorkspacePath(vscode.workspace.asRelativePath(uri, false)))
+        .sort((left, right) => left.localeCompare(right))
+        .slice(0, call.arguments.maxResults);
+      const result = relativePaths.length > 0
+        ? `Eligible files (${relativePaths.length}):\n${relativePaths.join('\n')}`
+        : 'No eligible files were found at that path.';
+      return {
+        result,
+        resultSummary: `${relativePaths.length} eligible ${relativePaths.length === 1 ? 'file' : 'files'}`,
+        usedFiles: []
+      };
+    }
+
+    if (call.name === 'read_file') {
+      const uri = vscode.Uri.joinPath(folder.uri, ...call.arguments.path.split('/'));
+      const candidate = await this.readProjectCandidate(uri);
+      if (
+        !candidate
+        || !agentPathMatches(
+          normalizeRelativeWorkspacePath(candidate.relativePath),
+          call.arguments.path
+        )
+      ) {
+        throw new Error('The file does not exist or is excluded from DevMate context.');
+      }
+      const result = truncateAgentToolResult([
+        `Path: ${call.arguments.path}`,
+        `Language: ${candidate.languageId}`,
+        'Content:',
+        candidate.content
+      ].join('\n'));
+      return {
+        result,
+        resultSummary: `${candidate.content.length} characters read`,
+        usedFiles: [candidate.filePath]
+      };
+    }
+
+    const uris = await this.findAgentFiles(folder, call.arguments.path);
+    const query = call.arguments.query.toLocaleLowerCase();
+    const matches: string[] = [];
+    const usedFiles = new Set<string>();
+    const batchSize = 20;
+    for (let offset = 0; offset < uris.length && matches.length < call.arguments.maxResults; offset += batchSize) {
+      const candidates = await Promise.all(
+        uris.slice(offset, offset + batchSize).map((uri) => this.readProjectCandidate(uri))
+      );
+      for (const candidate of candidates) {
+        if (!candidate) {
+          continue;
+        }
+        const relativePath = normalizeRelativeWorkspacePath(candidate.relativePath);
+        const lines = candidate.content.split(/\r?\n/);
+        for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+          if (!lines[lineIndex].toLocaleLowerCase().includes(query)) {
+            continue;
+          }
+          const snippet = lines[lineIndex].trim().slice(0, 240);
+          matches.push(`${relativePath}:${lineIndex + 1}: ${snippet}`);
+          usedFiles.add(candidate.filePath);
+          if (matches.length >= call.arguments.maxResults) {
+            break;
+          }
+        }
+        if (matches.length >= call.arguments.maxResults) {
+          break;
+        }
+      }
+    }
+
+    const result = matches.length > 0
+      ? `Matches for "${call.arguments.query}" (${matches.length}):\n${matches.join('\n')}`
+      : `No matches found for "${call.arguments.query}".`;
+    return {
+      result,
+      resultSummary: `${matches.length} ${matches.length === 1 ? 'match' : 'matches'}`,
+      usedFiles: [...usedFiles]
+    };
+  }
+
+  private async findAgentFiles(
+    folder: vscode.WorkspaceFolder,
+    requestedPath: string
+  ): Promise<vscode.Uri[]> {
+    const uris = await vscode.workspace.findFiles(
+      new vscode.RelativePattern(folder, '**/*'),
+      PROJECT_EXCLUDE_GLOB,
+      MAX_ATTACHMENT_CANDIDATES
+    );
+    return uris
+      .filter((uri) => {
+        const relativePath = normalizeRelativeWorkspacePath(
+          vscode.workspace.asRelativePath(uri, false)
+        );
+        return !shouldSkipProjectFile(relativePath)
+          && (!requestedPath
+            || agentPathMatches(relativePath, requestedPath)
+            || agentPathStartsWith(relativePath, requestedPath));
+      })
+      .sort((left, right) => vscode.workspace.asRelativePath(left, false).localeCompare(
+        vscode.workspace.asRelativePath(right, false)
+      ))
+      .slice(0, MAX_PROJECT_CANDIDATES);
+  }
+
+  private postAgentToolActivity(
+    id: string,
+    title: string,
+    detail: string,
+    status: 'running' | 'completed' | 'error',
+    result?: string
+  ): void {
+    this.postMessage({
+      command: 'agentToolActivity',
+      activity: { id, title, detail, status, result }
+    });
+  }
+
   private async checkBackendHealth(): Promise<void> {
     const result = await health(getBackendUrl());
     if (result.status === 'error') {
@@ -1006,19 +1218,6 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       Math.max(30, config.get<number>('requestTimeoutSeconds', 330))
     );
 
-    const request: AskRequest = {
-      question,
-      mode: message.mode,
-      scope: collectedScope.apiScope,
-      settings: {
-        provider: activeProfile.provider,
-        model: activeProfile.model,
-        baseUrl: activeProfile.baseUrl,
-        maxTokens,
-        temperature
-      }
-    };
-
     const providerApiKey = activeProfile.provider === 'openai'
       ? await this.extensionContext.secrets.get(secretKeyForProfile(activeProfile.id))
       : undefined;
@@ -1027,24 +1226,105 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       return;
     }
 
-    const result = await ask(
-      getBackendUrl(),
-      request,
-      providerApiKey,
-      requestTimeoutSeconds * 1_000
-    );
-    if (result.status === 'error' || !result.data) {
-      this.postStatus(result.message ?? 'Ask request failed.', 'error');
-      return;
+    const toolHistory: AgentToolStep[] = [];
+    const toolUsedFiles = new Set<string>();
+    const toolSignatures = new Set<string>();
+    let finalData: AskResponse | undefined;
+
+    while (!finalData) {
+      const toolsEnabled = toolHistory.length < MAX_AGENT_TOOL_CALLS;
+      const request: AskRequest = {
+        question,
+        mode: message.mode,
+        scope: collectedScope.apiScope,
+        settings: {
+          provider: activeProfile.provider,
+          model: activeProfile.model,
+          baseUrl: activeProfile.baseUrl,
+          maxTokens,
+          temperature
+        },
+        toolsEnabled,
+        toolHistory
+      };
+      this.postStatus(toolsEnabled && toolHistory.length > 0
+        ? 'Continuing with project context'
+        : 'Generating answer');
+
+      const result = await ask(
+        getBackendUrl(),
+        request,
+        providerApiKey,
+        requestTimeoutSeconds * 1_000
+      );
+      if (result.status === 'error' || !result.data) {
+        this.postStatus(result.message ?? 'Ask request failed.', 'error');
+        return;
+      }
+
+      const toolCalls = result.data.toolCalls ?? [];
+      if (toolCalls.length === 0) {
+        finalData = result.data;
+        break;
+      }
+      if (!toolsEnabled) {
+        this.postStatus('The model exceeded the project-tool limit.', 'error');
+        return;
+      }
+
+      let executedCalls = 0;
+      for (const toolCall of toolCalls) {
+        if (toolHistory.length >= MAX_AGENT_TOOL_CALLS) {
+          break;
+        }
+        if (toolHistory.some((step) => step.callId === toolCall.id)) {
+          this.postStatus('The model reused an invalid tool-call id.', 'error');
+          return;
+        }
+
+        const signature = `${toolCall.name}:${JSON.stringify(toolCall.arguments)}`;
+        let execution: AgentToolExecution;
+        if (toolSignatures.has(signature)) {
+          const repeatedResult = 'This identical tool call was already completed. Use its earlier result.';
+          this.postAgentToolActivity(
+            toolCall.id,
+            'Skipped repeated tool call',
+            toolCall.name,
+            'error',
+            repeatedResult
+          );
+          execution = {
+            step: {
+              callId: toolCall.id,
+              name: toolCall.name,
+              arguments: toolCall.arguments,
+              result: repeatedResult,
+              isError: true
+            },
+            usedFiles: []
+          };
+        } else {
+          toolSignatures.add(signature);
+          execution = await this.executeAgentToolCall(toolCall);
+        }
+        toolHistory.push(execution.step);
+        execution.usedFiles.forEach((file) => toolUsedFiles.add(file));
+        executedCalls += 1;
+      }
+
+      if (executedCalls === 0) {
+        this.postStatus('The model could not complete a valid project tool call.', 'error');
+        return;
+      }
     }
 
     let changeOutcome = '';
     try {
-      const fileChanges = validateFileChanges(result.data.changes ?? []);
+      const fileChanges = validateFileChanges(finalData.changes ?? []);
       if (fileChanges.length > 0) {
         changeOutcome = await this.confirmAndApplyFileChanges(
           fileChanges,
-          result.data.answer
+          finalData.answer
         );
       }
     } catch (error) {
@@ -1055,7 +1335,10 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
 
     const response = [
-      formatAskResponse(result.data.answer, result.data.usedFiles),
+      formatAskResponse(
+        finalData.answer,
+        [...new Set([...finalData.usedFiles, ...toolUsedFiles])]
+      ),
       changeOutcome
     ].filter(Boolean).join('\n\n');
 
@@ -1514,6 +1797,76 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
     .message-body {
       white-space: pre-wrap;
+    }
+
+    .tool-activity {
+      display: grid;
+      grid-template-columns: 20px minmax(0, 1fr);
+      gap: 8px;
+      align-self: flex-start;
+      width: min(100%, 620px);
+      padding: 7px 9px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      color: var(--muted);
+      background: var(--surface-soft);
+    }
+
+    .tool-activity-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      color: var(--vscode-badge-foreground);
+      background: var(--vscode-badge-background);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .tool-activity[data-status="running"] .tool-activity-icon {
+      animation: tool-pulse 1.1s ease-in-out infinite;
+    }
+
+    .tool-activity[data-status="error"] .tool-activity-icon {
+      color: var(--vscode-editorError-foreground);
+      background: var(--vscode-inputValidation-errorBackground);
+    }
+
+    .tool-activity-copy {
+      display: grid;
+      gap: 1px;
+      min-width: 0;
+    }
+
+    .tool-activity-title {
+      color: var(--vscode-foreground);
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .tool-activity-detail,
+    .tool-activity-result {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 10px;
+    }
+
+    .tool-activity-result:empty {
+      display: none;
+    }
+
+    @keyframes tool-pulse {
+      0%, 100% { opacity: 0.55; }
+      50% { opacity: 1; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .tool-activity[data-status="running"] .tool-activity-icon {
+        animation: none;
+      }
     }
 
     .permission-card {
@@ -2290,6 +2643,10 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       if (message.command === 'permissionRequest') {
         appendPermissionRequest(message);
       }
+
+      if (message.command === 'agentToolActivity') {
+        renderAgentToolActivity(message.activity);
+      }
     });
 
     vscode.postMessage({ command: 'setScope', scope: 'project' });
@@ -2405,6 +2762,47 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       card.appendChild(actions);
       card.appendChild(resolution);
       messagesEl.appendChild(card);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function renderAgentToolActivity(activity) {
+      let item = Array.from(messagesEl.querySelectorAll('.tool-activity')).find(
+        (candidate) => candidate.dataset.activityId === activity.id
+      );
+      if (!item) {
+        item = document.createElement('article');
+        item.className = 'tool-activity';
+        item.dataset.activityId = activity.id;
+        item.setAttribute('aria-live', 'polite');
+
+        const icon = document.createElement('span');
+        icon.className = 'tool-activity-icon';
+        item.appendChild(icon);
+
+        const copy = document.createElement('div');
+        copy.className = 'tool-activity-copy';
+        const title = document.createElement('span');
+        title.className = 'tool-activity-title';
+        copy.appendChild(title);
+        const detail = document.createElement('span');
+        detail.className = 'tool-activity-detail';
+        copy.appendChild(detail);
+        const result = document.createElement('span');
+        result.className = 'tool-activity-result';
+        copy.appendChild(result);
+        item.appendChild(copy);
+        messagesEl.appendChild(item);
+      }
+
+      item.dataset.status = activity.status;
+      item.querySelector('.tool-activity-icon').textContent = activity.status === 'running'
+        ? '…'
+        : activity.status === 'completed'
+          ? '✓'
+          : '!';
+      item.querySelector('.tool-activity-title').textContent = activity.title;
+      item.querySelector('.tool-activity-detail').textContent = activity.detail;
+      item.querySelector('.tool-activity-result').textContent = activity.result || '';
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
@@ -2582,6 +2980,43 @@ function getBackendUrl(): string {
     .getConfiguration('devMate')
     .get<string>('backendUrl', 'http://127.0.0.1:8000')
     .trim();
+}
+
+function normalizeRelativeWorkspacePath(value: string): string {
+  return value.replace(/\\/g, '/');
+}
+
+function agentPathMatches(left: string, right: string): boolean {
+  return comparableWorkspacePath(left) === comparableWorkspacePath(right);
+}
+
+function agentPathStartsWith(filePath: string, directoryPath: string): boolean {
+  return comparableWorkspacePath(filePath).startsWith(
+    `${comparableWorkspacePath(directoryPath)}/`
+  );
+}
+
+function comparableWorkspacePath(value: string): string {
+  return process.platform === 'win32' ? value.toLocaleLowerCase() : value;
+}
+
+function describeAgentToolCall(call: ParsedAgentToolCall): { title: string; detail: string } {
+  if (call.name === 'list_files') {
+    return {
+      title: 'Listing project files',
+      detail: call.arguments.path || 'Project root'
+    };
+  }
+  if (call.name === 'read_file') {
+    return {
+      title: 'Reading file',
+      detail: call.arguments.path
+    };
+  }
+  return {
+    title: 'Searching code',
+    detail: `"${call.arguments.query}"${call.arguments.path ? ` in ${call.arguments.path}` : ''}`
+  };
 }
 
 function formatAskResponse(answer: string, usedFiles: string[]): string {

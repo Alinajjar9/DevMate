@@ -11,6 +11,7 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 - Local FastAPI backend with `/health` and `/ask`
 - Configurable backend URL and clear offline feedback
 - Real OpenAI-compatible Chat Completions requests
+- Iterative read-only agent tools for listing files, reading files, and searching code
 - Mode-aware prompts for Ideas, Code, and Debug
 - Enter-to-send composer with Shift+Enter for new lines
 - Distinct You and DevMate message bubbles
@@ -22,6 +23,14 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 - API keys stored in VS Code SecretStorage instead of ordinary extension settings
 
 RAG and library-documentation retrieval are not connected yet.
+
+## Agent tools
+
+DevMate can now ask the extension host to inspect the open project before answering. The first agent-tool slice supports `list_files`, `read_file`, and plain-text `search_code`. Tool activity appears as compact cards in the conversation, and the model can continue for up to eight calls before it must finish its answer.
+
+Read-only tools run instantly because they cannot modify the project. They remain workspace-bound and use the same exclusions as automatic project context, so dependency/build folders, binary files, lock files, environment files, and credential/key files are unavailable. The backend receives bounded tool results but never receives direct filesystem access.
+
+Terminal execution and model-requested deletion are still blocked. File creation and updates continue through the Code-mode permission flow described below.
 
 ## DevMate view placement
 
@@ -39,7 +48,7 @@ Provider API keys are sent to the DevMate backend only when its configured URL p
 
 ## Code-mode changes
 
-Code mode asks the selected model for structured file changes instead of displaying implementation snippets as the answer. DevMate shows proposed changes in an in-chat permission card with **Deny**, **Allow once**, and **Always allow these** actions. The compact permission button beside the model selector independently controls whether creating and updating files should ask or happen instantly. Changes use a VS Code workspace edit so they participate in the editor's undo flow.
+Code mode can inspect the project with read-only agent tools before returning structured file changes instead of displaying implementation snippets as the answer. DevMate shows proposed changes in an in-chat permission card with **Deny**, **Allow once**, and **Always allow these** actions. The compact permission button beside the model selector independently controls whether creating and updating files should ask or happen instantly. Changes use a VS Code workspace edit so they participate in the editor's undo flow.
 
 After applying a change set, DevMate opens the first created or updated file in the main left editor group instead of beside the DevMate tab.
 

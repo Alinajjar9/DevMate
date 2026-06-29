@@ -4,8 +4,11 @@ import unittest
 import httpx
 
 from backend.app.providers import (
+    ChatCompletion,
     ChatCompletionRequest,
     ChatMessage,
+    ChatToolCall,
+    ChatToolDefinition,
     DEFAULT_PROVIDER_TIMEOUT_SECONDS,
     OpenAICompatibleProvider,
     ProviderError,
@@ -81,9 +84,9 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
 
         provider = OpenAICompatibleProvider(transport=httpx.MockTransport(handler))
 
-        answer = await provider.complete(self._request())
+        completion = await provider.complete(self._request())
 
-        self.assertEqual(answer, "Real answer")
+        self.assertEqual(completion, ChatCompletion(content="Real answer"))
 
     async def test_uses_current_openai_token_parameter_for_default_endpoint(self) -> None:
         async def handler(request: httpx.Request) -> httpx.Response:
@@ -99,7 +102,98 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
         provider = OpenAICompatibleProvider(transport=httpx.MockTransport(handler))
         request = self._request(base_url=None)
 
-        self.assertEqual(await provider.complete(request), "OpenAI answer")
+        self.assertEqual(
+            await provider.complete(request),
+            ChatCompletion(content="OpenAI answer"),
+        )
+
+    async def test_sends_tools_and_reads_function_calls(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            self.assertEqual(payload["tool_choice"], "auto")
+            self.assertEqual(payload["tools"][0]["function"]["name"], "read_file")
+            self.assertEqual(
+                payload["chat_template_kwargs"],
+                {"force_nonempty_content": True},
+            )
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call-1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": '{"path":"src/app.ts"}',
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+            )
+
+        provider = OpenAICompatibleProvider(transport=httpx.MockTransport(handler))
+        request = self._request(
+            model="nvidia/nemotron-3-ultra-550b-a55b",
+            tools=(
+                ChatToolDefinition(
+                    name="read_file",
+                    description="Read one file.",
+                    parameters={"type": "object"},
+                ),
+            )
+        )
+
+        completion = await provider.complete(request)
+
+        self.assertIsNone(completion.content)
+        self.assertEqual(completion.tool_calls[0].name, "read_file")
+        self.assertEqual(completion.tool_calls[0].arguments, '{"path":"src/app.ts"}')
+
+    async def test_serializes_assistant_tool_calls_and_tool_results(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            self.assertEqual(payload["messages"][-2]["role"], "assistant")
+            self.assertEqual(payload["messages"][-2]["tool_calls"][0]["id"], "call-1")
+            self.assertEqual(payload["messages"][-1]["role"], "tool")
+            self.assertEqual(payload["messages"][-1]["tool_call_id"], "call-1")
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "Final answer"}}]},
+            )
+
+        messages = (
+            ChatMessage(role="system", content="System guidance"),
+            ChatMessage(role="user", content="Inspect the app"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=(
+                    ChatToolCall(
+                        id="call-1",
+                        name="read_file",
+                        arguments='{"path":"src/app.ts"}',
+                    ),
+                ),
+            ),
+            ChatMessage(
+                role="tool",
+                content="export const app = true;",
+                tool_call_id="call-1",
+            ),
+        )
+        provider = OpenAICompatibleProvider(transport=httpx.MockTransport(handler))
+
+        completion = await provider.complete(self._request(messages=messages))
+
+        self.assertEqual(completion.content, "Final answer")
 
     async def test_maps_authentication_and_rate_limit_errors(self) -> None:
         for status_code, expected_status in ((401, 401), (429, 429)):
@@ -150,18 +244,22 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
         *,
         base_url: str | None = "https://integrate.api.nvidia.com/v1",
         api_key: str | None = "secret-key",
+        model: str = "nvidia/example-model",
+        tools: tuple[ChatToolDefinition, ...] = (),
+        messages: tuple[ChatMessage, ...] | None = None,
     ) -> ChatCompletionRequest:
         return ChatCompletionRequest(
             provider="openai",
-            model="nvidia/example-model",
+            model=model,
             base_url=base_url,
             api_key=api_key,
-            messages=(
+            messages=messages or (
                 ChatMessage(role="system", content="System guidance"),
                 ChatMessage(role="user", content="Hello"),
             ),
             max_tokens=1200,
             temperature=0.2,
+            tools=tools,
         )
 
 

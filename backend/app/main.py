@@ -1,3 +1,4 @@
+import json
 from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -6,8 +7,10 @@ from pydantic import BaseModel, Field, model_validator
 from .code_changes import CodeChangeParseError, parse_code_change_response
 from .prompts import AssistantMode, ScopeType, build_chat_messages
 from .providers import (
+    ChatCompletion,
     ChatCompletionRequest,
     ChatProvider,
+    ChatToolDefinition,
     OpenAICompatibleProvider,
     ProviderError,
     ProviderName,
@@ -22,6 +25,10 @@ MAX_PROJECT_CONTEXT_CHARACTERS = 40_000
 MAX_ATTACHED_FILES = 5
 MAX_REQUEST_CONTEXT_ITEMS = 6
 MAX_REQUEST_CONTEXT_CHARACTERS = 40_000
+MAX_AGENT_TOOL_STEPS = 8
+MAX_AGENT_TOOL_RESULT_CHARACTERS = 10_000
+MAX_AGENT_TOOL_HISTORY_CHARACTERS = 80_000
+AgentToolName = Literal["list_files", "read_file", "search_code"]
 
 
 def _utf16_character_count(value: str) -> int:
@@ -103,11 +110,39 @@ class AskScope(BaseModel):
         return self
 
 
+class AgentToolStep(BaseModel):
+    callId: str = Field(min_length=1, max_length=120)
+    name: AgentToolName
+    arguments: dict[str, object] = Field(default_factory=dict)
+    result: str = Field(max_length=MAX_AGENT_TOOL_RESULT_CHARACTERS)
+    isError: bool = False
+
+    @model_validator(mode="after")
+    def validate_arguments_size(self) -> "AgentToolStep":
+        if len(json.dumps(self.arguments, separators=(",", ":"))) > 4_000:
+            raise ValueError("tool arguments are too large")
+        return self
+
+
 class AskRequest(BaseModel):
     question: str = Field(min_length=1)
     mode: AssistantMode
     scope: AskScope
     settings: LlmSettings
+    toolsEnabled: bool = True
+    toolHistory: list[AgentToolStep] = Field(
+        default_factory=list,
+        max_length=MAX_AGENT_TOOL_STEPS,
+    )
+
+    @model_validator(mode="after")
+    def validate_tool_history(self) -> "AskRequest":
+        call_ids = [step.callId for step in self.toolHistory]
+        if len(call_ids) != len(set(call_ids)):
+            raise ValueError("tool history contains duplicate call ids")
+        if sum(len(step.result) for step in self.toolHistory) > MAX_AGENT_TOOL_HISTORY_CHARACTERS:
+            raise ValueError("tool history is too large")
+        return self
 
 
 class HealthData(BaseModel):
@@ -125,10 +160,17 @@ class FileChange(BaseModel):
     content: str
 
 
+class AgentToolCall(BaseModel):
+    id: str = Field(min_length=1, max_length=120)
+    name: AgentToolName
+    arguments: dict[str, object]
+
+
 class AskData(BaseModel):
     answer: str
     usedFiles: list[str]
     changes: list[FileChange] = Field(default_factory=list)
+    toolCalls: list[AgentToolCall] = Field(default_factory=list)
 
 
 class AskResult(BaseModel):
@@ -136,7 +178,63 @@ class AskResult(BaseModel):
     data: AskData
 
 
-app = FastAPI(title="DevMate Backend", version="0.6.0")
+AGENT_TOOL_DEFINITIONS = (
+    ChatToolDefinition(
+        name="list_files",
+        description="List eligible workspace text files, optionally below a relative directory.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Optional workspace-relative directory. Use an empty string for the project root.",
+                },
+                "maxResults": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 200,
+                },
+            },
+            "additionalProperties": False,
+        },
+    ),
+    ChatToolDefinition(
+        name="read_file",
+        description="Read one eligible text file using its workspace-relative path.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    ),
+    ChatToolDefinition(
+        name="search_code",
+        description="Search eligible project text files for a plain-text query and return matching lines.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "minLength": 2, "maxLength": 200},
+                "path": {
+                    "type": "string",
+                    "description": "Optional workspace-relative file or directory to search within.",
+                },
+                "maxResults": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                },
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    ),
+)
+
+
+app = FastAPI(title="DevMate Backend", version="0.7.0")
 _chat_provider = OpenAICompatibleProvider()
 
 
@@ -168,9 +266,11 @@ async def ask(
         scope_type=request.scope.type,
         question=request.question,
         context_items=request.scope.items,
+        tool_steps=request.toolHistory,
+        tools_enabled=request.toolsEnabled,
     )
     try:
-        answer = await chat_provider.complete(
+        completion_value = await chat_provider.complete(
             ChatCompletionRequest(
                 provider=request.settings.provider,
                 model=request.settings.model,
@@ -179,10 +279,34 @@ async def ask(
                 messages=messages,
                 max_tokens=request.settings.maxTokens,
                 temperature=request.settings.temperature,
+                tools=AGENT_TOOL_DEFINITIONS if request.toolsEnabled else (),
             )
         )
     except ProviderError as error:
         raise HTTPException(status_code=error.status_code, detail=str(error)) from error
+
+    completion = completion_value if isinstance(completion_value, ChatCompletion) else ChatCompletion(
+        content=completion_value
+    )
+    if completion.tool_calls:
+        if not request.toolsEnabled:
+            raise HTTPException(status_code=502, detail="The model requested a tool after the tool limit was reached.")
+        tool_calls = _parse_agent_tool_calls(completion.tool_calls)
+        history_call_ids = {step.callId for step in request.toolHistory}
+        if any(tool_call.id in history_call_ids for tool_call in tool_calls):
+            raise HTTPException(status_code=502, detail="The model reused an invalid tool-call id.")
+        return AskResult(
+            status="ok",
+            data=AskData(
+                answer="",
+                usedFiles=used_files,
+                toolCalls=tool_calls,
+            ),
+        )
+
+    answer = completion.content
+    if not answer:
+        raise HTTPException(status_code=502, detail="The model provider returned an empty answer.")
 
     changes: list[FileChange] = []
     if request.mode == "code":
@@ -203,6 +327,36 @@ async def ask(
             changes=changes,
         ),
     )
+
+
+def _parse_agent_tool_calls(tool_calls: tuple[object, ...]) -> list[AgentToolCall]:
+    parsed_calls: list[AgentToolCall] = []
+    seen_ids: set[str] = set()
+    for tool_call in tool_calls:
+        call_id = getattr(tool_call, "id", "")
+        name = getattr(tool_call, "name", "")
+        arguments_json = getattr(tool_call, "arguments", "")
+        if (
+            not isinstance(call_id, str)
+            or not call_id
+            or len(call_id) > 120
+            or call_id in seen_ids
+            or name not in {"list_files", "read_file", "search_code"}
+            or not isinstance(arguments_json, str)
+            or len(arguments_json) > 4_000
+        ):
+            raise HTTPException(status_code=502, detail="The model requested an invalid tool.")
+        try:
+            arguments = json.loads(arguments_json)
+        except (TypeError, json.JSONDecodeError) as error:
+            raise HTTPException(status_code=502, detail="The model returned invalid tool arguments.") from error
+        if not isinstance(arguments, dict):
+            raise HTTPException(status_code=502, detail="The model returned invalid tool arguments.")
+        seen_ids.add(call_id)
+        parsed_calls.append(
+            AgentToolCall(id=call_id, name=name, arguments=arguments)
+        )
+    return parsed_calls
 
 
 def _used_files(scope: AskScope) -> list[str]:
