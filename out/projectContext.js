@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PROJECT_EXCLUDE_GLOB = exports.MAX_PROJECT_CONTEXT_CHARACTERS = exports.MAX_PROJECT_FILE_CHARACTERS = exports.MAX_PROJECT_FILES = exports.MAX_PROJECT_FILE_BYTES = exports.MAX_PROJECT_CANDIDATES = void 0;
+exports.PROJECT_EXCLUDE_GLOB = exports.MAX_ATTACHED_FILES = exports.MAX_ATTACHMENT_CANDIDATES = exports.MAX_PROJECT_CONTEXT_CHARACTERS = exports.MAX_PROJECT_FILE_CHARACTERS = exports.MAX_PROJECT_FILES = exports.MAX_PROJECT_FILE_BYTES = exports.MAX_PROJECT_CANDIDATES = void 0;
 exports.selectProjectContext = selectProjectContext;
 exports.shouldSkipProjectFile = shouldSkipProjectFile;
 exports.containsBinaryData = containsBinaryData;
@@ -45,6 +45,8 @@ exports.MAX_PROJECT_FILE_BYTES = 200_000;
 exports.MAX_PROJECT_FILES = 5;
 exports.MAX_PROJECT_FILE_CHARACTERS = 8_000;
 exports.MAX_PROJECT_CONTEXT_CHARACTERS = 40_000;
+exports.MAX_ATTACHMENT_CANDIDATES = 1_000;
+exports.MAX_ATTACHED_FILES = 5;
 exports.PROJECT_EXCLUDE_GLOB = '**/{.git,node_modules,.venv,venv,out,dist,build,coverage,.cache,__pycache__,.next,target,vendor}/**';
 const ignoredDirectoryNames = new Set([
     '.git',
@@ -124,7 +126,9 @@ const languageByExtension = {
     '.yaml': 'yaml',
     '.yml': 'yaml'
 };
-function selectProjectContext(candidates, question) {
+function selectProjectContext(candidates, question, limits = {}) {
+    const maxFiles = Math.min(Math.max(0, limits.maxFiles ?? exports.MAX_PROJECT_FILES), exports.MAX_PROJECT_FILES);
+    const maxCharacters = Math.min(Math.max(0, limits.maxCharacters ?? exports.MAX_PROJECT_CONTEXT_CHARACTERS), exports.MAX_PROJECT_CONTEXT_CHARACTERS);
     const tokens = tokenizeQuestion(question);
     const rankedCandidates = candidates
         .filter((candidate) => candidate.content.trim().length > 0)
@@ -134,9 +138,9 @@ function selectProjectContext(candidates, question) {
     }))
         .sort((left, right) => right.score - left.score || left.candidate.relativePath.localeCompare(right.candidate.relativePath));
     const items = [];
-    let remainingCharacters = exports.MAX_PROJECT_CONTEXT_CHARACTERS;
+    let remainingCharacters = maxCharacters;
     for (const { candidate } of rankedCandidates) {
-        if (items.length >= exports.MAX_PROJECT_FILES || remainingCharacters <= 0) {
+        if (items.length >= maxFiles || remainingCharacters <= 0) {
             break;
         }
         const itemLimit = Math.min(exports.MAX_PROJECT_FILE_CHARACTERS, remainingCharacters);

@@ -1,6 +1,6 @@
 export type AssistantMode = 'ideas' | 'code' | 'debug';
 export type ScopeType = 'project' | 'file' | 'selection';
-export type ContextSource = 'file' | 'selection';
+export type ContextSource = 'file' | 'selection' | 'attachment';
 export type ApiStatus = 'ok' | 'error';
 export type BackendState = 'online' | 'offline' | 'mock';
 

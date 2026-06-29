@@ -34,3 +34,19 @@ test('truncates oversized content to the context limit', () => {
   assert.equal(item.totalCharacters, MAX_CONTEXT_CHARACTERS + 500);
   assert.equal(item.truncated, true);
 });
+
+test('applies a smaller attachment-specific limit', () => {
+  const content = 'a'.repeat(10_000);
+  const item = createBoundedContextItem(
+    'attachment',
+    'C:/repo/src/reference.ts',
+    'typescript',
+    content,
+    8_000
+  );
+
+  assert.equal(item.source, 'attachment');
+  assert.equal(item.includedCharacters, 8_000);
+  assert.equal(item.totalCharacters, 10_000);
+  assert.equal(item.truncated, true);
+});

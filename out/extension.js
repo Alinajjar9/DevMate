@@ -41,43 +41,61 @@ const client_1 = require("./api/client");
 const context_1 = require("./context");
 const projectContext_1 = require("./projectContext");
 function activate(context) {
-    const chatProvider = new DevMateChatProvider(context.extensionUri);
-    context.subscriptions.push(vscode.window.registerWebviewViewProvider(DevMateChatProvider.viewType, chatProvider, {
-        webviewOptions: {
-            retainContextWhenHidden: true
-        }
-    }));
-    const disposable = vscode.commands.registerCommand('devMate.openChat', async () => {
-        await vscode.commands.executeCommand('workbench.view.extension.devmate');
-        try {
-            await vscode.commands.executeCommand('devmate.chatView.focus');
-        }
-        catch {
-            // Opening the DevMate view container is enough if the generated view focus command is unavailable.
-        }
+    const chatPanel = new DevMateChatPanel(context.extensionUri);
+    const openChatCommand = vscode.commands.registerCommand('devMate.openChat', () => {
+        chatPanel.show();
     });
-    context.subscriptions.push(disposable);
+    const statusBarItem = vscode.window.createStatusBarItem('devMate.statusBar', vscode.StatusBarAlignment.Right, 1000);
+    statusBarItem.text = '$(comment-discussion) DevMate';
+    statusBarItem.tooltip = 'Open DevMate';
+    statusBarItem.command = 'devMate.openChat';
+    statusBarItem.show();
+    context.subscriptions.push(chatPanel, openChatCommand, statusBarItem);
 }
 function deactivate() {
     // No cleanup is needed for the current prototype.
 }
-class DevMateChatProvider {
+class DevMateChatPanel {
     extensionUri;
-    static viewType = 'devmate.chatView';
-    view;
-    disposables = [];
+    static viewType = 'devmate.chatPanel';
+    panel;
+    attachedFiles = new Map();
+    panelDisposables = [];
     constructor(extensionUri) {
         this.extensionUri = extensionUri;
     }
-    resolveWebviewView(webviewView) {
-        this.view = webviewView;
-        webviewView.webview.options = {
+    show() {
+        if (this.panel) {
+            this.panel.reveal(vscode.ViewColumn.Beside);
+            return;
+        }
+        const panel = vscode.window.createWebviewPanel(DevMateChatPanel.viewType, 'DevMate', {
+            viewColumn: vscode.ViewColumn.Beside,
+            preserveFocus: false
+        }, {
             enableScripts: true,
+            retainContextWhenHidden: true,
             localResourceRoots: [this.extensionUri]
-        };
-        webviewView.webview.html = this.getHtml(webviewView.webview);
-        webviewView.webview.onDidReceiveMessage((message) => this.handleMessage(message), null, this.disposables);
+        });
+        panel.iconPath = vscode.Uri.joinPath(this.extensionUri, 'media', 'devmate.svg');
+        panel.webview.html = this.getHtml(panel.webview);
+        this.panel = panel;
+        this.panelDisposables.push(panel.webview.onDidReceiveMessage((message) => {
+            void this.handleMessage(message);
+        }), panel.onDidDispose(() => {
+            this.panel = undefined;
+            this.disposePanelDisposables();
+        }));
         void this.checkBackendHealth();
+    }
+    dispose() {
+        this.panel?.dispose();
+        this.disposePanelDisposables();
+    }
+    disposePanelDisposables() {
+        while (this.panelDisposables.length > 0) {
+            this.panelDisposables.pop()?.dispose();
+        }
     }
     async handleMessage(message) {
         switch (message.command) {
@@ -86,6 +104,16 @@ class DevMateChatProvider {
                 return;
             case 'ask':
                 await this.answerQuestion(message);
+                return;
+            case 'pickFiles':
+                await this.pickWorkspaceFiles();
+                return;
+            case 'removeAttachment':
+                this.attachedFiles.delete(message.id);
+                this.postAttachmentState();
+                return;
+            case 'ready':
+                this.postAttachmentState();
                 return;
             default:
                 this.postStatus('Unsupported command received.', 'error');
@@ -117,8 +145,11 @@ class DevMateChatProvider {
                     }
                 };
             }
+            const attachmentItems = question
+                ? await this.collectAttachmentItems(projectContext_1.MAX_PROJECT_FILES, projectContext_1.MAX_PROJECT_CONTEXT_CHARACTERS)
+                : [];
             const items = question
-                ? await this.collectProjectItems(folder, question)
+                ? await this.collectProjectItems(folder, question, attachmentItems)
                 : [];
             const includedCharacters = items.reduce((total, item) => total + item.includedCharacters, 0);
             const detail = question
@@ -156,6 +187,9 @@ class DevMateChatProvider {
         }
         const contextItem = (0, context_1.createBoundedContextItem)(source, filePath, editor.document.languageId, content);
         const size = formatContextSize(contextItem.includedCharacters, contextItem.totalCharacters, contextItem.truncated);
+        const attachmentItems = question
+            ? await this.collectAttachmentItems(projectContext_1.MAX_ATTACHED_FILES, projectContext_1.MAX_PROJECT_CONTEXT_CHARACTERS - contextItem.includedCharacters, new Set([contextItem.filePath]))
+            : [];
         if (scope === 'activeFile') {
             return {
                 info: {
@@ -166,7 +200,7 @@ class DevMateChatProvider {
                 apiScope: {
                     type: 'file',
                     workspacePath,
-                    items: [contextItem]
+                    items: [contextItem, ...attachmentItems]
                 }
             };
         }
@@ -179,17 +213,22 @@ class DevMateChatProvider {
             apiScope: {
                 type: 'selection',
                 workspacePath,
-                items: [contextItem]
+                items: [contextItem, ...attachmentItems]
             }
         };
     }
-    async collectProjectItems(folder, question) {
+    async collectProjectItems(folder, question, attachmentItems) {
+        const includedAttachmentCharacters = attachmentItems.reduce((total, item) => total + item.includedCharacters, 0);
+        if (attachmentItems.length >= projectContext_1.MAX_PROJECT_FILES
+            || includedAttachmentCharacters >= projectContext_1.MAX_PROJECT_CONTEXT_CHARACTERS) {
+            return attachmentItems;
+        }
         let uris;
         try {
             uris = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '**/*'), projectContext_1.PROJECT_EXCLUDE_GLOB, projectContext_1.MAX_PROJECT_CANDIDATES);
         }
         catch {
-            return [];
+            return attachmentItems;
         }
         const candidates = [];
         const batchSize = 20;
@@ -202,7 +241,108 @@ class DevMateChatProvider {
                 }
             }
         }
-        return (0, projectContext_1.selectProjectContext)(candidates, question);
+        const attachedPaths = new Set(attachmentItems.map((item) => item.filePath));
+        const discoveryCandidates = candidates.filter((candidate) => !attachedPaths.has(candidate.filePath));
+        const discoveredItems = (0, projectContext_1.selectProjectContext)(discoveryCandidates, question, {
+            maxFiles: projectContext_1.MAX_PROJECT_FILES - attachmentItems.length,
+            maxCharacters: projectContext_1.MAX_PROJECT_CONTEXT_CHARACTERS - includedAttachmentCharacters
+        });
+        return [...attachmentItems, ...discoveredItems];
+    }
+    async collectAttachmentItems(maxFiles, maxCharacters, excludedFilePaths = new Set()) {
+        const items = [];
+        let remainingCharacters = Math.max(0, maxCharacters);
+        const currentFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!currentFolder) {
+            return items;
+        }
+        for (const uri of this.attachedFiles.values()) {
+            if (items.length >= maxFiles || remainingCharacters <= 0) {
+                break;
+            }
+            const owningFolder = vscode.workspace.getWorkspaceFolder(uri);
+            if (!owningFolder || owningFolder.uri.toString() !== currentFolder.uri.toString()) {
+                continue;
+            }
+            const candidate = await this.readProjectCandidate(uri);
+            if (!candidate || excludedFilePaths.has(candidate.filePath)) {
+                continue;
+            }
+            const item = (0, context_1.createBoundedContextItem)('attachment', candidate.filePath, candidate.languageId, candidate.content, Math.min(projectContext_1.MAX_PROJECT_FILE_CHARACTERS, remainingCharacters));
+            items.push(item);
+            remainingCharacters -= item.includedCharacters;
+        }
+        return items;
+    }
+    async pickWorkspaceFiles() {
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        if (!folder) {
+            this.postStatus('Open a folder before attaching files.', 'warning');
+            return;
+        }
+        this.postStatus('Finding workspace files');
+        let uris;
+        try {
+            uris = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '**/*'), projectContext_1.PROJECT_EXCLUDE_GLOB, projectContext_1.MAX_ATTACHMENT_CANDIDATES);
+        }
+        catch {
+            this.postStatus('Could not list files from the open folder.', 'error');
+            return;
+        }
+        const choices = uris
+            .map((uri) => {
+            const id = vscode.workspace.asRelativePath(uri, false);
+            return {
+                id,
+                uri,
+                label: id,
+                picked: this.attachedFiles.has(id)
+            };
+        })
+            .filter((item) => !(0, projectContext_1.shouldSkipProjectFile)(item.id))
+            .sort((left, right) => left.label.localeCompare(right.label));
+        if (choices.length === 0) {
+            this.postStatus('No attachable text files were found in the open folder.', 'warning');
+            return;
+        }
+        const selected = await vscode.window.showQuickPick(choices, {
+            canPickMany: true,
+            matchOnDescription: true,
+            placeHolder: `Select up to ${projectContext_1.MAX_ATTACHED_FILES} files from ${folder.name}`,
+            title: 'DevMate: Attach workspace files'
+        });
+        if (!selected) {
+            this.postStatus('Ready');
+            return;
+        }
+        if (selected.length > projectContext_1.MAX_ATTACHED_FILES) {
+            this.postStatus(`Attach at most ${projectContext_1.MAX_ATTACHED_FILES} files.`, 'warning');
+            return;
+        }
+        const validated = await Promise.all(selected.map(async (item) => ({
+            item,
+            candidate: await this.readProjectCandidate(item.uri)
+        })));
+        this.attachedFiles.clear();
+        for (const { item, candidate } of validated) {
+            if (candidate) {
+                this.attachedFiles.set(item.id, item.uri);
+            }
+        }
+        this.postAttachmentState();
+        const ignoredCount = validated.filter(({ candidate }) => !candidate).length;
+        if (ignoredCount > 0) {
+            this.postStatus(`${ignoredCount} unsupported or oversized file(s) were ignored.`, 'warning');
+            return;
+        }
+        this.postStatus('Ready');
+    }
+    postAttachmentState() {
+        const attachments = [...this.attachedFiles.keys()].map((id) => ({
+            id,
+            label: id
+        }));
+        this.postMessage({ command: 'attachmentsUpdated', attachments });
     }
     async readProjectCandidate(uri) {
         const relativePath = vscode.workspace.asRelativePath(uri, false);
@@ -282,7 +422,7 @@ class DevMateChatProvider {
         this.postMessage({ command: 'status', text, level });
     }
     postMessage(message) {
-        this.view?.webview.postMessage(message);
+        this.panel?.webview.postMessage(message);
     }
     getHtml(webview) {
         const nonce = createNonce();
@@ -346,13 +486,14 @@ class DevMateChatProvider {
 
     .scope-tabs {
       display: flex;
-      gap: 5px;
+      gap: 6px;
       flex-wrap: wrap;
       align-items: center;
     }
 
     .mode-button,
     .scope-button,
+    .attachment-row-remove,
     .action-button {
       border: 1px solid transparent;
       cursor: pointer;
@@ -397,13 +538,14 @@ class DevMateChatProvider {
       flex: 0 0 auto;
       align-items: center;
       justify-content: center;
-      height: 22px;
-      padding: 0 8px;
+      height: 24px;
+      padding: 0 10px;
       border-color: var(--border);
       border-radius: 999px;
       color: var(--muted);
       background: transparent;
       font-size: 11px;
+      white-space: nowrap;
     }
 
     .scope-button[aria-pressed="true"] {
@@ -419,6 +561,12 @@ class DevMateChatProvider {
       height: 30px;
       padding: 0 14px;
       border-radius: 4px;
+    }
+
+    .action-button.secondary {
+      color: var(--vscode-button-secondaryForeground);
+      background: var(--vscode-button-secondaryBackground);
+      border-color: var(--border);
     }
 
     .action-button:hover,
@@ -448,8 +596,38 @@ class DevMateChatProvider {
 
     .scope-bar {
       display: grid;
-      gap: 5px;
+      gap: 6px;
       align-items: start;
+    }
+
+    .scope-row {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+
+    .scope-tools {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-left: auto;
+    }
+
+    .scope-action {
+      color: var(--vscode-foreground);
+      background: var(--vscode-input-background);
+    }
+
+    .scope-action[aria-expanded="true"] {
+      color: var(--vscode-badge-foreground);
+      background: var(--vscode-badge-background);
+      border-color: transparent;
+    }
+
+    .scope-action[hidden] {
+      display: none;
     }
 
     .scope-meta {
@@ -465,13 +643,71 @@ class DevMateChatProvider {
 
     .ask-panel {
       display: grid;
-      grid-template-rows: auto auto auto;
-      gap: 8px;
+      gap: 10px;
       align-items: start;
-      padding: 9px;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .attachment-panel {
+      display: grid;
+      gap: 8px;
+      padding: 8px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface-soft);
+    }
+
+    .attachment-panel[hidden] {
+      display: none;
+    }
+
+    .attachment-panel-title {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .attachment-list {
+      display: grid;
+      gap: 6px;
+    }
+
+    .attachment-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      padding: 8px 9px;
       border: 1px solid var(--border);
       border-radius: 6px;
       background: var(--surface);
+    }
+
+    .attachment-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--vscode-foreground);
+      font-size: 11px;
+    }
+
+    .attachment-row-remove {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 22px;
+      padding: 0 8px;
+      border-radius: 999px;
+      color: var(--muted);
+      background: transparent;
+      font-size: 11px;
+    }
+
+    .attachment-row-remove:hover {
+      color: var(--vscode-foreground);
+      background: var(--vscode-toolbar-hoverBackground);
     }
 
     .messages {
@@ -532,6 +768,10 @@ class DevMateChatProvider {
       justify-content: flex-end;
       flex-wrap: wrap;
     }
+
+    .composer-actions-spacer {
+      flex: 1 1 auto;
+    }
   </style>
 </head>
 <body>
@@ -551,15 +791,32 @@ class DevMateChatProvider {
     <section class="composer" aria-label="Message composer">
       <div class="ask-panel">
         <div class="scope-bar" aria-label="Context scope">
-          <div class="scope-tabs" role="group" aria-label="Working scope">
-            <button class="scope-button" type="button" data-scope="project" aria-pressed="true">Project</button>
-            <button class="scope-button" type="button" data-scope="activeFile" aria-pressed="false">File</button>
-            <button class="scope-button" type="button" data-scope="selection" aria-pressed="false">Selection</button>
+          <div class="scope-row">
+            <div class="scope-tabs" role="group" aria-label="Working scope">
+              <button class="scope-button" type="button" data-scope="project" aria-pressed="true">Project</button>
+              <button class="scope-button" type="button" data-scope="activeFile" aria-pressed="false">File</button>
+              <button class="scope-button" type="button" data-scope="selection" aria-pressed="false">Selection</button>
+            </div>
+            <div class="scope-tools">
+              <button id="attachFiles" class="scope-button scope-action" type="button">Add files</button>
+              <button
+                id="toggleAttachments"
+                class="scope-button scope-action"
+                type="button"
+                aria-expanded="false"
+                hidden
+              ></button>
+            </div>
           </div>
           <div id="scopeDetail" class="scope-meta"></div>
         </div>
+        <div id="attachmentPanel" class="attachment-panel" hidden>
+          <span class="attachment-panel-title">Selected files</span>
+          <div id="attachmentList" class="attachment-list" aria-label="Attached workspace files"></div>
+        </div>
         <textarea id="question" placeholder="Ask DevMate..."></textarea>
         <div class="composer-actions">
+          <span class="composer-actions-spacer"></span>
           <button id="ask" class="action-button primary" type="button">Ask</button>
         </div>
       </div>
@@ -574,13 +831,18 @@ class DevMateChatProvider {
         kind: 'project',
         label: 'Project',
         detail: ''
-      }
+      },
+      attachments: [],
+      attachmentsExpanded: false
     };
 
     const statusEl = document.getElementById('status');
     const messagesEl = document.getElementById('messages');
     const questionEl = document.getElementById('question');
     const scopeDetailEl = document.getElementById('scopeDetail');
+    const attachmentPanelEl = document.getElementById('attachmentPanel');
+    const attachmentListEl = document.getElementById('attachmentList');
+    const attachmentToggleEl = document.getElementById('toggleAttachments');
 
     document.querySelectorAll('.mode-button').forEach((button) => {
       button.addEventListener('click', () => {
@@ -591,7 +853,7 @@ class DevMateChatProvider {
       });
     });
 
-    document.querySelectorAll('.scope-button').forEach((button) => {
+    document.querySelectorAll('.scope-button[data-scope]').forEach((button) => {
       button.addEventListener('click', () => {
         vscode.postMessage({
           command: 'setScope',
@@ -617,6 +879,15 @@ class DevMateChatProvider {
       });
     });
 
+    document.getElementById('attachFiles').addEventListener('click', () => {
+      vscode.postMessage({ command: 'pickFiles' });
+    });
+
+    attachmentToggleEl.addEventListener('click', () => {
+      state.attachmentsExpanded = !state.attachmentsExpanded;
+      renderAttachments();
+    });
+
     window.addEventListener('message', (event) => {
       const message = event.data;
 
@@ -632,9 +903,21 @@ class DevMateChatProvider {
       if (message.command === 'assistantResponse') {
         appendMessage(message.response, 'assistant');
       }
+
+      if (message.command === 'attachmentsUpdated') {
+        const hadAttachments = state.attachments.length > 0;
+        state.attachments = message.attachments;
+        if (state.attachments.length === 0) {
+          state.attachmentsExpanded = false;
+        } else if (!hadAttachments) {
+          state.attachmentsExpanded = true;
+        }
+        renderAttachments();
+      }
     });
 
     vscode.postMessage({ command: 'setScope', scope: 'project' });
+    vscode.postMessage({ command: 'ready' });
 
     function setStatus(text, level = 'info') {
       if (text === 'Ready' && level === 'info') {
@@ -659,8 +942,46 @@ class DevMateChatProvider {
     function renderScope() {
       scopeDetailEl.textContent = state.scope.detail;
 
-      document.querySelectorAll('.scope-button').forEach((button) => {
+      document.querySelectorAll('.scope-button[data-scope]').forEach((button) => {
         button.setAttribute('aria-pressed', String(button.dataset.scope === state.scope.kind));
+      });
+    }
+
+    function renderAttachments() {
+      const attachmentCount = state.attachments.length;
+      const summaryText = attachmentCount === 1
+        ? '1 file selected'
+        : attachmentCount + ' files selected';
+
+      attachmentToggleEl.hidden = attachmentCount === 0;
+      attachmentToggleEl.textContent = summaryText;
+      attachmentToggleEl.title = state.attachmentsExpanded
+        ? 'Hide selected files'
+        : 'Show selected files';
+      attachmentToggleEl.setAttribute('aria-expanded', String(state.attachmentsExpanded));
+      attachmentPanelEl.hidden = attachmentCount === 0 || !state.attachmentsExpanded;
+      attachmentListEl.replaceChildren();
+
+      state.attachments.forEach((attachment) => {
+        const item = document.createElement('div');
+        item.className = 'attachment-item';
+
+        const label = document.createElement('span');
+        label.className = 'attachment-label';
+        label.textContent = attachment.label;
+        item.appendChild(label);
+
+        const remove = document.createElement('button');
+        remove.className = 'attachment-row-remove';
+        remove.type = 'button';
+        remove.title = 'Remove ' + attachment.label;
+        remove.setAttribute('aria-label', 'Remove ' + attachment.label);
+        remove.textContent = 'Remove';
+        remove.addEventListener('click', () => {
+          vscode.postMessage({ command: 'removeAttachment', id: attachment.id });
+        });
+        item.appendChild(remove);
+        attachmentListEl.appendChild(item);
       });
     }
   </script>

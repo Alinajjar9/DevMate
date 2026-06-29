@@ -7,6 +7,8 @@ export const MAX_PROJECT_FILE_BYTES = 200_000;
 export const MAX_PROJECT_FILES = 5;
 export const MAX_PROJECT_FILE_CHARACTERS = 8_000;
 export const MAX_PROJECT_CONTEXT_CHARACTERS = 40_000;
+export const MAX_ATTACHMENT_CANDIDATES = 1_000;
+export const MAX_ATTACHED_FILES = 5;
 export const PROJECT_EXCLUDE_GLOB =
   '**/{.git,node_modules,.venv,venv,out,dist,build,coverage,.cache,__pycache__,.next,target,vendor}/**';
 
@@ -15,6 +17,11 @@ export type ProjectFileCandidate = {
   relativePath: string;
   languageId: string;
   content: string;
+};
+
+export type ProjectContextLimits = {
+  maxFiles?: number;
+  maxCharacters?: number;
 };
 
 const ignoredDirectoryNames = new Set([
@@ -103,8 +110,17 @@ const languageByExtension: Record<string, string> = {
 
 export function selectProjectContext(
   candidates: ProjectFileCandidate[],
-  question: string
+  question: string,
+  limits: ProjectContextLimits = {}
 ): AskContextItem[] {
+  const maxFiles = Math.min(
+    Math.max(0, limits.maxFiles ?? MAX_PROJECT_FILES),
+    MAX_PROJECT_FILES
+  );
+  const maxCharacters = Math.min(
+    Math.max(0, limits.maxCharacters ?? MAX_PROJECT_CONTEXT_CHARACTERS),
+    MAX_PROJECT_CONTEXT_CHARACTERS
+  );
   const tokens = tokenizeQuestion(question);
   const rankedCandidates = candidates
     .filter((candidate) => candidate.content.trim().length > 0)
@@ -117,10 +133,10 @@ export function selectProjectContext(
     );
 
   const items: AskContextItem[] = [];
-  let remainingCharacters = MAX_PROJECT_CONTEXT_CHARACTERS;
+  let remainingCharacters = maxCharacters;
 
   for (const { candidate } of rankedCandidates) {
-    if (items.length >= MAX_PROJECT_FILES || remainingCharacters <= 0) {
+    if (items.length >= maxFiles || remainingCharacters <= 0) {
       break;
     }
 

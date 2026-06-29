@@ -3,6 +3,7 @@ import unittest
 from fastapi.testclient import TestClient
 
 from backend.app.main import (
+    MAX_ATTACHED_FILES,
     MAX_CONTEXT_CHARACTERS,
     MAX_PROJECT_CONTEXT_FILES,
     MAX_PROJECT_FILE_CHARACTERS,
@@ -21,7 +22,7 @@ class DevMateApiTests(unittest.TestCase):
             response.json(),
             {
                 "status": "ok",
-                "data": {"backend": "online", "version": "0.3.0"},
+                "data": {"backend": "online", "version": "0.4.0"},
             },
         )
 
@@ -46,6 +47,82 @@ class DevMateApiTests(unittest.TestCase):
         self.assertEqual(payload["data"]["usedFiles"], ["C:\\repo\\src\\app.ts"])
         self.assertIn("Question: What does this code do?", payload["data"]["answer"])
         self.assertIn("Selection context: 10 characters", payload["data"]["answer"])
+
+    def test_selection_scope_accepts_workspace_attachment(self) -> None:
+        items = [
+            self._context_item(
+                source="selection",
+                content="return 42;",
+                file_path="C:\\repo\\src\\app.ts",
+            ),
+            self._context_item(
+                source="attachment",
+                content="export const config = {};",
+                file_path="C:\\repo\\src\\config.ts",
+            ),
+        ]
+        response = self.client.post(
+            "/ask",
+            json=self._ask_payload(scope_type="selection", items=items),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["data"]
+        self.assertEqual(
+            payload["usedFiles"],
+            ["C:\\repo\\src\\app.ts", "C:\\repo\\src\\config.ts"],
+        )
+        self.assertIn("Attached context:", payload["answer"])
+
+    def test_scope_rejects_too_many_attachments(self) -> None:
+        items = [self._context_item(source="selection", content="return 42;")]
+        items.extend(
+            self._context_item(
+                source="attachment",
+                content=f"attachment {index}",
+                file_path=f"C:\\repo\\src\\attachment{index}.ts",
+            )
+            for index in range(MAX_ATTACHED_FILES + 1)
+        )
+        response = self.client.post(
+            "/ask",
+            json=self._ask_payload(scope_type="selection", items=items),
+        )
+
+        self.assertEqual(response.status_code, 422)
+
+    def test_scope_rejects_oversized_attachment(self) -> None:
+        items = [
+            self._context_item(source="file", content="export const app = {};"),
+            self._context_item(
+                source="attachment",
+                content="a" * (MAX_PROJECT_FILE_CHARACTERS + 1),
+                file_path="C:\\repo\\src\\large.ts",
+            ),
+        ]
+        response = self.client.post(
+            "/ask",
+            json=self._ask_payload(scope_type="file", items=items),
+        )
+
+        self.assertEqual(response.status_code, 422)
+
+    def test_scope_rejects_excessive_combined_context(self) -> None:
+        items = [self._context_item(source="file", content="a" * 20_000)]
+        items.extend(
+            self._context_item(
+                source="attachment",
+                content="b" * 8_000,
+                file_path=f"C:\\repo\\src\\attachment{index}.ts",
+            )
+            for index in range(3)
+        )
+        response = self.client.post(
+            "/ask",
+            json=self._ask_payload(scope_type="file", items=items),
+        )
+
+        self.assertEqual(response.status_code, 422)
 
     def test_ask_uses_normal_file_context(self) -> None:
         content = "export const answer = 42;"

@@ -6,11 +6,14 @@ from pydantic import BaseModel, Field, model_validator
 
 AssistantMode = Literal["ideas", "code", "debug"]
 ScopeType = Literal["project", "file", "selection"]
-ContextSource = Literal["file", "selection"]
+ContextSource = Literal["file", "selection", "attachment"]
 MAX_CONTEXT_CHARACTERS = 20_000
 MAX_PROJECT_CONTEXT_FILES = 5
 MAX_PROJECT_FILE_CHARACTERS = 8_000
 MAX_PROJECT_CONTEXT_CHARACTERS = 40_000
+MAX_ATTACHED_FILES = 5
+MAX_REQUEST_CONTEXT_ITEMS = 6
+MAX_REQUEST_CONTEXT_CHARACTERS = 40_000
 
 
 def _utf16_character_count(value: str) -> int:
@@ -51,15 +54,31 @@ class AskScope(BaseModel):
 
     @model_validator(mode="after")
     def validate_items_for_scope(self) -> "AskScope":
+        attachments = [item for item in self.items if item.source == "attachment"]
+        primary_items = [item for item in self.items if item.source != "attachment"]
+
+        if len(attachments) > MAX_ATTACHED_FILES:
+            raise ValueError("scope contains too many attached files")
+        if len(self.items) > MAX_REQUEST_CONTEXT_ITEMS:
+            raise ValueError("scope contains too many context items")
+        if sum(item.includedCharacters for item in self.items) > MAX_REQUEST_CONTEXT_CHARACTERS:
+            raise ValueError("scope exceeds the total context limit")
+        if any(
+            item.includedCharacters > MAX_PROJECT_FILE_CHARACTERS
+            for item in attachments
+        ):
+            raise ValueError("scope contains an oversized attached file")
         if self.type == "file" and (
-            len(self.items) != 1 or self.items[0].source != "file"
+            len(primary_items) != 1 or primary_items[0].source != "file"
         ):
             raise ValueError("file scope requires exactly one file context item")
         if self.type == "selection" and (
-            len(self.items) != 1 or self.items[0].source != "selection"
+            len(primary_items) != 1 or primary_items[0].source != "selection"
         ):
             raise ValueError("selection scope requires exactly one selection context item")
-        if self.type == "project" and any(item.source != "file" for item in self.items):
+        if self.type == "project" and any(
+            item.source not in {"file", "attachment"} for item in self.items
+        ):
             raise ValueError("project scope can only contain file context items")
         if self.type == "project" and len(self.items) > MAX_PROJECT_CONTEXT_FILES:
             raise ValueError("project scope contains too many context files")
@@ -69,7 +88,7 @@ class AskScope(BaseModel):
             raise ValueError("project scope exceeds the total context limit")
         if self.type == "project" and any(
             item.includedCharacters > MAX_PROJECT_FILE_CHARACTERS
-            for item in self.items
+            for item in primary_items
         ):
             raise ValueError("project scope contains an oversized context file")
         return self
@@ -102,7 +121,7 @@ class AskResult(BaseModel):
     data: AskData
 
 
-app = FastAPI(title="DevMate Backend", version="0.3.0")
+app = FastAPI(title="DevMate Backend", version="0.4.0")
 
 
 @app.get("/health", response_model=HealthResult)
@@ -154,7 +173,11 @@ def _build_deterministic_answer(request: AskRequest) -> str:
 def _context_summary(scope: AskScope) -> list[str]:
     summaries: list[str] = []
     for item in scope.items:
-        label = "File context" if item.source == "file" else "Selection context"
+        label = {
+            "file": "File context",
+            "selection": "Selection context",
+            "attachment": "Attached context",
+        }[item.source]
         size = (
             f"{item.includedCharacters} of {item.totalCharacters} characters (truncated)"
             if item.truncated

@@ -4,7 +4,7 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 
 ## Current Features
 
-- Activity Bar chat view
+- Bottom-right Status Bar launcher that opens DevMate in a right-side editor tab
 - Modes: Ideas, Code, Debug
 - Scope tabs: Project, File, Selection
 - Shows where DevMate will focus
@@ -13,6 +13,7 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 - Deterministic backend answers for transport testing
 - Bounded Selection and active File context with language and truncation metadata
 - Bounded Project context with safe file discovery and deterministic relevance ranking
+- Workspace-only multi-file attachments with a compact expandable selected-file list
 
 Real LLM calls, RAG, and library docs are not connected yet.
 
@@ -29,6 +30,8 @@ DevMate requires Visual Studio Code 1.90+, Node.js 20+, npm 9+, and Python 3.10+
 - **Project** considers at most 200 text files up to 200 KB each, ranks them using question keywords, paths, and content, and sends at most five files.
 - Project context is limited to 8,000 characters per file and 40,000 characters in total.
 - Dependency, build, cache, binary, lock, environment, credential, and private-key files are excluded from automatic discovery.
+- **Attach files** lists only eligible files from the folder opened in VS Code; it does not open a system-wide filesystem browser.
+- Up to five attached files can be added or removed and combined with Project, File, or Selection scope. Each attachment is capped at 8,000 characters within the shared 40,000-character budget.
 
 ## Run the backend
 
@@ -78,7 +81,7 @@ Run the backend contract tests with:
    Run the frontend context tests with `npm test`.
 
 6. Press `F5`.
-7. In the new VS Code window, click the DevMate icon in the Activity Bar.
+7. In the new VS Code window, click `DevMate` in the bottom-right Status Bar.
 
 Keep the backend terminal running while testing the extension. If it is stopped, DevMate shows a backend-unavailable message instead of a placeholder answer.
 

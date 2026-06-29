@@ -46,6 +46,20 @@ test('limits project context by file count, per-file size, and total size', () =
   assert.equal(items.every((item) => item.truncated), true);
 });
 
+test('respects remaining limits after explicit attachments consume budget', () => {
+  const candidates = Array.from({ length: 5 }, (_, index) =>
+    candidate(`src/file${index}.ts`, `token-${index} `.repeat(2_000))
+  );
+  const items = selectProjectContext(candidates, 'token', {
+    maxFiles: 2,
+    maxCharacters: 9_000
+  });
+
+  assert.equal(items.length, 2);
+  assert.equal(items[0].includedCharacters, 8_000);
+  assert.equal(items[1].includedCharacters, 1_000);
+});
+
 test('infers common language identifiers from file paths', () => {
   assert.equal(languageIdForPath('src/app.ts'), 'typescript');
   assert.equal(languageIdForPath('backend/main.py'), 'python');

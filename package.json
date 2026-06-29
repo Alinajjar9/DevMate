@@ -14,8 +14,8 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:devMate.openChat",
-    "onView:devmate.chatView"
+    "onStartupFinished",
+    "onCommand:devMate.openChat"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -26,25 +26,6 @@
         "category": "DevMate"
       }
     ],
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "devmate",
-          "title": "DevMate",
-          "icon": "media/devmate.svg"
-        }
-      ]
-    },
-    "views": {
-      "devmate": [
-        {
-          "id": "devmate.chatView",
-          "name": "Chat",
-          "type": "webview",
-          "visibility": "visible"
-        }
-      ]
-    },
     "configuration": {
       "title": "DevMate",
       "properties": {
