@@ -10,7 +10,7 @@ const PROVIDER_KEY_HEADER = 'X-DevMate-Provider-Key';
 async function health(backendUrl) {
     return request(backendUrl, '/health', { method: 'GET' }, HEALTH_TIMEOUT_MS);
 }
-async function ask(backendUrl, askRequest, providerApiKey, timeoutMilliseconds = exports.DEFAULT_ASK_TIMEOUT_MS) {
+async function ask(backendUrl, askRequest, providerApiKey, timeoutMilliseconds = exports.DEFAULT_ASK_TIMEOUT_MS, signal) {
     if (providerApiKey && !isLoopbackBackendUrl(backendUrl)) {
         return {
             status: 'error',
@@ -24,9 +24,9 @@ async function ask(backendUrl, askRequest, providerApiKey, timeoutMilliseconds =
             ...(providerApiKey ? { [PROVIDER_KEY_HEADER]: providerApiKey } : {})
         },
         body: JSON.stringify(askRequest)
-    }, timeoutMilliseconds);
+    }, timeoutMilliseconds, signal);
 }
-async function request(backendUrl, path, init, timeoutMilliseconds) {
+async function request(backendUrl, path, init, timeoutMilliseconds, externalSignal) {
     const endpoint = createEndpoint(backendUrl, path);
     if (!endpoint) {
         return {
@@ -35,7 +35,18 @@ async function request(backendUrl, path, init, timeoutMilliseconds) {
         };
     }
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMilliseconds);
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+    }, timeoutMilliseconds);
+    const cancelRequest = () => controller.abort();
+    if (externalSignal?.aborted) {
+        controller.abort();
+    }
+    else {
+        externalSignal?.addEventListener('abort', cancelRequest, { once: true });
+    }
     try {
         const response = await fetch(endpoint, {
             ...init,
@@ -64,7 +75,9 @@ async function request(backendUrl, path, init, timeoutMilliseconds) {
         if (isAbortError(error)) {
             return {
                 status: 'error',
-                message: `The DevMate backend request timed out after ${timeoutMilliseconds / 1_000} seconds.`
+                message: timedOut
+                    ? `The DevMate backend request timed out after ${timeoutMilliseconds / 1_000} seconds.`
+                    : 'Request cancelled.'
             };
         }
         return {
@@ -74,6 +87,7 @@ async function request(backendUrl, path, init, timeoutMilliseconds) {
     }
     finally {
         clearTimeout(timeout);
+        externalSignal?.removeEventListener('abort', cancelRequest);
     }
 }
 function createEndpoint(backendUrl, path) {

@@ -12,7 +12,8 @@ export async function ask(
   backendUrl: string,
   askRequest: AskRequest,
   providerApiKey?: string,
-  timeoutMilliseconds = DEFAULT_ASK_TIMEOUT_MS
+  timeoutMilliseconds = DEFAULT_ASK_TIMEOUT_MS,
+  signal?: AbortSignal
 ): Promise<ApiResult<AskResponse>> {
   if (providerApiKey && !isLoopbackBackendUrl(backendUrl)) {
     return {
@@ -32,7 +33,8 @@ export async function ask(
       },
       body: JSON.stringify(askRequest)
     },
-    timeoutMilliseconds
+    timeoutMilliseconds,
+    signal
   );
 }
 
@@ -40,7 +42,8 @@ async function request<T>(
   backendUrl: string,
   path: string,
   init: RequestInit,
-  timeoutMilliseconds: number
+  timeoutMilliseconds: number,
+  externalSignal?: AbortSignal
 ): Promise<ApiResult<T>> {
   const endpoint = createEndpoint(backendUrl, path);
   if (!endpoint) {
@@ -51,7 +54,17 @@ async function request<T>(
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMilliseconds);
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMilliseconds);
+  const cancelRequest = () => controller.abort();
+  if (externalSignal?.aborted) {
+    controller.abort();
+  } else {
+    externalSignal?.addEventListener('abort', cancelRequest, { once: true });
+  }
 
   try {
     const response = await fetch(endpoint, {
@@ -83,7 +96,9 @@ async function request<T>(
     if (isAbortError(error)) {
       return {
         status: 'error',
-        message: `The DevMate backend request timed out after ${timeoutMilliseconds / 1_000} seconds.`
+        message: timedOut
+          ? `The DevMate backend request timed out after ${timeoutMilliseconds / 1_000} seconds.`
+          : 'Request cancelled.'
       };
     }
 
@@ -93,6 +108,7 @@ async function request<T>(
     };
   } finally {
     clearTimeout(timeout);
+    externalSignal?.removeEventListener('abort', cancelRequest);
   }
 }
 

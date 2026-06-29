@@ -103,6 +103,7 @@ type AgentToolExecution = {
 
 type WebviewMessage =
   | { command: 'ask'; mode: AssistantMode; question: string; scope: ScopeInfo }
+  | { command: 'cancelRequest' }
   | { command: 'setScope'; scope: ScopeKind }
   | { command: 'pickFiles' }
   | { command: 'removeAttachment'; id: string }
@@ -167,6 +168,7 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private readonly viewDisposables: vscode.Disposable[] = [];
   private readonly extensionUri: vscode.Uri;
   private pendingPermission?: PendingPermissionRequest;
+  private activeRequest?: AbortController;
 
   constructor(private readonly extensionContext: vscode.ExtensionContext) {
     this.extensionUri = extensionContext.extensionUri;
@@ -214,6 +216,8 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   private disposeViewDisposables(): void {
+    this.activeRequest?.abort();
+    this.activeRequest = undefined;
     this.pendingPermission?.resolve(false);
     this.pendingPermission = undefined;
     while (this.viewDisposables.length > 0) {
@@ -227,7 +231,22 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         await this.updateScope(message.scope);
         return;
       case 'ask':
-        await this.answerQuestion(message);
+        if (this.activeRequest) {
+          this.postStatus('DevMate is already working on a request.', 'warning');
+          return;
+        }
+        const requestController = new AbortController();
+        this.activeRequest = requestController;
+        try {
+          await this.answerQuestion(message, requestController.signal);
+        } finally {
+          if (this.activeRequest === requestController) {
+            this.activeRequest = undefined;
+          }
+        }
+        return;
+      case 'cancelRequest':
+        this.cancelActiveRequest();
         return;
       case 'pickFiles':
         await this.pickWorkspaceFiles();
@@ -640,6 +659,25 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       await this.postLlmProfileState();
       this.postStatus('Ready');
     }
+  }
+
+  private cancelActiveRequest(): void {
+    if (!this.activeRequest || this.activeRequest.signal.aborted) {
+      return;
+    }
+    this.activeRequest.abort();
+    this.pendingPermission?.resolve(false);
+    this.pendingPermission = undefined;
+    this.postMessage({ command: 'requestCancelling' });
+  }
+
+  private finishCancelledRequest(signal: AbortSignal): boolean {
+    if (!signal.aborted) {
+      return false;
+    }
+    this.postMessage({ command: 'requestCancelled' });
+    this.postStatus('Ready');
+    return true;
   }
 
   private async showLlmProfileForm(profile?: LlmProfile): Promise<void> {
@@ -1181,7 +1219,10 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
   }
 
-  private async answerQuestion(message: Extract<WebviewMessage, { command: 'ask' }>): Promise<void> {
+  private async answerQuestion(
+    message: Extract<WebviewMessage, { command: 'ask' }>,
+    signal: AbortSignal
+  ): Promise<void> {
     const question = message.question.trim();
     if (!question) {
       this.postStatus('Enter a question before asking.', 'warning');
@@ -1197,6 +1238,9 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
     this.postStatus('Collecting context');
     const collectedScope = await this.collectScope(message.scope.kind, question);
+    if (this.finishCancelledRequest(signal)) {
+      return;
+    }
     if (!collectedScope) {
       this.postStatus(
         message.scope.kind === 'selection' ? 'Select code first.' : 'Open a file first.',
@@ -1207,8 +1251,14 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
     this.postMessage({ command: 'scopeUpdated', scope: collectedScope.info });
     await wait(250);
+    if (this.finishCancelledRequest(signal)) {
+      return;
+    }
     this.postStatus('Generating answer');
     await wait(350);
+    if (this.finishCancelledRequest(signal)) {
+      return;
+    }
 
     const config = vscode.workspace.getConfiguration('devMate');
     const maxTokens = config.get<number>('maxTokens', 4000);
@@ -1232,6 +1282,9 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     let finalData: AskResponse | undefined;
 
     while (!finalData) {
+      if (this.finishCancelledRequest(signal)) {
+        return;
+      }
       const toolsEnabled = toolHistory.length < MAX_AGENT_TOOL_CALLS;
       const request: AskRequest = {
         question,
@@ -1255,8 +1308,12 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         getBackendUrl(),
         request,
         providerApiKey,
-        requestTimeoutSeconds * 1_000
+        requestTimeoutSeconds * 1_000,
+        signal
       );
+      if (this.finishCancelledRequest(signal)) {
+        return;
+      }
       if (result.status === 'error' || !result.data) {
         this.postStatus(result.message ?? 'Ask request failed.', 'error');
         return;
@@ -1307,6 +1364,9 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           toolSignatures.add(signature);
           execution = await this.executeAgentToolCall(toolCall);
         }
+        if (this.finishCancelledRequest(signal)) {
+          return;
+        }
         toolHistory.push(execution.step);
         execution.usedFiles.forEach((file) => toolUsedFiles.add(file));
         executedCalls += 1;
@@ -1318,14 +1378,26 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       }
     }
 
+    if (this.finishCancelledRequest(signal)) {
+      return;
+    }
+
     let changeOutcome = '';
     try {
       const fileChanges = validateFileChanges(finalData.changes ?? []);
       if (fileChanges.length > 0) {
         changeOutcome = await this.confirmAndApplyFileChanges(
           fileChanges,
-          finalData.answer
+          finalData.answer,
+          signal
         );
+        if (
+          signal.aborted
+          && !changeOutcome.startsWith('Applied file changes:')
+          && this.finishCancelledRequest(signal)
+        ) {
+          return;
+        }
       }
     } catch (error) {
       changeOutcome = error instanceof Error
@@ -1351,7 +1423,8 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   private async confirmAndApplyFileChanges(
     changes: ValidatedFileChange[],
-    summary: string
+    summary: string,
+    signal: AbortSignal
   ): Promise<string> {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) {
@@ -1394,6 +1467,9 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       if (!allowed) {
         return 'Proposed file changes were not applied.';
       }
+    }
+    if (signal.aborted) {
+      return 'Proposed file changes were not applied.';
     }
 
     this.postStatus('Applying file changes');
@@ -1799,6 +1875,108 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       white-space: pre-wrap;
     }
 
+    .working-card {
+      width: min(100%, 620px);
+      max-width: min(100%, 620px);
+      padding: 10px 11px;
+    }
+
+    .working-header {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .working-indicator {
+      width: 8px;
+      height: 8px;
+      flex: 0 0 auto;
+      border-radius: 50%;
+      background: var(--vscode-progressBar-background, var(--vscode-button-background));
+      animation: tool-pulse 1.1s ease-in-out infinite;
+    }
+
+    .working-card[data-state="cancelled"] .working-indicator,
+    .working-card[data-state="error"] .working-indicator {
+      animation: none;
+      background: var(--muted);
+    }
+
+    .working-heading {
+      min-width: 0;
+      color: var(--vscode-foreground);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .working-model {
+      margin-left: auto;
+      overflow: hidden;
+      color: var(--muted);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 10px;
+    }
+
+    .working-phases {
+      display: grid;
+      gap: 5px;
+      margin: 0 0 9px;
+      padding: 0;
+      list-style: none;
+    }
+
+    .working-phase {
+      display: grid;
+      grid-template-columns: 14px minmax(0, 1fr);
+      gap: 5px;
+      align-items: start;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .working-phase[data-status="active"] {
+      color: var(--vscode-foreground);
+    }
+
+    .working-phase[data-status="error"] {
+      color: var(--vscode-editorError-foreground);
+    }
+
+    .working-phase-icon {
+      text-align: center;
+    }
+
+    .working-footer {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+      padding-top: 7px;
+      border-top: 1px solid var(--border);
+    }
+
+    .working-elapsed {
+      color: var(--muted);
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .working-cancel {
+      height: 24px;
+      padding: 0 9px;
+      border-radius: 4px;
+      color: var(--vscode-button-secondaryForeground);
+      background: var(--vscode-button-secondaryBackground);
+      font-size: 10px;
+    }
+
+    .working-cancel[hidden] {
+      display: none;
+    }
+
     .tool-activity {
       display: grid;
       grid-template-columns: 20px minmax(0, 1fr);
@@ -1864,6 +2042,7 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
 
     @media (prefers-reduced-motion: reduce) {
+      .working-indicator,
       .tool-activity[data-status="running"] .tool-activity-icon {
         animation: none;
       }
@@ -2391,6 +2570,8 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         createFiles: 'ask',
         updateFiles: 'ask'
       },
+      workingStartedAt: 0,
+      workingTimer: undefined,
       askPending: false
     };
 
@@ -2455,6 +2636,7 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       appendMessage(question, 'user');
       questionEl.value = '';
       state.askPending = true;
+      startWorkingTurn();
       renderAskAvailability();
       vscode.postMessage({
         command: 'ask',
@@ -2584,11 +2766,19 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       const message = event.data;
 
       if (message.command === 'status') {
-        setStatus(message.text, message.level);
-        if (
-          state.askPending
-          && (message.text === 'Ready' || message.level === 'warning' || message.level === 'error')
-        ) {
+        if (message.level === 'info') {
+          setStatus('Ready');
+          if (state.askPending && message.text !== 'Ready') {
+            updateWorkingTurn(message.text);
+          }
+        } else {
+          setStatus(message.text, message.level);
+        }
+        const terminalStatus = message.level === 'error'
+          || (message.level === 'warning'
+            && !message.text.startsWith('The changes are allowed this time'));
+        if (state.askPending && terminalStatus) {
+          stopWorkingTurn('error', message.text);
           state.askPending = false;
           renderAskAvailability();
         }
@@ -2600,9 +2790,21 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       }
 
       if (message.command === 'assistantResponse') {
-        appendMessage(message.response, 'assistant');
+        finishWorkingTurn(message.response);
         state.askPending = false;
         renderAskAvailability();
+      }
+
+      if (message.command === 'requestCancelling') {
+        markWorkingTurnCancelling();
+      }
+
+      if (message.command === 'requestCancelled') {
+        stopWorkingTurn('cancelled', 'Request cancelled');
+        cancelPendingPermissionCards();
+        state.askPending = false;
+        renderAskAvailability();
+        setStatus('Ready');
       }
 
       if (message.command === 'attachmentsUpdated') {
@@ -2641,10 +2843,14 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       }
 
       if (message.command === 'permissionRequest') {
+        updateWorkingTurn('Waiting for permission');
         appendPermissionRequest(message);
       }
 
       if (message.command === 'agentToolActivity') {
+        if (message.activity.status === 'running') {
+          updateWorkingTurn(message.activity.title);
+        }
         renderAgentToolActivity(message.activity);
       }
     });
@@ -2679,6 +2885,193 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       item.appendChild(body);
       messagesEl.appendChild(item);
       messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function startWorkingTurn() {
+      document.getElementById('workingTurn')?.remove();
+      clearWorkingTimer();
+      state.workingStartedAt = Date.now();
+
+      const card = document.createElement('article');
+      card.id = 'workingTurn';
+      card.className = 'message assistant working-card';
+      card.dataset.state = 'working';
+      card.setAttribute('aria-live', 'polite');
+
+      const author = document.createElement('span');
+      author.className = 'message-author';
+      author.textContent = 'DevMate';
+      card.appendChild(author);
+
+      const header = document.createElement('div');
+      header.className = 'working-header';
+      const indicator = document.createElement('span');
+      indicator.className = 'working-indicator';
+      indicator.setAttribute('aria-hidden', 'true');
+      header.appendChild(indicator);
+      const heading = document.createElement('span');
+      heading.className = 'working-heading';
+      heading.textContent = 'Working on your request';
+      header.appendChild(heading);
+      const model = document.createElement('span');
+      model.className = 'working-model';
+      model.textContent = state.activeProfile?.name || 'Selected model';
+      model.title = state.activeProfile
+        ? state.activeProfile.providerLabel + ' · ' + state.activeProfile.model
+        : '';
+      header.appendChild(model);
+      card.appendChild(header);
+
+      const phases = document.createElement('ul');
+      phases.className = 'working-phases';
+      card.appendChild(phases);
+
+      const footer = document.createElement('div');
+      footer.className = 'working-footer';
+      const elapsed = document.createElement('span');
+      elapsed.className = 'working-elapsed';
+      footer.appendChild(elapsed);
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'working-cancel';
+      cancel.textContent = 'Cancel';
+      cancel.addEventListener('click', () => {
+        if (cancel.disabled) {
+          return;
+        }
+        cancel.disabled = true;
+        cancel.textContent = 'Cancelling…';
+        updateWorkingTurn('Cancelling request');
+        vscode.postMessage({ command: 'cancelRequest' });
+      });
+      footer.appendChild(cancel);
+      card.appendChild(footer);
+      messagesEl.appendChild(card);
+
+      updateWorkingElapsed();
+      state.workingTimer = setInterval(updateWorkingElapsed, 1000);
+      updateWorkingTurn('Preparing request');
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function updateWorkingTurn(text) {
+      const card = document.getElementById('workingTurn');
+      if (!card || card.dataset.state !== 'working' || !text || text === 'Ready') {
+        return;
+      }
+      const phases = card.querySelector('.working-phases');
+      const active = phases.querySelector('.working-phase[data-status="active"]');
+      if (active?.querySelector('.working-phase-text').textContent === text) {
+        return;
+      }
+      if (active) {
+        active.dataset.status = 'completed';
+        active.querySelector('.working-phase-icon').textContent = '✓';
+      }
+
+      const phase = document.createElement('li');
+      phase.className = 'working-phase';
+      phase.dataset.status = 'active';
+      const icon = document.createElement('span');
+      icon.className = 'working-phase-icon';
+      icon.textContent = '●';
+      phase.appendChild(icon);
+      const label = document.createElement('span');
+      label.className = 'working-phase-text';
+      label.textContent = text;
+      phase.appendChild(label);
+      phases.appendChild(phase);
+
+      while (phases.children.length > 4) {
+        phases.firstElementChild.remove();
+      }
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function markWorkingTurnCancelling() {
+      const card = document.getElementById('workingTurn');
+      if (!card) {
+        return;
+      }
+      const cancel = card.querySelector('.working-cancel');
+      cancel.disabled = true;
+      cancel.textContent = 'Cancelling…';
+      updateWorkingTurn('Cancelling request');
+    }
+
+    function stopWorkingTurn(stateName, detail) {
+      const card = document.getElementById('workingTurn');
+      if (!card) {
+        return;
+      }
+      clearWorkingTimer();
+      card.dataset.state = stateName;
+      card.querySelector('.working-heading').textContent = stateName === 'cancelled'
+        ? 'Request cancelled'
+        : 'Request stopped';
+      const active = card.querySelector('.working-phase[data-status="active"]');
+      if (active) {
+        active.dataset.status = stateName;
+        active.querySelector('.working-phase-icon').textContent = stateName === 'cancelled' ? '■' : '!';
+      }
+      if (detail && active?.querySelector('.working-phase-text').textContent !== detail) {
+        const phase = document.createElement('li');
+        phase.className = 'working-phase';
+        phase.dataset.status = stateName;
+        const icon = document.createElement('span');
+        icon.className = 'working-phase-icon';
+        icon.textContent = stateName === 'cancelled' ? '■' : '!';
+        phase.appendChild(icon);
+        const label = document.createElement('span');
+        label.className = 'working-phase-text';
+        label.textContent = detail;
+        phase.appendChild(label);
+        card.querySelector('.working-phases').appendChild(phase);
+      }
+      card.querySelector('.working-cancel').hidden = true;
+      updateWorkingElapsed();
+      card.removeAttribute('id');
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function finishWorkingTurn(response) {
+      clearWorkingTimer();
+      document.getElementById('workingTurn')?.remove();
+      appendMessage(response, 'assistant');
+    }
+
+    function cancelPendingPermissionCards() {
+      document.querySelectorAll('.permission-card').forEach((card) => {
+        const resolution = card.querySelector('.permission-resolution');
+        if (!resolution.hidden) {
+          return;
+        }
+        card.querySelectorAll('button').forEach((button) => {
+          button.disabled = true;
+        });
+        resolution.hidden = false;
+        resolution.textContent = 'Cancelled with request';
+      });
+    }
+
+    function updateWorkingElapsed() {
+      const elapsed = document.querySelector('#workingTurn .working-elapsed');
+      if (!elapsed || !state.workingStartedAt) {
+        return;
+      }
+      const totalSeconds = Math.max(0, Math.floor((Date.now() - state.workingStartedAt) / 1000));
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
+      elapsed.textContent = minutes > 0
+        ? 'Elapsed ' + minutes + 'm ' + String(seconds).padStart(2, '0') + 's'
+        : 'Elapsed ' + seconds + 's';
+    }
+
+    function clearWorkingTimer() {
+      if (state.workingTimer !== undefined) {
+        clearInterval(state.workingTimer);
+        state.workingTimer = undefined;
+      }
     }
 
     function appendPermissionRequest(message) {

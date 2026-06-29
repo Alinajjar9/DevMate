@@ -12,6 +12,7 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 - Configurable backend URL and clear offline feedback
 - Real OpenAI-compatible Chat Completions requests
 - Iterative read-only agent tools for listing files, reading files, and searching code
+- In-chat working state with real phases, elapsed time, selected model, and cancellation
 - Mode-aware prompts for Ideas, Code, and Debug
 - Enter-to-send composer with Shift+Enter for new lines
 - Distinct You and DevMate message bubbles
@@ -27,6 +28,8 @@ RAG and library-documentation retrieval are not connected yet.
 ## Agent tools
 
 DevMate can now ask the extension host to inspect the open project before answering. The first agent-tool slice supports `list_files`, `read_file`, and plain-text `search_code`. Tool activity appears as compact cards in the conversation, and the model can continue for up to eight calls before it must finish its answer.
+
+Each request immediately creates a working card in the conversation. It displays the selected model, elapsed time, actual lifecycle phases such as context collection and tool use, and a Cancel button. Routine progress no longer occupies the top status strip; that area is reserved for warnings and errors. The working card is removed when the final assistant message arrives, while completed tool activity remains visible.
 
 Read-only tools run instantly because they cannot modify the project. They remain workspace-bound and use the same exclusions as automatic project context, so dependency/build folders, binary files, lock files, environment files, and credential/key files are unavailable. The backend receives bounded tool results but never receives direct filesystem access.
 

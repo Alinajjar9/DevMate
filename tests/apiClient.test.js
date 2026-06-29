@@ -95,6 +95,36 @@ test('surfaces FastAPI provider error details', async () => {
   }
 });
 
+test('cancels an active backend request through an external signal', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async (_url, init) => new Promise((_resolve, reject) => {
+    init.signal.addEventListener('abort', () => {
+      const error = new Error('cancelled');
+      error.name = 'AbortError';
+      reject(error);
+    }, { once: true });
+  });
+  const controller = new AbortController();
+
+  try {
+    const pending = ask(
+      'http://127.0.0.1:8000',
+      askRequest(),
+      undefined,
+      10_000,
+      controller.signal
+    );
+    controller.abort();
+
+    const result = await pending;
+
+    assert.equal(result.status, 'error');
+    assert.equal(result.message, 'Request cancelled.');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 function askRequest() {
   return {
     question: 'Hello',
