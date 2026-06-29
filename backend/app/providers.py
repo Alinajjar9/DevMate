@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import os
 from typing import Literal, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
@@ -9,7 +10,28 @@ ProviderName = Literal["openai", "ollama"]
 MessageRole = Literal["system", "user", "assistant"]
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
-PROVIDER_TIMEOUT_SECONDS = 90.0
+DEFAULT_PROVIDER_TIMEOUT_SECONDS = 300.0
+MIN_PROVIDER_TIMEOUT_SECONDS = 10.0
+MAX_PROVIDER_TIMEOUT_SECONDS = 1_800.0
+
+
+def parse_provider_timeout_seconds(value: str | None) -> float:
+    if value is None:
+        return DEFAULT_PROVIDER_TIMEOUT_SECONDS
+
+    try:
+        timeout_seconds = float(value)
+    except ValueError:
+        return DEFAULT_PROVIDER_TIMEOUT_SECONDS
+
+    if not MIN_PROVIDER_TIMEOUT_SECONDS <= timeout_seconds <= MAX_PROVIDER_TIMEOUT_SECONDS:
+        return DEFAULT_PROVIDER_TIMEOUT_SECONDS
+    return timeout_seconds
+
+
+PROVIDER_TIMEOUT_SECONDS = parse_provider_timeout_seconds(
+    os.getenv("DEVMATE_PROVIDER_TIMEOUT_SECONDS")
+)
 
 
 @dataclass(frozen=True)

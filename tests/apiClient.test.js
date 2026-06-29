@@ -1,7 +1,15 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { ask, isLoopbackBackendUrl } = require('../out/api/client');
+const {
+  ask,
+  DEFAULT_ASK_TIMEOUT_MS,
+  isLoopbackBackendUrl
+} = require('../out/api/client');
+
+test('keeps the extension timeout above the five-minute provider limit', () => {
+  assert.equal(DEFAULT_ASK_TIMEOUT_MS, 330_000);
+});
 
 test('recognizes only loopback backend URLs for provider-key handoff', () => {
   assert.equal(isLoopbackBackendUrl('http://127.0.0.1:8000'), true);

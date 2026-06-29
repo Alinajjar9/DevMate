@@ -68,6 +68,13 @@
           "minimum": 0,
           "maximum": 2,
           "description": "Sampling temperature for later LLM requests."
+        },
+        "devMate.requestTimeoutSeconds": {
+          "type": "integer",
+          "default": 330,
+          "minimum": 30,
+          "maximum": 1830,
+          "description": "How long the extension waits for the DevMate backend to return an LLM answer. Keep this above the backend provider timeout."
         }
       }
     }
@@ -75,7 +82,7 @@
   "scripts": {
     "compile": "tsc -p ./ --listEmittedFiles",
     "check": "tsc -p ./ --noEmit",
-    "test": "npm run compile && node --test tests/apiClient.test.js tests/context.test.js tests/fileChanges.test.js tests/llmProfiles.test.js tests/projectContext.test.js",
+    "test": "npm run compile && node --test tests/apiClient.test.js tests/context.test.js tests/fileChanges.test.js tests/llmProfiles.test.js tests/permissions.test.js tests/projectContext.test.js",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile"
   },

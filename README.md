@@ -14,7 +14,7 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 - Mode-aware prompts for Ideas, Code, and Debug
 - Enter-to-send composer with Shift+Enter for new lines
 - Distinct You and DevMate message bubbles
-- Confirmed workspace file creation and updates in Code mode
+- In-chat approval cards and separate create/update instant-permission controls for Code mode
 - Bounded Selection and active File context with language and truncation metadata
 - Bounded Project context with safe file discovery and deterministic relevance ranking
 - Workspace-only multi-file attachments with a compact expandable selected-file list
@@ -39,11 +39,11 @@ Provider API keys are sent to the DevMate backend only when its configured URL p
 
 ## Code-mode changes
 
-Code mode asks the selected model for structured file changes instead of displaying implementation snippets as the answer. DevMate shows the proposed file list and requires confirmation before creating or updating files. Changes use a VS Code workspace edit so they participate in the editor's undo flow.
+Code mode asks the selected model for structured file changes instead of displaying implementation snippets as the answer. DevMate shows proposed changes in an in-chat permission card with **Deny**, **Allow once**, and **Always allow these** actions. The compact permission button beside the model selector independently controls whether creating and updating files should ask or happen instantly. Changes use a VS Code workspace edit so they participate in the editor's undo flow.
 
 After applying a change set, DevMate opens the first created or updated file in the main left editor group instead of beside the DevMate tab.
 
-Only workspace-relative text files in the first open folder can be changed. Absolute paths, parent traversal, duplicate paths, dependency/build folders, binary files, lock files, environment files, and credential/key files are rejected. Code mode does not delete files. A single response can change at most 10 files, with bounded per-file and total content sizes.
+Only workspace-relative text files in the first open folder can be changed. Absolute paths, parent traversal, duplicate paths, dependency/build folders, binary files, lock files, environment files, and credential/key files are rejected—even when instant permission is enabled. Code mode does not delete files or run model-proposed terminal commands. A single response can change at most 10 files, with bounded per-file and total content sizes.
 
 ## Requirements
 
@@ -77,6 +77,8 @@ Start the local service:
 ```
 
 The health endpoint is available at `http://127.0.0.1:8000/health`. The extension uses this address by default; change `devMate.backendUrl` in VS Code settings if the backend runs elsewhere.
+
+DevMate waits up to five minutes for a model provider response by default, and the extension waits another 30 seconds for the backend to finish returning it. To change the backend limit, set `DEVMATE_PROVIDER_TIMEOUT_SECONDS` to a value from 10 through 1800 before starting Uvicorn, then restart the backend. If you raise it above five minutes, also set `devMate.requestTimeoutSeconds` in VS Code to at least 30 seconds more than the backend limit.
 
 Run the backend contract tests with:
 

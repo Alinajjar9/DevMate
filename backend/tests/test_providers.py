@@ -6,13 +6,31 @@ import httpx
 from backend.app.providers import (
     ChatCompletionRequest,
     ChatMessage,
+    DEFAULT_PROVIDER_TIMEOUT_SECONDS,
     OpenAICompatibleProvider,
     ProviderError,
     create_chat_completions_url,
+    parse_provider_timeout_seconds,
 )
 
 
 class ProviderUrlTests(unittest.TestCase):
+    def test_provider_timeout_defaults_to_five_minutes(self) -> None:
+        self.assertEqual(DEFAULT_PROVIDER_TIMEOUT_SECONDS, 300.0)
+        self.assertEqual(
+            parse_provider_timeout_seconds(None),
+            DEFAULT_PROVIDER_TIMEOUT_SECONDS,
+        )
+
+    def test_provider_timeout_accepts_safe_environment_override(self) -> None:
+        self.assertEqual(parse_provider_timeout_seconds("600"), 600.0)
+        for value in ("invalid", "9", "1801"):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    parse_provider_timeout_seconds(value),
+                    DEFAULT_PROVIDER_TIMEOUT_SECONDS,
+                )
+
     def test_builds_nvidia_chat_completions_url(self) -> None:
         self.assertEqual(
             create_chat_completions_url(

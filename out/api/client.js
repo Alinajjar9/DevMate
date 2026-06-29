@@ -1,15 +1,16 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.DEFAULT_ASK_TIMEOUT_MS = void 0;
 exports.health = health;
 exports.ask = ask;
 exports.isLoopbackBackendUrl = isLoopbackBackendUrl;
 const HEALTH_TIMEOUT_MS = 2_000;
-const ASK_TIMEOUT_MS = 120_000;
+exports.DEFAULT_ASK_TIMEOUT_MS = 330_000;
 const PROVIDER_KEY_HEADER = 'X-DevMate-Provider-Key';
 async function health(backendUrl) {
     return request(backendUrl, '/health', { method: 'GET' }, HEALTH_TIMEOUT_MS);
 }
-async function ask(backendUrl, askRequest, providerApiKey) {
+async function ask(backendUrl, askRequest, providerApiKey, timeoutMilliseconds = exports.DEFAULT_ASK_TIMEOUT_MS) {
     if (providerApiKey && !isLoopbackBackendUrl(backendUrl)) {
         return {
             status: 'error',
@@ -23,7 +24,7 @@ async function ask(backendUrl, askRequest, providerApiKey) {
             ...(providerApiKey ? { [PROVIDER_KEY_HEADER]: providerApiKey } : {})
         },
         body: JSON.stringify(askRequest)
-    }, ASK_TIMEOUT_MS);
+    }, timeoutMilliseconds);
 }
 async function request(backendUrl, path, init, timeoutMilliseconds) {
     const endpoint = createEndpoint(backendUrl, path);

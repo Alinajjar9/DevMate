@@ -1,7 +1,7 @@
 import type { ApiResult, AskRequest, AskResponse, HealthResponse } from './types';
 
 const HEALTH_TIMEOUT_MS = 2_000;
-const ASK_TIMEOUT_MS = 120_000;
+export const DEFAULT_ASK_TIMEOUT_MS = 330_000;
 const PROVIDER_KEY_HEADER = 'X-DevMate-Provider-Key';
 
 export async function health(backendUrl: string): Promise<ApiResult<HealthResponse>> {
@@ -11,7 +11,8 @@ export async function health(backendUrl: string): Promise<ApiResult<HealthRespon
 export async function ask(
   backendUrl: string,
   askRequest: AskRequest,
-  providerApiKey?: string
+  providerApiKey?: string,
+  timeoutMilliseconds = DEFAULT_ASK_TIMEOUT_MS
 ): Promise<ApiResult<AskResponse>> {
   if (providerApiKey && !isLoopbackBackendUrl(backendUrl)) {
     return {
@@ -31,7 +32,7 @@ export async function ask(
       },
       body: JSON.stringify(askRequest)
     },
-    ASK_TIMEOUT_MS
+    timeoutMilliseconds
   );
 }
 

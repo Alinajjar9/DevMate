@@ -42,6 +42,7 @@ const client_1 = require("./api/client");
 const context_1 = require("./context");
 const fileChanges_1 = require("./fileChanges");
 const llmProfiles_1 = require("./llmProfiles");
+const permissions_1 = require("./permissions");
 const projectContext_1 = require("./projectContext");
 function activate(context) {
     const chatViewProvider = new DevMateChatViewProvider(context);
@@ -76,6 +77,7 @@ class DevMateChatViewProvider {
     attachedFiles = new Map();
     viewDisposables = [];
     extensionUri;
+    pendingPermission;
     constructor(extensionContext) {
         this.extensionContext = extensionContext;
         this.extensionUri = extensionContext.extensionUri;
@@ -110,6 +112,8 @@ class DevMateChatViewProvider {
         this.disposeViewDisposables();
     }
     disposeViewDisposables() {
+        this.pendingPermission?.resolve(false);
+        this.pendingPermission = undefined;
         while (this.viewDisposables.length > 0) {
             this.viewDisposables.pop()?.dispose();
         }
@@ -135,9 +139,16 @@ class DevMateChatViewProvider {
             case 'saveLlmProfile':
                 await this.saveLlmProfile(message.profile);
                 return;
+            case 'savePermissionPolicy':
+                await this.savePermissionPolicy(message.policy);
+                return;
+            case 'permissionDecision':
+                await this.handlePermissionDecision(message.requestId, message.decision);
+                return;
             case 'ready':
                 this.postAttachmentState();
                 await this.postLlmProfileState();
+                this.postPermissionPolicyState();
                 return;
             default:
                 this.postStatus('Unsupported command received.', 'error');
@@ -613,6 +624,55 @@ class DevMateChatViewProvider {
                 : undefined
         });
     }
+    getPermissionPolicy() {
+        return (0, permissions_1.parseFilePermissionPolicy)(this.extensionContext.globalState.get(permissions_1.FILE_PERMISSION_POLICY_STORAGE_KEY));
+    }
+    async savePermissionPolicy(policy) {
+        const normalizedPolicy = (0, permissions_1.parseFilePermissionPolicy)(policy);
+        await this.extensionContext.globalState.update(permissions_1.FILE_PERMISSION_POLICY_STORAGE_KEY, normalizedPolicy);
+        this.postPermissionPolicyState();
+        this.postStatus('Permission settings saved.');
+    }
+    postPermissionPolicyState() {
+        const policy = this.getPermissionPolicy();
+        this.postMessage({
+            command: 'permissionPolicyUpdated',
+            policy,
+            label: (0, permissions_1.permissionPolicyLabel)(policy)
+        });
+    }
+    async handlePermissionDecision(requestId, decision) {
+        const pending = this.pendingPermission;
+        if (!pending || pending.id !== requestId) {
+            return;
+        }
+        this.pendingPermission = undefined;
+        if (decision === 'allowAlways') {
+            try {
+                const updatedPolicy = (0, permissions_1.allowActions)(this.getPermissionPolicy(), pending.actions);
+                await this.extensionContext.globalState.update(permissions_1.FILE_PERMISSION_POLICY_STORAGE_KEY, updatedPolicy);
+                this.postPermissionPolicyState();
+            }
+            catch {
+                this.postStatus('The changes are allowed this time, but the permission preference could not be saved.', 'warning');
+            }
+        }
+        pending.resolve(decision !== 'deny');
+    }
+    requestFileChangePermission(summary, files) {
+        this.pendingPermission?.resolve(false);
+        const requestId = (0, crypto_1.randomUUID)();
+        const actions = new Set(files.map((file) => file.operation));
+        return new Promise((resolve) => {
+            this.pendingPermission = { id: requestId, actions, resolve };
+            this.postMessage({
+                command: 'permissionRequest',
+                requestId,
+                summary,
+                files
+            });
+        });
+    }
     async readProjectCandidate(uri) {
         const relativePath = vscode.workspace.asRelativePath(uri, false);
         if ((0, projectContext_1.shouldSkipProjectFile)(relativePath)) {
@@ -669,6 +729,7 @@ class DevMateChatViewProvider {
         const config = vscode.workspace.getConfiguration('devMate');
         const maxTokens = config.get('maxTokens', 4000);
         const temperature = config.get('temperature', 0.2);
+        const requestTimeoutSeconds = Math.min(1830, Math.max(30, config.get('requestTimeoutSeconds', 330)));
         const request = {
             question,
             mode: message.mode,
@@ -688,7 +749,7 @@ class DevMateChatViewProvider {
             this.postStatus('The selected model profile is missing an API key.', 'warning');
             return;
         }
-        const result = await (0, client_1.ask)(getBackendUrl(), request, providerApiKey);
+        const result = await (0, client_1.ask)(getBackendUrl(), request, providerApiKey, requestTimeoutSeconds * 1_000);
         if (result.status === 'error' || !result.data) {
             this.postStatus(result.message ?? 'Ask request failed.', 'error');
             return;
@@ -697,7 +758,7 @@ class DevMateChatViewProvider {
         try {
             const fileChanges = (0, fileChanges_1.validateFileChanges)(result.data.changes ?? []);
             if (fileChanges.length > 0) {
-                changeOutcome = await this.confirmAndApplyFileChanges(fileChanges);
+                changeOutcome = await this.confirmAndApplyFileChanges(fileChanges, result.data.answer);
             }
         }
         catch (error) {
@@ -716,7 +777,7 @@ class DevMateChatViewProvider {
         });
         this.postStatus('Ready');
     }
-    async confirmAndApplyFileChanges(changes) {
+    async confirmAndApplyFileChanges(changes, summary) {
         const folder = vscode.workspace.workspaceFolders?.[0];
         if (!folder) {
             throw new Error('Open a workspace folder before applying file changes.');
@@ -740,15 +801,18 @@ class DevMateChatViewProvider {
             }
             return { ...change, uri, exists };
         }));
-        const fileList = plannedChanges
-            .map((change) => `${change.exists ? 'Update' : 'Create'} ${change.path}`)
-            .join('\n');
-        const confirmation = await vscode.window.showWarningMessage(`Apply ${formatFileCount(plannedChanges.length)} proposed by DevMate?`, {
-            modal: true,
-            detail: fileList
-        }, 'Apply changes');
-        if (confirmation !== 'Apply changes') {
-            return 'Proposed file changes were not applied.';
+        const permissionFiles = plannedChanges.map((change) => ({
+            path: change.path,
+            operation: change.exists ? 'update' : 'create'
+        }));
+        const permissionPolicy = this.getPermissionPolicy();
+        const requiresApproval = permissionFiles.some((file) => (0, permissions_1.permissionBehaviorForAction)(permissionPolicy, file.operation) === 'ask');
+        if (requiresApproval) {
+            this.postStatus('Waiting for permission');
+            const allowed = await this.requestFileChangePermission(summary, permissionFiles);
+            if (!allowed) {
+                return 'Proposed file changes were not applied.';
+            }
         }
         this.postStatus('Applying file changes');
         for (const change of plannedChanges.filter((item) => !item.exists)) {
@@ -1142,6 +1206,86 @@ class DevMateChatViewProvider {
       white-space: pre-wrap;
     }
 
+    .permission-card {
+      width: min(100%, 760px);
+      max-width: min(100%, 760px);
+      padding: 11px 12px 12px;
+      border-left-color: var(--vscode-editorWarning-foreground);
+      background: var(--vscode-editorWidget-background, var(--surface-soft));
+    }
+
+    .permission-title {
+      margin: 0 0 5px;
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .permission-summary {
+      margin: 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+
+    .permission-file-list {
+      display: grid;
+      gap: 5px;
+      margin: 10px 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .permission-file {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 7px;
+      align-items: center;
+      padding: 6px 7px;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      background: var(--surface);
+    }
+
+    .permission-operation {
+      padding: 2px 6px;
+      border-radius: 999px;
+      color: var(--vscode-badge-foreground);
+      background: var(--vscode-badge-background);
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .permission-path {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-family: var(--vscode-editor-font-family);
+      font-size: 11px;
+    }
+
+    .permission-actions {
+      display: flex;
+      gap: 6px;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+    }
+
+    .permission-actions .action-button {
+      height: 27px;
+      padding: 0 10px;
+      font-size: 11px;
+    }
+
+    .permission-resolution {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 11px;
+      text-align: right;
+    }
+
     .composer {
       display: grid;
       gap: 8px;
@@ -1186,6 +1330,10 @@ class DevMateChatViewProvider {
       max-width: min(260px, 70vw);
       color: var(--vscode-foreground);
       background: var(--vscode-input-background);
+    }
+
+    .permission-selector {
+      max-width: min(200px, 60vw);
     }
 
     .model-selector-label {
@@ -1306,9 +1454,72 @@ class DevMateChatViewProvider {
       border-top: 1px solid var(--border);
     }
 
+    .permission-setting-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .permission-setting-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(110px, auto);
+      gap: 12px;
+      align-items: center;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface-soft);
+    }
+
+    .permission-setting-copy {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .permission-setting-copy strong {
+      font-size: 12px;
+    }
+
+    .permission-setting-copy span {
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.35;
+    }
+
+    .permission-setting-row select {
+      width: 100%;
+      height: 30px;
+      padding: 0 7px;
+      border: 1px solid var(--vscode-input-border, var(--border));
+      border-radius: 4px;
+      color: var(--vscode-input-foreground);
+      background: var(--vscode-input-background);
+    }
+
+    .permission-blocked {
+      color: var(--muted);
+    }
+
+    .permission-blocked-badge {
+      justify-self: end;
+      padding: 3px 7px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 600;
+    }
+
     @media (max-width: 480px) {
       .profile-form-row {
         grid-template-columns: 1fr;
+      }
+
+      .permission-setting-row {
+        grid-template-columns: 1fr;
+      }
+
+      .permission-blocked-badge {
+        justify-self: start;
       }
     }
   </style>
@@ -1363,6 +1574,15 @@ class DevMateChatViewProvider {
           >
             <span id="llmProfileLabel" class="model-selector-label">Add model</span>
             <span class="model-selector-chevron" aria-hidden="true">▼</span>
+          </button>
+          <button
+            id="permissionSettingsButton"
+            class="scope-button model-selector permission-selector"
+            type="button"
+            title="Configure what DevMate can change without asking"
+          >
+            <span aria-hidden="true">◆</span>
+            <span id="permissionPolicyLabel" class="model-selector-label">Ask for changes</span>
           </button>
           <span class="composer-actions-spacer"></span>
           <button id="ask" class="action-button primary" type="button" disabled>Ask</button>
@@ -1439,6 +1659,58 @@ class DevMateChatViewProvider {
     </form>
   </dialog>
 
+  <dialog id="permissionDialog" class="profile-dialog" aria-labelledby="permissionDialogTitle">
+    <form id="permissionForm" class="profile-form">
+      <header class="profile-form-header">
+        <h2 id="permissionDialogTitle">File permissions</h2>
+        <p>Choose which safe workspace changes DevMate may apply without pausing.</p>
+      </header>
+      <div class="profile-form-body">
+        <div class="permission-setting-list">
+          <label class="permission-setting-row" for="permissionCreateFiles">
+            <span class="permission-setting-copy">
+              <strong>Create new files</strong>
+              <span>Only workspace-relative text files that pass DevMate's path checks.</span>
+            </span>
+            <select id="permissionCreateFiles">
+              <option value="ask">Ask every time</option>
+              <option value="allow">Allow instantly</option>
+            </select>
+          </label>
+          <label class="permission-setting-row" for="permissionUpdateFiles">
+            <span class="permission-setting-copy">
+              <strong>Update existing files</strong>
+              <span>Replaces complete text-file contents through VS Code's undoable workspace edit.</span>
+            </span>
+            <select id="permissionUpdateFiles">
+              <option value="ask">Ask every time</option>
+              <option value="allow">Allow instantly</option>
+            </select>
+          </label>
+          <div class="permission-setting-row permission-blocked">
+            <span class="permission-setting-copy">
+              <strong>Delete files</strong>
+              <span>DevMate does not currently accept delete operations.</span>
+            </span>
+            <span class="permission-blocked-badge">Blocked</span>
+          </div>
+          <div class="permission-setting-row permission-blocked">
+            <span class="permission-setting-copy">
+              <strong>Run terminal commands</strong>
+              <span>DevMate does not currently execute model-proposed commands.</span>
+            </span>
+            <span class="permission-blocked-badge">Blocked</span>
+          </div>
+        </div>
+        <p class="field-help">Instant permission never bypasses workspace boundaries, protected-file rules, or file-size limits.</p>
+      </div>
+      <footer class="profile-form-actions">
+        <button id="cancelPermissionSettings" class="action-button secondary" type="button">Cancel</button>
+        <button class="action-button primary" type="submit">Save permissions</button>
+      </footer>
+    </form>
+  </dialog>
+
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const state = {
@@ -1452,6 +1724,10 @@ class DevMateChatViewProvider {
       attachmentsExpanded: false,
       activeProfile: undefined,
       profileCount: 0,
+      permissionPolicy: {
+        createFiles: 'ask',
+        updateFiles: 'ask'
+      },
       askPending: false
     };
 
@@ -1479,6 +1755,12 @@ class DevMateChatViewProvider {
     const llmProfileApiKeyHelpEl = document.getElementById('llmProfileApiKeyHelp');
     const llmProfileFormErrorEl = document.getElementById('llmProfileFormError');
     const saveLlmProfileEl = document.getElementById('saveLlmProfile');
+    const permissionSettingsButtonEl = document.getElementById('permissionSettingsButton');
+    const permissionPolicyLabelEl = document.getElementById('permissionPolicyLabel');
+    const permissionDialogEl = document.getElementById('permissionDialog');
+    const permissionFormEl = document.getElementById('permissionForm');
+    const permissionCreateFilesEl = document.getElementById('permissionCreateFiles');
+    const permissionUpdateFilesEl = document.getElementById('permissionUpdateFiles');
     const ollamaDefaultBaseUrl = 'http://127.0.0.1:11434';
 
     document.querySelectorAll('.mode-button').forEach((button) => {
@@ -1532,6 +1814,31 @@ class DevMateChatViewProvider {
 
     llmProfileSelectorEl.addEventListener('click', () => {
       vscode.postMessage({ command: 'chooseLlmProfile' });
+    });
+
+    permissionSettingsButtonEl.addEventListener('click', () => {
+      permissionCreateFilesEl.value = state.permissionPolicy.createFiles;
+      permissionUpdateFilesEl.value = state.permissionPolicy.updateFiles;
+      if (!permissionDialogEl.open) {
+        permissionDialogEl.showModal();
+      }
+      permissionCreateFilesEl.focus();
+    });
+
+    document.getElementById('cancelPermissionSettings').addEventListener('click', () => {
+      permissionDialogEl.close();
+    });
+
+    permissionFormEl.addEventListener('submit', (event) => {
+      event.preventDefault();
+      vscode.postMessage({
+        command: 'savePermissionPolicy',
+        policy: {
+          createFiles: permissionCreateFilesEl.value,
+          updateFiles: permissionUpdateFilesEl.value
+        }
+      });
+      permissionDialogEl.close();
     });
 
     llmProfileProviderEl.addEventListener('change', () => {
@@ -1664,6 +1971,15 @@ class DevMateChatViewProvider {
       if (message.command === 'closeLlmProfileForm') {
         closeLlmProfileForm();
       }
+
+      if (message.command === 'permissionPolicyUpdated') {
+        state.permissionPolicy = message.policy;
+        renderPermissionPolicy(message.label);
+      }
+
+      if (message.command === 'permissionRequest') {
+        appendPermissionRequest(message);
+      }
     });
 
     vscode.postMessage({ command: 'setScope', scope: 'project' });
@@ -1698,6 +2014,90 @@ class DevMateChatViewProvider {
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
+    function appendPermissionRequest(message) {
+      const files = Array.isArray(message.files) ? message.files : [];
+      const card = document.createElement('article');
+      card.className = 'message assistant permission-card';
+      card.dataset.requestId = message.requestId;
+
+      const author = document.createElement('span');
+      author.className = 'message-author';
+      author.textContent = 'DevMate';
+      card.appendChild(author);
+
+      const title = document.createElement('h3');
+      title.className = 'permission-title';
+      title.textContent = files.length === 1
+        ? 'Permission required for 1 file'
+        : 'Permission required for ' + files.length + ' files';
+      card.appendChild(title);
+
+      if (message.summary) {
+        const summary = document.createElement('p');
+        summary.className = 'permission-summary';
+        summary.textContent = message.summary;
+        card.appendChild(summary);
+      }
+
+      const list = document.createElement('ul');
+      list.className = 'permission-file-list';
+      files.forEach((file) => {
+        const item = document.createElement('li');
+        item.className = 'permission-file';
+
+        const operation = document.createElement('span');
+        operation.className = 'permission-operation';
+        operation.textContent = file.operation === 'update' ? 'Update' : 'Create';
+        item.appendChild(operation);
+
+        const filePath = document.createElement('span');
+        filePath.className = 'permission-path';
+        filePath.textContent = file.path;
+        filePath.title = file.path;
+        item.appendChild(filePath);
+        list.appendChild(item);
+      });
+      card.appendChild(list);
+
+      const actions = document.createElement('div');
+      actions.className = 'permission-actions';
+      const resolution = document.createElement('div');
+      resolution.className = 'permission-resolution';
+      resolution.hidden = true;
+
+      const addDecisionButton = (label, decision, primary = false) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'action-button ' + (primary ? 'primary' : 'secondary');
+        button.textContent = label;
+        button.addEventListener('click', () => {
+          actions.querySelectorAll('button').forEach((candidate) => {
+            candidate.disabled = true;
+          });
+          resolution.hidden = false;
+          resolution.textContent = decision === 'deny'
+            ? 'Denied'
+            : decision === 'allowAlways'
+              ? 'Allowed and remembered'
+              : 'Allowed once';
+          vscode.postMessage({
+            command: 'permissionDecision',
+            requestId: message.requestId,
+            decision
+          });
+        }, { once: true });
+        actions.appendChild(button);
+      };
+
+      addDecisionButton('Deny', 'deny');
+      addDecisionButton('Always allow these', 'allowAlways');
+      addDecisionButton('Allow once', 'allowOnce', true);
+      card.appendChild(actions);
+      card.appendChild(resolution);
+      messagesEl.appendChild(card);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
     function renderScope() {
       scopeDetailEl.textContent = state.scope.detail;
 
@@ -1719,6 +2119,14 @@ class DevMateChatViewProvider {
         + ' · ' + state.activeProfile.model
         + (state.profileCount > 1 ? ' · Select another model' : ' · Manage model');
       renderAskAvailability();
+    }
+
+    function renderPermissionPolicy(label) {
+      permissionPolicyLabelEl.textContent = label || 'Ask for changes';
+      permissionSettingsButtonEl.title = 'Create files: '
+        + (state.permissionPolicy.createFiles === 'allow' ? 'allow instantly' : 'ask')
+        + ' · Update files: '
+        + (state.permissionPolicy.updateFiles === 'allow' ? 'allow instantly' : 'ask');
     }
 
     function renderAskAvailability() {
