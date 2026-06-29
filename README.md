@@ -10,20 +10,25 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 - Shows where DevMate will focus
 - Local FastAPI backend with `/health` and `/ask`
 - Configurable backend URL and clear offline feedback
-- Deterministic backend answers for transport testing
+- Real OpenAI-compatible Chat Completions requests
+- Mode-aware prompts for Ideas, Code, and Debug
 - Bounded Selection and active File context with language and truncation metadata
 - Bounded Project context with safe file discovery and deterministic relevance ranking
 - Workspace-only multi-file attachments with a compact expandable selected-file list
 - Compact model selector with reusable OpenAI and Ollama profiles
 - API keys stored in VS Code SecretStorage instead of ordinary extension settings
 
-Real LLM calls, RAG, and library docs are not connected yet.
+RAG and library-documentation retrieval are not connected yet.
 
 ## Model profiles
 
 Use the model button beside **Ask** to add or select a model profile. Adding or editing opens one modal containing the display name, provider, exact model ID, optional custom base URL, and API key. The key is sent once from the modal to the extension host, cleared when the modal closes, and stored through VS Code SecretStorage. It is not kept in webview state or normal settings.
 
 Selecting **Manage model profiles** from the same menu lets you choose, edit, or delete saved profiles. Ollama profiles default to `http://127.0.0.1:11434` and do not require an API key in the current implementation.
+
+Profiles without a custom OpenAI base URL use `https://api.openai.com/v1`. OpenAI-compatible services can use a custom base URL; for example, NVIDIA NIM uses `https://integrate.api.nvidia.com/v1`. Ollama server-root URLs are automatically routed to `/v1/chat/completions`.
+
+Provider API keys are sent to the DevMate backend only when its configured URL points to the local computer (`localhost`, `127.x.x.x`, or `::1`). The backend forwards the key for that request without storing it, and provider redirects are disabled.
 
 ## Requirements
 

@@ -668,7 +668,14 @@ class DevMateChatPanel {
                 temperature
             }
         };
-        const result = await (0, client_1.ask)(getBackendUrl(), request);
+        const providerApiKey = activeProfile.provider === 'openai'
+            ? await this.extensionContext.secrets.get((0, llmProfiles_1.secretKeyForProfile)(activeProfile.id))
+            : undefined;
+        if (activeProfile.provider === 'openai' && !providerApiKey) {
+            this.postStatus('The selected model profile is missing an API key.', 'warning');
+            return;
+        }
+        const result = await (0, client_1.ask)(getBackendUrl(), request, providerApiKey);
         if (result.status === 'error' || !result.data) {
             this.postStatus(result.message ?? 'Ask request failed.', 'error');
             return;

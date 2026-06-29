@@ -887,7 +887,15 @@ class DevMateChatPanel implements vscode.Disposable {
       }
     };
 
-    const result = await ask(getBackendUrl(), request);
+    const providerApiKey = activeProfile.provider === 'openai'
+      ? await this.extensionContext.secrets.get(secretKeyForProfile(activeProfile.id))
+      : undefined;
+    if (activeProfile.provider === 'openai' && !providerApiKey) {
+      this.postStatus('The selected model profile is missing an API key.', 'warning');
+      return;
+    }
+
+    const result = await ask(getBackendUrl(), request, providerApiKey);
     if (result.status === 'error' || !result.data) {
       this.postStatus(result.message ?? 'Ask request failed.', 'error');
       return;

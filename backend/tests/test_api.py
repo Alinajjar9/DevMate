@@ -8,11 +8,41 @@ from backend.app.main import (
     MAX_PROJECT_CONTEXT_FILES,
     MAX_PROJECT_FILE_CHARACTERS,
     app,
+    get_chat_provider,
 )
+from backend.app.providers import ChatCompletionRequest, ProviderError
+
+
+class RecordingProvider:
+    def __init__(self) -> None:
+        self.requests: list[ChatCompletionRequest] = []
+        self.error: ProviderError | None = None
+
+    async def complete(self, request: ChatCompletionRequest) -> str:
+        self.requests.append(request)
+        if self.error:
+            raise self.error
+        return "Mock provider answer"
 
 
 class DevMateApiTests(unittest.TestCase):
-    client = TestClient(app)
+    provider = RecordingProvider()
+    client = TestClient(
+        app,
+        headers={"X-DevMate-Provider-Key": "test-provider-key"},
+    )
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        app.dependency_overrides[get_chat_provider] = lambda: cls.provider
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        app.dependency_overrides.clear()
+
+    def setUp(self) -> None:
+        self.provider.requests.clear()
+        self.provider.error = None
 
     def test_health_reports_online_backend(self) -> None:
         response = self.client.get("/health")
@@ -22,7 +52,7 @@ class DevMateApiTests(unittest.TestCase):
             response.json(),
             {
                 "status": "ok",
-                "data": {"backend": "online", "version": "0.4.0"},
+                "data": {"backend": "online", "version": "0.5.0"},
             },
         )
 
@@ -45,8 +75,12 @@ class DevMateApiTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["data"]["usedFiles"], ["C:\\repo\\src\\app.ts"])
-        self.assertIn("Question: What does this code do?", payload["data"]["answer"])
-        self.assertIn("Selection context: 10 characters", payload["data"]["answer"])
+        self.assertEqual(payload["data"]["answer"], "Mock provider answer")
+        provider_request = self.provider.requests[-1]
+        self.assertEqual(provider_request.api_key, "test-provider-key")
+        self.assertIn("Question:\nWhat does this code do?", provider_request.messages[1].content)
+        self.assertIn("Source: selection", provider_request.messages[1].content)
+        self.assertIn("return 42;", provider_request.messages[1].content)
 
     def test_selection_scope_accepts_workspace_attachment(self) -> None:
         items = [
@@ -72,7 +106,9 @@ class DevMateApiTests(unittest.TestCase):
             payload["usedFiles"],
             ["C:\\repo\\src\\app.ts", "C:\\repo\\src\\config.ts"],
         )
-        self.assertIn("Attached context:", payload["answer"])
+        prompt = self.provider.requests[-1].messages[1].content
+        self.assertIn("Source: attachment", prompt)
+        self.assertIn("export const config = {};", prompt)
 
     def test_scope_rejects_too_many_attachments(self) -> None:
         items = [self._context_item(source="selection", content="return 42;")]
@@ -137,10 +173,10 @@ class DevMateApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["data"]["usedFiles"], ["C:\\repo\\src\\app.ts"])
-        self.assertIn(
-            f"File context: {len(content)} characters from C:\\repo\\src\\app.ts [typescript]",
-            payload["data"]["answer"],
-        )
+        prompt = self.provider.requests[-1].messages[1].content
+        self.assertIn("Source: file", prompt)
+        self.assertIn("Path: C:\\repo\\src\\app.ts", prompt)
+        self.assertIn(content, prompt)
 
     def test_ask_accepts_empty_file_context(self) -> None:
         response = self.client.post(
@@ -152,7 +188,7 @@ class DevMateApiTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("File context: 0 characters", response.json()["data"]["answer"])
+        self.assertIn("Content:\n\n--- END CONTEXT", self.provider.requests[-1].messages[1].content)
 
     def test_ask_accepts_truncated_file_context(self) -> None:
         content = "a" * MAX_CONTEXT_CHARACTERS
@@ -166,10 +202,7 @@ class DevMateApiTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn(
-            f"File context: {MAX_CONTEXT_CHARACTERS} of {MAX_CONTEXT_CHARACTERS + 500} characters (truncated)",
-            response.json()["data"]["answer"],
-        )
+        self.assertIn("Truncated: yes", self.provider.requests[-1].messages[1].content)
 
     def test_ask_rejects_unbounded_file_content(self) -> None:
         content = "a" * (MAX_CONTEXT_CHARACTERS + 1)
@@ -270,6 +303,20 @@ class DevMateApiTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 422)
+
+    def test_provider_errors_are_returned_without_a_fake_answer(self) -> None:
+        self.provider.error = ProviderError("The provider rate limit was reached.", 429)
+
+        response = self.client.post(
+            "/ask",
+            json=self._ask_payload(scope_type="project", items=[]),
+        )
+
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(
+            response.json(),
+            {"detail": "The provider rate limit was reached."},
+        )
 
     @staticmethod
     def _ask_payload(scope_type: str, items: list[dict[str, object]]) -> dict[str, object]:

@@ -1,11 +1,18 @@
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
+from .prompts import AssistantMode, ScopeType, build_chat_messages
+from .providers import (
+    ChatCompletionRequest,
+    ChatProvider,
+    OpenAICompatibleProvider,
+    ProviderError,
+    ProviderName,
+)
 
-AssistantMode = Literal["ideas", "code", "debug"]
-ScopeType = Literal["project", "file", "selection"]
+
 ContextSource = Literal["file", "selection", "attachment"]
 MAX_CONTEXT_CHARACTERS = 20_000
 MAX_PROJECT_CONTEXT_FILES = 5
@@ -21,9 +28,9 @@ def _utf16_character_count(value: str) -> int:
 
 
 class LlmSettings(BaseModel):
-    provider: str
-    model: str
-    baseUrl: str | None = None
+    provider: ProviderName
+    model: str = Field(min_length=1, max_length=120)
+    baseUrl: str | None = Field(default=None, max_length=2_048)
     maxTokens: int = Field(ge=128, le=8_000)
     temperature: float = Field(ge=0, le=2)
 
@@ -122,7 +129,12 @@ class AskResult(BaseModel):
     data: AskData
 
 
-app = FastAPI(title="DevMate Backend", version="0.4.0")
+app = FastAPI(title="DevMate Backend", version="0.5.0")
+_chat_provider = OpenAICompatibleProvider()
+
+
+def get_chat_provider() -> ChatProvider:
+    return _chat_provider
 
 
 @app.get("/health", response_model=HealthResult)
@@ -134,12 +146,41 @@ async def health() -> HealthResult:
 
 
 @app.post("/ask", response_model=AskResult)
-async def ask(request: AskRequest) -> AskResult:
+async def ask(
+    request: AskRequest,
+    chat_provider: Annotated[ChatProvider, Depends(get_chat_provider)],
+    provider_api_key: Annotated[
+        str | None,
+        Header(alias="X-DevMate-Provider-Key", max_length=10_000),
+    ] = None,
+) -> AskResult:
     used_files = _used_files(request.scope)
+    api_key = provider_api_key.strip() if provider_api_key else None
+    messages = build_chat_messages(
+        mode=request.mode,
+        scope_type=request.scope.type,
+        question=request.question,
+        context_items=request.scope.items,
+    )
+    try:
+        answer = await chat_provider.complete(
+            ChatCompletionRequest(
+                provider=request.settings.provider,
+                model=request.settings.model,
+                base_url=request.settings.baseUrl,
+                api_key=api_key if request.settings.provider == "openai" else None,
+                messages=messages,
+                max_tokens=request.settings.maxTokens,
+                temperature=request.settings.temperature,
+            )
+        )
+    except ProviderError as error:
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from error
+
     return AskResult(
         status="ok",
         data=AskData(
-            answer=_build_deterministic_answer(request),
+            answer=answer,
             usedFiles=used_files,
         ),
     )
@@ -147,49 +188,3 @@ async def ask(request: AskRequest) -> AskResult:
 
 def _used_files(scope: AskScope) -> list[str]:
     return list(dict.fromkeys(item.filePath for item in scope.items))
-
-
-def _build_deterministic_answer(request: AskRequest) -> str:
-    lines = [
-        f"Mode: {request.mode}",
-        f"Scope: {request.scope.type}",
-        f"Provider: {request.settings.provider}",
-        f"Model: {request.settings.model}",
-        *(
-            [f"Base URL: {request.settings.baseUrl}"]
-            if request.settings.baseUrl
-            else []
-        ),
-        f"Max tokens: {request.settings.maxTokens}",
-        f"Temperature: {request.settings.temperature}",
-    ]
-    lines.extend(_context_summary(request.scope))
-
-    lines.extend(
-        [
-            "",
-            f"Question: {request.question}",
-            "",
-            "Deterministic response from the local DevMate backend. A real LLM is not connected yet.",
-        ]
-    )
-    return "\n".join(lines)
-
-
-def _context_summary(scope: AskScope) -> list[str]:
-    summaries: list[str] = []
-    for item in scope.items:
-        label = {
-            "file": "File context",
-            "selection": "Selection context",
-            "attachment": "Attached context",
-        }[item.source]
-        size = (
-            f"{item.includedCharacters} of {item.totalCharacters} characters (truncated)"
-            if item.truncated
-            else f"{item.totalCharacters} characters"
-        )
-        summaries.append(
-            f"{label}: {size} from {item.filePath} [{item.languageId}]"
-        )
-    return summaries
