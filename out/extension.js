@@ -1539,7 +1539,7 @@ class DevMateChatViewProvider {
             if ((createdStat.type & vscode.FileType.File) === 0) {
                 throw new StartedDependencyInstallError('The virtual environment was created without a usable Python interpreter.');
             }
-            pythonExecutable = createdUri.fsPath;
+            pythonExecutable = (0, pythonEnvironment_1.workspacePythonExecutable)(createdCandidate, call.arguments.cwd);
         }
         const manifestName = path.posix.basename(call.arguments.manifestPath);
         await runStep(pythonExecutable, ['-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '-r', manifestName], `${environmentLabel} -m pip install -r ${manifestName}`);
@@ -1636,7 +1636,10 @@ class DevMateChatViewProvider {
                 const stat = await vscode.workspace.fs.stat(uri);
                 if ((stat.type & vscode.FileType.File) !== 0) {
                     return {
-                        command: { ...command, executable: uri.fsPath },
+                        command: {
+                            ...command,
+                            executable: (0, pythonEnvironment_1.workspacePythonExecutable)(candidate, command.cwd)
+                        },
                         environment: candidate
                     };
                 }
@@ -2559,7 +2562,10 @@ class DevMateChatViewProvider {
     }
 
     .working-card[data-state="working"] {
-      animation: working-card-breathe 2.4s ease-in-out infinite;
+      position: sticky;
+      z-index: 20;
+      top: 8px;
+      animation: working-card-breathe 4.2s ease-in-out infinite;
     }
 
     .working-card[data-state="working"]::before {
@@ -2569,13 +2575,13 @@ class DevMateChatViewProvider {
       background: linear-gradient(
         110deg,
         transparent 18%,
-        color-mix(in srgb, var(--vscode-progressBar-background, var(--vscode-button-background)) 12%, transparent) 48%,
+        color-mix(in srgb, var(--vscode-progressBar-background, var(--vscode-button-background)) 7%, transparent) 48%,
         transparent 76%
       );
       content: '';
       pointer-events: none;
       transform: translateX(-120%);
-      animation: working-card-sheen 3.2s ease-in-out infinite;
+      animation: working-card-sheen 5.8s ease-in-out infinite;
     }
 
     .working-card[data-state="working"]::after {
@@ -2585,13 +2591,13 @@ class DevMateChatViewProvider {
       bottom: auto;
       left: 0;
       width: 3px;
-      height: 30%;
+      height: 22%;
       border-radius: 999px;
       background: var(--vscode-progressBar-background, var(--vscode-button-background));
-      box-shadow: 0 0 8px var(--vscode-progressBar-background, var(--vscode-button-background));
+      box-shadow: 0 0 4px var(--vscode-progressBar-background, var(--vscode-button-background));
       content: '';
       pointer-events: none;
-      animation: working-edge-travel 1.9s ease-in-out infinite;
+      animation: working-edge-travel 3.4s ease-in-out infinite;
     }
 
     .working-header {
@@ -2608,7 +2614,7 @@ class DevMateChatViewProvider {
       flex: 0 0 auto;
       border-radius: 50%;
       background: var(--vscode-progressBar-background, var(--vscode-button-background));
-      animation: working-indicator-core 1.15s ease-in-out infinite;
+      animation: working-indicator-core 1.8s ease-in-out infinite;
     }
 
     .working-indicator::after {
@@ -2617,7 +2623,7 @@ class DevMateChatViewProvider {
       border: 1px solid var(--vscode-progressBar-background, var(--vscode-button-background));
       border-radius: 50%;
       content: '';
-      animation: working-indicator-ring 1.15s ease-out infinite;
+      animation: working-indicator-ring 1.8s ease-out infinite;
     }
 
     .working-card[data-state="cancelled"] .working-indicator,
@@ -2645,7 +2651,7 @@ class DevMateChatViewProvider {
       vertical-align: bottom;
       white-space: nowrap;
       content: '...';
-      animation: working-ellipsis 1.4s steps(4, end) infinite;
+      animation: working-ellipsis 1.9s steps(4, end) infinite;
     }
 
     .working-model {
@@ -2683,11 +2689,11 @@ class DevMateChatViewProvider {
       background: linear-gradient(
         90deg,
         transparent 0%,
-        color-mix(in srgb, var(--vscode-progressBar-background, var(--vscode-button-background)) 15%, transparent) 45%,
+        color-mix(in srgb, var(--vscode-progressBar-background, var(--vscode-button-background)) 8%, transparent) 45%,
         transparent 78%
       );
       background-size: 220% 100%;
-      animation: working-phase-sweep 1.8s linear infinite;
+      animation: working-phase-sweep 3.2s linear infinite;
     }
 
     .working-phase[data-status="error"] {
@@ -2700,7 +2706,7 @@ class DevMateChatViewProvider {
 
     .working-phase[data-status="active"] .working-phase-icon {
       color: var(--vscode-progressBar-background, var(--vscode-button-background));
-      animation: working-phase-dot 0.9s ease-in-out infinite;
+      animation: working-phase-dot 1.5s ease-in-out infinite;
     }
 
     .working-footer {
@@ -2814,8 +2820,8 @@ class DevMateChatViewProvider {
       }
       50% {
         box-shadow:
-          0 0 0 1px color-mix(in srgb, var(--vscode-progressBar-background, var(--vscode-button-background)) 28%, transparent),
-          0 5px 18px color-mix(in srgb, var(--vscode-progressBar-background, var(--vscode-button-background)) 10%, transparent);
+          0 0 0 1px color-mix(in srgb, var(--vscode-progressBar-background, var(--vscode-button-background)) 18%, transparent),
+          0 4px 12px color-mix(in srgb, var(--vscode-progressBar-background, var(--vscode-button-background)) 6%, transparent);
       }
     }
 
@@ -2833,18 +2839,18 @@ class DevMateChatViewProvider {
 
     @keyframes working-indicator-core {
       0%, 100% {
-        opacity: 0.72;
-        transform: scale(0.82);
+        opacity: 0.78;
+        transform: scale(0.9);
       }
       50% {
         opacity: 1;
-        transform: scale(1.18);
+        transform: scale(1.08);
       }
     }
 
     @keyframes working-indicator-ring {
-      0% { opacity: 0.75; transform: scale(0.45); }
-      78%, 100% { opacity: 0; transform: scale(1.55); }
+      0% { opacity: 0.5; transform: scale(0.6); }
+      78%, 100% { opacity: 0; transform: scale(1.35); }
     }
 
     @keyframes working-ellipsis {
@@ -2858,8 +2864,8 @@ class DevMateChatViewProvider {
     }
 
     @keyframes working-phase-dot {
-      0%, 100% { opacity: 0.65; transform: translateY(1px) scale(0.82); }
-      50% { opacity: 1; transform: translateY(-1px) scale(1.12); }
+      0%, 100% { opacity: 0.72; transform: translateY(0) scale(0.92); }
+      50% { opacity: 1; transform: translateY(-1px) scale(1.05); }
     }
 
     @media (prefers-reduced-motion: reduce) {

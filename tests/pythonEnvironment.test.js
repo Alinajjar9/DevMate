@@ -4,13 +4,29 @@ const test = require('node:test');
 const {
   extractMissingPythonModule,
   isPythonVerificationCommand,
-  workspacePythonCandidates
+  workspacePythonCandidates,
+  workspacePythonExecutable
 } = require('../out/pythonEnvironment');
 
 test('recognizes Python verification executables', () => {
   assert.equal(isPythonVerificationCommand({ executable: 'python', args: [], cwd: '', timeoutSeconds: 30 }), true);
   assert.equal(isPythonVerificationCommand({ executable: 'py.exe', args: [], cwd: '', timeoutSeconds: 30 }), true);
   assert.equal(isPythonVerificationCommand({ executable: 'pytest', args: [], cwd: '', timeoutSeconds: 30 }), false);
+});
+
+test('uses shell-safe workspace-relative Python paths', () => {
+  assert.equal(
+    workspacePythonExecutable('.venv/Scripts/python.exe', ''),
+    './.venv/Scripts/python.exe'
+  );
+  assert.equal(
+    workspacePythonExecutable('backend/.venv/Scripts/python.exe', 'backend'),
+    './.venv/Scripts/python.exe'
+  );
+  assert.equal(
+    workspacePythonExecutable('.venv/Scripts/python.exe', 'backend'),
+    '../.venv/Scripts/python.exe'
+  );
 });
 
 test('prefers a working-directory virtual environment before the workspace root', () => {

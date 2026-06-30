@@ -1,3 +1,4 @@
+import * as path from 'path';
 import type { ValidatedCommand } from './commandTools';
 
 export function isPythonVerificationCommand(command: ValidatedCommand): boolean {
@@ -32,6 +33,13 @@ export function workspacePythonCandidates(
     }
   }
   return candidates;
+}
+
+export function workspacePythonExecutable(candidate: string, cwd: string): string {
+  const normalizedCandidate = candidate.replace(/\\/g, '/');
+  const normalizedCwd = cwd.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') || '.';
+  const relative = path.posix.relative(normalizedCwd, normalizedCandidate);
+  return relative.startsWith('../') ? relative : `./${relative.replace(/^\.\//, '')}`;
 }
 
 export function extractMissingPythonModule(output: string): string | undefined {

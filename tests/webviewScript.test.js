@@ -30,6 +30,7 @@ test('working card has visible motion with a reduced-motion fallback', () => {
     assert.match(source, new RegExp('@keyframes\\s+' + animation));
   }
   assert.match(source, /@media \(prefers-reduced-motion: reduce\)/);
+  assert.match(source, /\.working-card\[data-state="working"\][\s\S]+position:\s*sticky/);
 });
 
 test('settings expose the bounded tool-call limit', () => {
