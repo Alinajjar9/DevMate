@@ -35,8 +35,7 @@ import {
   allowActions,
   FILE_PERMISSION_POLICY_STORAGE_KEY,
   parseFilePermissionPolicy,
-  permissionBehaviorForAction,
-  permissionPolicyLabel
+  permissionBehaviorForAction
 } from './permissions';
 import type { FilePermissionAction, FilePermissionPolicy } from './permissions';
 import {
@@ -97,6 +96,13 @@ type LlmProfileFormSubmission = {
   apiKey?: string;
 };
 
+type DevMateSettingsSubmission = {
+  timeoutSeconds: number;
+  maxTokens: number;
+  temperature: number;
+  policy: FilePermissionPolicy;
+};
+
 type PendingPermissionRequest = {
   id: string;
   actions: Set<FilePermissionAction>;
@@ -116,7 +122,7 @@ type WebviewMessage =
   | { command: 'removeAttachment'; id: string }
   | { command: 'chooseLlmProfile' }
   | { command: 'saveLlmProfile'; profile: LlmProfileFormSubmission }
-  | { command: 'savePermissionPolicy'; policy: FilePermissionPolicy }
+  | { command: 'saveSettings'; settings: DevMateSettingsSubmission }
   | {
       command: 'permissionDecision';
       requestId: string;
@@ -268,8 +274,8 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       case 'saveLlmProfile':
         await this.saveLlmProfile(message.profile);
         return;
-      case 'savePermissionPolicy':
-        await this.savePermissionPolicy(message.policy);
+      case 'saveSettings':
+        await this.saveSettings(message.settings);
         return;
       case 'permissionDecision':
         await this.handlePermissionDecision(
@@ -281,6 +287,7 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         this.postAttachmentState();
         await this.postLlmProfileState();
         this.postPermissionPolicyState();
+        this.postSettingsState();
         return;
       default:
         this.postStatus('Unsupported command received.', 'error');
@@ -930,22 +937,74 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     );
   }
 
-  private async savePermissionPolicy(policy: FilePermissionPolicy): Promise<void> {
-    const normalizedPolicy = parseFilePermissionPolicy(policy);
-    await this.extensionContext.globalState.update(
-      FILE_PERMISSION_POLICY_STORAGE_KEY,
-      normalizedPolicy
-    );
+  private async saveSettings(settings: DevMateSettingsSubmission): Promise<void> {
+    if (
+      !Number.isInteger(settings.timeoutSeconds)
+      || settings.timeoutSeconds < 10
+      || settings.timeoutSeconds > 1800
+      || !Number.isInteger(settings.maxTokens)
+      || settings.maxTokens < 128
+      || settings.maxTokens > 32_000
+      || !Number.isFinite(settings.temperature)
+      || settings.temperature < 0
+      || settings.temperature > 2
+    ) {
+      this.postStatus('The settings contain an invalid value.', 'warning');
+      return;
+    }
+
+    const normalizedPolicy = parseFilePermissionPolicy(settings.policy);
+    const config = vscode.workspace.getConfiguration('devMate');
+    try {
+      await Promise.all([
+        config.update(
+          'requestTimeoutSeconds',
+          settings.timeoutSeconds,
+          vscode.ConfigurationTarget.Global
+        ),
+        config.update('maxTokens', settings.maxTokens, vscode.ConfigurationTarget.Global),
+        config.update('temperature', settings.temperature, vscode.ConfigurationTarget.Global),
+        this.extensionContext.globalState.update(
+          FILE_PERMISSION_POLICY_STORAGE_KEY,
+          normalizedPolicy
+        )
+      ]);
+    } catch {
+      this.postStatus('DevMate could not save the settings.', 'error');
+      return;
+    }
+
     this.postPermissionPolicyState();
-    this.postStatus('Permission settings saved.');
+    this.postSettingsState();
+    this.postMessage({ command: 'settingsSaved' });
   }
 
   private postPermissionPolicyState(): void {
     const policy = this.getPermissionPolicy();
     this.postMessage({
       command: 'permissionPolicyUpdated',
-      policy,
-      label: permissionPolicyLabel(policy)
+      policy
+    });
+  }
+
+  private postSettingsState(): void {
+    const config = vscode.workspace.getConfiguration('devMate');
+    this.postMessage({
+      command: 'settingsUpdated',
+      settings: {
+        timeoutSeconds: Math.min(
+          1800,
+          Math.max(10, config.get<number>('requestTimeoutSeconds', 900))
+        ),
+        maxTokens: Math.min(
+          32_000,
+          Math.max(128, config.get<number>('maxTokens', 16_384))
+        ),
+        temperature: Math.min(
+          2,
+          Math.max(0, config.get<number>('temperature', 0.2))
+        )
+      }
     });
   }
 
@@ -1661,18 +1720,23 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
 
     .toolbar {
-      display: grid;
-      gap: 8px;
-      padding: 10px 10px 8px;
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      padding: 6px 8px;
       background: var(--surface);
       border-bottom: 1px solid var(--border);
     }
 
     .mode-tabs {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 6px;
+      display: inline-flex;
+      gap: 2px;
       align-items: center;
+      width: fit-content;
+      padding: 2px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--surface-soft);
     }
 
     .scope-tabs {
@@ -1683,6 +1747,7 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
 
     .mode-button,
+    .toolbar-settings,
     .scope-button,
     .attachment-row-remove,
     .action-button {
@@ -1691,37 +1756,53 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
 
     .mode-button {
-      position: relative;
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      height: 36px;
-      border-color: var(--border);
-      border-radius: 6px;
-      color: var(--vscode-foreground);
-      background: var(--vscode-input-background);
-      font-size: 12px;
-      font-weight: 600;
-      overflow: hidden;
+      height: 24px;
+      padding: 0 9px;
+      border-radius: 4px;
+      color: var(--muted);
+      background: transparent;
+      font-size: 11px;
+      font-weight: 550;
     }
 
-    .mode-button[aria-pressed="true"],
+    .mode-button[aria-pressed="true"] {
+      color: var(--vscode-badge-foreground);
+      background: var(--vscode-badge-background);
+    }
+
     .action-button.primary {
       color: var(--vscode-button-foreground);
       background: var(--vscode-button-background);
       border-color: var(--vscode-button-background);
     }
 
-    .mode-button[aria-pressed="true"]::after {
-      position: absolute;
-      left: 8px;
-      right: 8px;
-      bottom: 5px;
-      height: 2px;
-      border-radius: 999px;
-      background: currentColor;
-      content: "";
-      opacity: 0.85;
+    .toolbar-settings {
+      display: inline-flex;
+      gap: 5px;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      margin-left: auto;
+      padding: 0;
+      border-color: var(--border);
+      border-radius: 5px;
+      color: var(--muted);
+      background: transparent;
+      font-size: 11px;
+    }
+
+    .toolbar-settings:hover {
+      color: var(--vscode-foreground);
+      background: var(--vscode-toolbar-hoverBackground);
+    }
+
+    .toolbar-settings-icon {
+      font-size: 13px;
+      line-height: 1;
     }
 
     .scope-button {
@@ -2265,10 +2346,6 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       background: var(--vscode-input-background);
     }
 
-    .permission-selector {
-      max-width: min(200px, 60vw);
-    }
-
     .model-selector-label {
       min-width: 0;
       overflow: hidden;
@@ -2387,6 +2464,32 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       border-top: 1px solid var(--border);
     }
 
+    .settings-section {
+      display: grid;
+      gap: 9px;
+    }
+
+    .settings-section + .settings-section {
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+    }
+
+    .settings-section-title {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .settings-value-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px 12px;
+    }
+
+    .settings-value-grid .profile-field:last-child {
+      grid-column: 1 / -1;
+    }
+
     .permission-setting-list {
       display: grid;
       gap: 8px;
@@ -2447,6 +2550,14 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         grid-template-columns: 1fr;
       }
 
+      .settings-value-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .settings-value-grid .profile-field:last-child {
+        grid-column: auto;
+      }
+
       .permission-setting-row {
         grid-template-columns: 1fr;
       }
@@ -2465,6 +2576,15 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         <button class="mode-button" type="button" data-mode="code" aria-pressed="false">Code</button>
         <button class="mode-button" type="button" data-mode="debug" aria-pressed="false">Debug</button>
       </div>
+      <button
+        id="settingsButton"
+        class="toolbar-settings"
+        type="button"
+        title="Open DevMate settings"
+        aria-label="Open DevMate settings"
+      >
+        <span class="toolbar-settings-icon" aria-hidden="true">⚙</span>
+      </button>
     </header>
 
     <section id="status" class="status" aria-live="polite" hidden></section>
@@ -2507,15 +2627,6 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           >
             <span id="llmProfileLabel" class="model-selector-label">Add model</span>
             <span class="model-selector-chevron" aria-hidden="true">▼</span>
-          </button>
-          <button
-            id="permissionSettingsButton"
-            class="scope-button model-selector permission-selector"
-            type="button"
-            title="Configure what DevMate can change without asking"
-          >
-            <span aria-hidden="true">◆</span>
-            <span id="permissionPolicyLabel" class="model-selector-label">Ask for changes</span>
           </button>
           <span class="composer-actions-spacer"></span>
           <button id="ask" class="action-button primary" type="button" disabled>Ask</button>
@@ -2595,51 +2706,74 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   <dialog id="permissionDialog" class="profile-dialog" aria-labelledby="permissionDialogTitle">
     <form id="permissionForm" class="profile-form">
       <header class="profile-form-header">
-        <h2 id="permissionDialogTitle">File permissions</h2>
-        <p>Choose which safe workspace changes DevMate may apply without pausing.</p>
+        <h2 id="permissionDialogTitle">DevMate settings</h2>
+        <p>Control model requests and what DevMate may change without pausing.</p>
       </header>
       <div class="profile-form-body">
-        <div class="permission-setting-list">
-          <label class="permission-setting-row" for="permissionCreateFiles">
-            <span class="permission-setting-copy">
-              <strong>Create new files</strong>
-              <span>Only workspace-relative text files that pass DevMate's path checks.</span>
-            </span>
-            <select id="permissionCreateFiles">
-              <option value="ask">Ask every time</option>
-              <option value="allow">Allow instantly</option>
-            </select>
-          </label>
-          <label class="permission-setting-row" for="permissionUpdateFiles">
-            <span class="permission-setting-copy">
-              <strong>Update existing files</strong>
-              <span>Replaces complete text-file contents through VS Code's undoable workspace edit.</span>
-            </span>
-            <select id="permissionUpdateFiles">
-              <option value="ask">Ask every time</option>
-              <option value="allow">Allow instantly</option>
-            </select>
-          </label>
-          <div class="permission-setting-row permission-blocked">
-            <span class="permission-setting-copy">
-              <strong>Delete files</strong>
-              <span>DevMate does not currently accept delete operations.</span>
-            </span>
-            <span class="permission-blocked-badge">Blocked</span>
+        <section class="settings-section" aria-labelledby="modelRequestSettingsTitle">
+          <h3 id="modelRequestSettingsTitle" class="settings-section-title">Model requests</h3>
+          <div class="settings-value-grid">
+            <div class="profile-field">
+              <label for="settingsTimeoutSeconds">Timeout (seconds)</label>
+              <input id="settingsTimeoutSeconds" type="number" min="10" max="1800" step="1" required>
+              <p id="settingsTimeoutHelp" class="field-help">Approximately 15 min.</p>
+            </div>
+            <div class="profile-field">
+              <label for="settingsMaxTokens">Maximum output tokens</label>
+              <input id="settingsMaxTokens" type="number" min="128" max="32000" step="1" required>
+              <p class="field-help">Shared by reasoning and final output.</p>
+            </div>
+            <div class="profile-field">
+              <label for="settingsTemperature">Temperature</label>
+              <input id="settingsTemperature" type="number" min="0" max="2" step="0.1" required>
+              <p class="field-help">Lower values are more deterministic.</p>
+            </div>
           </div>
-          <div class="permission-setting-row permission-blocked">
-            <span class="permission-setting-copy">
-              <strong>Run terminal commands</strong>
-              <span>DevMate does not currently execute model-proposed commands.</span>
-            </span>
-            <span class="permission-blocked-badge">Blocked</span>
+        </section>
+        <section class="settings-section" aria-labelledby="filePermissionSettingsTitle">
+          <h3 id="filePermissionSettingsTitle" class="settings-section-title">File permissions</h3>
+          <div class="permission-setting-list">
+            <label class="permission-setting-row" for="permissionCreateFiles">
+              <span class="permission-setting-copy">
+                <strong>Create new files</strong>
+                <span>Only workspace-relative text files that pass DevMate's path checks.</span>
+              </span>
+              <select id="permissionCreateFiles">
+                <option value="ask">Ask every time</option>
+                <option value="allow">Allow instantly</option>
+              </select>
+            </label>
+            <label class="permission-setting-row" for="permissionUpdateFiles">
+              <span class="permission-setting-copy">
+                <strong>Update existing files</strong>
+                <span>Replaces complete text-file contents through VS Code's undoable workspace edit.</span>
+              </span>
+              <select id="permissionUpdateFiles">
+                <option value="ask">Ask every time</option>
+                <option value="allow">Allow instantly</option>
+              </select>
+            </label>
+            <div class="permission-setting-row permission-blocked">
+              <span class="permission-setting-copy">
+                <strong>Delete files</strong>
+                <span>DevMate does not currently accept delete operations.</span>
+              </span>
+              <span class="permission-blocked-badge">Blocked</span>
+            </div>
+            <div class="permission-setting-row permission-blocked">
+              <span class="permission-setting-copy">
+                <strong>Run terminal commands</strong>
+                <span>DevMate does not currently execute model-proposed commands.</span>
+              </span>
+              <span class="permission-blocked-badge">Blocked</span>
+            </div>
           </div>
-        </div>
-        <p class="field-help">Instant permission never bypasses workspace boundaries, protected-file rules, or file-size limits.</p>
+          <p class="field-help">Instant permission never bypasses workspace boundaries, protected-file rules, or file-size limits.</p>
+        </section>
       </div>
       <footer class="profile-form-actions">
         <button id="cancelPermissionSettings" class="action-button secondary" type="button">Cancel</button>
-        <button class="action-button primary" type="submit">Save permissions</button>
+        <button class="action-button primary" type="submit">Save settings</button>
       </footer>
     </form>
   </dialog>
@@ -2660,6 +2794,11 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       permissionPolicy: {
         createFiles: 'ask',
         updateFiles: 'ask'
+      },
+      settings: {
+        timeoutSeconds: 900,
+        maxTokens: 16384,
+        temperature: 0.2
       },
       workingStartedAt: 0,
       workingTimer: undefined,
@@ -2691,12 +2830,15 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const llmProfileApiKeyHelpEl = document.getElementById('llmProfileApiKeyHelp');
     const llmProfileFormErrorEl = document.getElementById('llmProfileFormError');
     const saveLlmProfileEl = document.getElementById('saveLlmProfile');
-    const permissionSettingsButtonEl = document.getElementById('permissionSettingsButton');
-    const permissionPolicyLabelEl = document.getElementById('permissionPolicyLabel');
+    const settingsButtonEl = document.getElementById('settingsButton');
     const permissionDialogEl = document.getElementById('permissionDialog');
     const permissionFormEl = document.getElementById('permissionForm');
     const permissionCreateFilesEl = document.getElementById('permissionCreateFiles');
     const permissionUpdateFilesEl = document.getElementById('permissionUpdateFiles');
+    const settingsTimeoutSecondsEl = document.getElementById('settingsTimeoutSeconds');
+    const settingsTimeoutHelpEl = document.getElementById('settingsTimeoutHelp');
+    const settingsMaxTokensEl = document.getElementById('settingsMaxTokens');
+    const settingsTemperatureEl = document.getElementById('settingsTemperature');
     const ollamaDefaultBaseUrl = 'http://127.0.0.1:11434';
 
     document.querySelectorAll('.mode-button').forEach((button) => {
@@ -2754,14 +2896,22 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       vscode.postMessage({ command: 'chooseLlmProfile' });
     });
 
-    permissionSettingsButtonEl.addEventListener('click', () => {
+    const openSettingsDialog = () => {
       permissionCreateFilesEl.value = state.permissionPolicy.createFiles;
       permissionUpdateFilesEl.value = state.permissionPolicy.updateFiles;
+      settingsTimeoutSecondsEl.value = String(state.settings.timeoutSeconds);
+      settingsMaxTokensEl.value = String(state.settings.maxTokens);
+      settingsTemperatureEl.value = String(state.settings.temperature);
+      renderTimeoutApproximation();
       if (!permissionDialogEl.open) {
         permissionDialogEl.showModal();
       }
-      permissionCreateFilesEl.focus();
-    });
+      settingsTimeoutSecondsEl.focus();
+    };
+
+    settingsButtonEl.addEventListener('click', openSettingsDialog);
+
+    settingsTimeoutSecondsEl.addEventListener('input', renderTimeoutApproximation);
 
     document.getElementById('cancelPermissionSettings').addEventListener('click', () => {
       permissionDialogEl.close();
@@ -2769,14 +2919,21 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
     permissionFormEl.addEventListener('submit', (event) => {
       event.preventDefault();
+      const timeoutSeconds = Number(settingsTimeoutSecondsEl.value);
+      const maxTokens = Number(settingsMaxTokensEl.value);
+      const temperature = Number(settingsTemperatureEl.value);
       vscode.postMessage({
-        command: 'savePermissionPolicy',
-        policy: {
-          createFiles: permissionCreateFilesEl.value,
-          updateFiles: permissionUpdateFilesEl.value
+        command: 'saveSettings',
+        settings: {
+          timeoutSeconds,
+          maxTokens,
+          temperature,
+          policy: {
+            createFiles: permissionCreateFilesEl.value,
+            updateFiles: permissionUpdateFilesEl.value
+          }
         }
       });
-      permissionDialogEl.close();
     });
 
     llmProfileProviderEl.addEventListener('change', () => {
@@ -2939,7 +3096,18 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
       if (message.command === 'permissionPolicyUpdated') {
         state.permissionPolicy = message.policy;
-        renderPermissionPolicy(message.label);
+      }
+
+      if (message.command === 'settingsUpdated') {
+        state.settings = message.settings;
+        if (permissionDialogEl.open) {
+          settingsTimeoutSecondsEl.value = String(state.settings.timeoutSeconds);
+          renderTimeoutApproximation();
+        }
+      }
+
+      if (message.command === 'settingsSaved' && permissionDialogEl.open) {
+        permissionDialogEl.close();
       }
 
       if (message.command === 'permissionRequest') {
@@ -2968,6 +3136,18 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       statusEl.hidden = false;
       statusEl.textContent = text;
       statusEl.className = 'status ' + level;
+    }
+
+    function renderTimeoutApproximation() {
+      const seconds = Number(settingsTimeoutSecondsEl.value);
+      if (!Number.isFinite(seconds) || seconds <= 0) {
+        settingsTimeoutHelpEl.textContent = 'Enter a timeout from 10 to 1800 seconds.';
+        return;
+      }
+      const roundedMinutes = (Math.round((seconds / 60) * 10) / 10)
+        .toFixed(1)
+        .replace(/\.0$/, '');
+      settingsTimeoutHelpEl.textContent = 'Approximately ' + roundedMinutes + ' min.';
     }
 
     function appendMessage(text, role) {
@@ -3338,14 +3518,6 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         + ' · ' + state.activeProfile.model
         + (state.profileCount > 1 ? ' · Select another model' : ' · Manage model');
       renderAskAvailability();
-    }
-
-    function renderPermissionPolicy(label) {
-      permissionPolicyLabelEl.textContent = label || 'Ask for changes';
-      permissionSettingsButtonEl.title = 'Create files: '
-        + (state.permissionPolicy.createFiles === 'allow' ? 'allow instantly' : 'ask')
-        + ' · Update files: '
-        + (state.permissionPolicy.updateFiles === 'allow' ? 'allow instantly' : 'ask');
     }
 
     function renderAskAvailability() {

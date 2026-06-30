@@ -13,6 +13,7 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 - Real OpenAI-compatible Chat Completions requests
 - Iterative read-only agent tools for listing files, reading files, and searching code
 - In-chat working state with real phases, elapsed time, selected model, and cancellation
+- Compact segmented mode controls and a top-right in-chat Settings dialog
 - Mode-aware prompts for Ideas, Code, and Debug
 - Enter-to-send composer with Shift+Enter for new lines
 - Distinct You and DevMate message bubbles
@@ -42,6 +43,10 @@ Terminal execution and model-requested deletion are still blocked. File creation
 ## DevMate view placement
 
 DevMate is contributed directly to VS Code's Secondary Side Bar in its own dedicated view container. Opening DevMate switches the right sidebar from Codex/Chat to DevMate; opening Codex or Chat hides DevMate in turn. It opens on the right without a placement prompt, and files opened from Explorer stay in the editor area.
+
+## DevMate settings
+
+Use the gear button in the top-right of the DevMate view to configure provider timeout, maximum output tokens, temperature, and create/update file permissions in one dialog. Ideas, Code, and Debug use a compact segmented control on the left side of the top bar.
 
 ## Model profiles
 
