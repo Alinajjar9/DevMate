@@ -1,0 +1,63 @@
+const assert = require('node:assert/strict');
+const test = require('node:test');
+
+const {
+  boundedModelCommandOutput,
+  commandLabel,
+  commandSignature,
+  MAX_MODEL_COMMAND_OUTPUT_CHARACTERS,
+  parseRunCommandArguments,
+  sanitizeCommandOutput
+} = require('../out/commandTools');
+
+test('accepts bounded verification commands', () => {
+  const commands = [
+    { executable: 'npm', args: ['test'] },
+    { executable: 'npm', args: ['run', 'typecheck'] },
+    { executable: 'npx', args: ['--no-install', 'tsc', '--noEmit'] },
+    { executable: 'py', args: ['-m', 'unittest'] },
+    { executable: 'cargo', args: ['fmt', '--check'] },
+    { executable: './gradlew', args: ['test'] }
+  ];
+
+  for (const command of commands) {
+    assert.doesNotThrow(() => parseRunCommandArguments(command));
+  }
+});
+
+test('rejects shell, install, write, watch, git, and arbitrary commands', () => {
+  const commands = [
+    { executable: 'npm', args: ['install'] },
+    { executable: 'npm', args: ['run', 'test:watch'] },
+    { executable: 'prettier', args: ['--write', '.'] },
+    { executable: 'npx', args: ['eslint', '.'] },
+    { executable: 'python', args: ['-c', 'print(1)'] },
+    { executable: 'git', args: ['status'] },
+    { executable: 'npm', args: ['test', '; rm -rf .'] },
+    { executable: 'powershell', args: ['-Command', 'npm test'] },
+    { executable: 'npm', args: ['test'], cwd: 'node_modules/pkg' },
+    { executable: 'node', args: ['--test', 'C:\\outside\\test.js'] },
+    { executable: 'pytest', args: ['../outside'] }
+  ];
+
+  for (const command of commands) {
+    assert.throws(() => parseRunCommandArguments(command));
+  }
+});
+
+test('normalizes exact command signatures by command, arguments, and cwd', () => {
+  const first = parseRunCommandArguments({ executable: 'npm', args: ['test'], cwd: 'frontend' });
+  const same = parseRunCommandArguments({ executable: 'npm', args: ['test'], cwd: 'frontend/' });
+  const different = parseRunCommandArguments({ executable: 'npm', args: ['test'], cwd: 'backend' });
+
+  assert.equal(commandSignature(first), commandSignature(same));
+  assert.notEqual(commandSignature(first), commandSignature(different));
+  assert.equal(commandLabel(first), 'npm test');
+});
+
+test('sanitizes and bounds command output', () => {
+  assert.equal(sanitizeCommandOutput('\u001b[31mfailed\u001b[0m\r\nnext\u0000'), 'failed\nnext');
+  const bounded = boundedModelCommandOutput('x'.repeat(MAX_MODEL_COMMAND_OUTPUT_CHARACTERS + 100));
+  assert.match(bounded, /Earlier output omitted/);
+  assert.ok(bounded.length <= MAX_MODEL_COMMAND_OUTPUT_CHARACTERS);
+});

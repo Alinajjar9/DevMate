@@ -14,6 +14,7 @@ DEFAULT_PROVIDER_TIMEOUT_SECONDS = 900.0
 MIN_PROVIDER_TIMEOUT_SECONDS = 10.0
 MAX_PROVIDER_TIMEOUT_SECONDS = 1_800.0
 MAX_REASONING_DIAGNOSTIC_CHARACTERS = 1_000
+MAX_TOOL_ARGUMENT_CHARACTERS = 1_200_000
 
 
 def parse_provider_timeout_seconds(value: str | None) -> float:
@@ -342,7 +343,7 @@ def _read_completion(payload: object) -> ChatCompletion | None:
             or not name.strip()
             or len(name) > 120
             or not isinstance(arguments, str)
-            or len(arguments) > 4_000
+            or len(arguments) > MAX_TOOL_ARGUMENT_CHARACTERS
         ):
             return None
         tool_calls.append(

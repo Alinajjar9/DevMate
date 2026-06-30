@@ -54,7 +54,9 @@ export type AskRequest = {
   mode: AssistantMode;
   scope: AskScope;
   settings: LlmSettings;
+  enabledTools?: AgentToolName[];
   toolsEnabled?: boolean;
+  agentEditsEnabled?: boolean;
   forceFinalAnswer?: boolean;
   toolHistory?: AgentToolStep[];
 };

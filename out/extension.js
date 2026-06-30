@@ -41,7 +41,9 @@ const vscode = __importStar(require("vscode"));
 const agentTools_1 = require("./agentTools");
 const client_1 = require("./api/client");
 const context_1 = require("./context");
+const commandTools_1 = require("./commandTools");
 const fileChanges_1 = require("./fileChanges");
+const fileTools_1 = require("./fileTools");
 const llmProfiles_1 = require("./llmProfiles");
 const permissions_1 = require("./permissions");
 const projectContext_1 = require("./projectContext");
@@ -62,12 +64,16 @@ function activate(context) {
             void vscode.window.showErrorMessage(error instanceof Error ? error.message : 'DevMate could not open its chat view.');
         }
     });
+    const diffContentRegistration = vscode.workspace.registerTextDocumentContentProvider(DevMateChatViewProvider.diffScheme, chatViewProvider);
+    const workspaceTrustRegistration = vscode.workspace.onDidGrantWorkspaceTrust(() => {
+        chatViewProvider.notifyWorkspaceTrustChanged();
+    });
     const statusBarItem = vscode.window.createStatusBarItem('devMate.statusBar', vscode.StatusBarAlignment.Right, 1000);
     statusBarItem.text = '$(comment-discussion) DevMate';
     statusBarItem.tooltip = 'Open DevMate';
     statusBarItem.command = 'devMate.openChat';
     statusBarItem.show();
-    context.subscriptions.push(chatViewProvider, viewRegistration, openChatCommand, statusBarItem);
+    context.subscriptions.push(chatViewProvider, viewRegistration, diffContentRegistration, workspaceTrustRegistration, openChatCommand, statusBarItem);
 }
 function deactivate() {
     // VS Code disposes registered views and subscriptions.
@@ -76,13 +82,17 @@ class DevMateChatViewProvider {
     extensionContext;
     static viewId = 'devmate.dedicatedAssistantView';
     static containerId = 'devmate-dedicated-chat';
+    static diffScheme = 'devmate-diff';
     view;
     attachedFiles = new Map();
     viewDisposables = [];
     extensionUri;
     pendingPermission;
+    pendingCommandPermission;
     activeRequest;
     projectIndexCache;
+    diffDocuments = new Map();
+    commandTerminals = new Map();
     constructor(extensionContext) {
         this.extensionContext = extensionContext;
         this.extensionUri = extensionContext.extensionUri;
@@ -103,6 +113,12 @@ class DevMateChatViewProvider {
         }));
         void this.checkBackendHealth();
     }
+    provideTextDocumentContent(uri) {
+        return this.diffDocuments.get(uri.toString()) ?? '';
+    }
+    notifyWorkspaceTrustChanged() {
+        this.postSettingsState();
+    }
     async show() {
         await vscode.commands.executeCommand(`workbench.view.extension.${DevMateChatViewProvider.containerId}`);
         await vscode.commands.executeCommand(`${DevMateChatViewProvider.viewId}.focus`);
@@ -121,6 +137,10 @@ class DevMateChatViewProvider {
         this.activeRequest = undefined;
         this.pendingPermission?.resolve(false);
         this.pendingPermission = undefined;
+        this.pendingCommandPermission?.resolve(false);
+        this.pendingCommandPermission = undefined;
+        this.diffDocuments.clear();
+        this.disposeCommandTerminals();
         while (this.viewDisposables.length > 0) {
             this.viewDisposables.pop()?.dispose();
         }
@@ -136,6 +156,7 @@ class DevMateChatViewProvider {
                     return;
                 }
                 const requestController = new AbortController();
+                this.disposeCommandTerminals();
                 this.activeRequest = requestController;
                 try {
                     await this.answerQuestion(message, requestController.signal);
@@ -164,6 +185,22 @@ class DevMateChatViewProvider {
                 return;
             case 'saveSettings':
                 await this.saveSettings(message.settings);
+                return;
+            case 'reviewPermissionDiff':
+                await this.reviewPermissionDiff(message.requestId, message.path);
+                return;
+            case 'revokeRememberedCommand':
+                await this.revokeRememberedCommand(message.signature);
+                return;
+            case 'clearRememberedCommands':
+                await this.extensionContext.workspaceState.update(permissions_1.REMEMBERED_COMMANDS_STORAGE_KEY, []);
+                this.postSettingsState();
+                return;
+            case 'commandPermissionDecision':
+                await this.handleCommandPermissionDecision(message.requestId, message.decision);
+                return;
+            case 'openCommandTerminal':
+                this.commandTerminals.get(message.activityId)?.show(false);
                 return;
             case 'permissionDecision':
                 await this.handlePermissionDecision(message.requestId, message.decision);
@@ -605,6 +642,10 @@ class DevMateChatViewProvider {
         this.activeRequest.abort();
         this.pendingPermission?.resolve(false);
         this.pendingPermission = undefined;
+        this.pendingCommandPermission?.resolve(false);
+        this.pendingCommandPermission = undefined;
+        this.diffDocuments.clear();
+        this.disposeCommandTerminals();
         this.postMessage({ command: 'requestCancelling' });
     }
     finishCancelledRequest(signal) {
@@ -804,12 +845,23 @@ class DevMateChatViewProvider {
         });
     }
     getPermissionPolicy() {
-        return (0, permissions_1.parseFilePermissionPolicy)(this.extensionContext.globalState.get(permissions_1.FILE_PERMISSION_POLICY_STORAGE_KEY));
+        return (0, permissions_1.parseFilePermissionPolicy)(this.extensionContext.workspaceState.get(permissions_1.FILE_PERMISSION_POLICY_STORAGE_KEY));
+    }
+    getRememberedCommands() {
+        return (0, permissions_1.parseRememberedCommands)(this.extensionContext.workspaceState.get(permissions_1.REMEMBERED_COMMANDS_STORAGE_KEY));
+    }
+    async revokeRememberedCommand(signature) {
+        const updated = (0, permissions_1.revokeRememberedCommand)(this.getRememberedCommands(), signature);
+        await this.extensionContext.workspaceState.update(permissions_1.REMEMBERED_COMMANDS_STORAGE_KEY, updated);
+        this.postSettingsState();
     }
     async saveSettings(settings) {
         if (!Number.isInteger(settings.timeoutSeconds)
             || settings.timeoutSeconds < 10
             || settings.timeoutSeconds > 1800
+            || !Number.isInteger(settings.commandTimeoutSeconds)
+            || settings.commandTimeoutSeconds < commandTools_1.MIN_COMMAND_TIMEOUT_SECONDS
+            || settings.commandTimeoutSeconds > commandTools_1.MAX_COMMAND_TIMEOUT_SECONDS
             || !Number.isInteger(settings.maxTokens)
             || settings.maxTokens < 128
             || settings.maxTokens > 32_000
@@ -824,9 +876,10 @@ class DevMateChatViewProvider {
         try {
             await Promise.all([
                 config.update('requestTimeoutSeconds', settings.timeoutSeconds, vscode.ConfigurationTarget.Global),
+                config.update('commandTimeoutSeconds', settings.commandTimeoutSeconds, vscode.ConfigurationTarget.Global),
                 config.update('maxTokens', settings.maxTokens, vscode.ConfigurationTarget.Global),
                 config.update('temperature', settings.temperature, vscode.ConfigurationTarget.Global),
-                this.extensionContext.globalState.update(permissions_1.FILE_PERMISSION_POLICY_STORAGE_KEY, normalizedPolicy)
+                this.extensionContext.workspaceState.update(permissions_1.FILE_PERMISSION_POLICY_STORAGE_KEY, normalizedPolicy)
             ]);
         }
         catch {
@@ -850,8 +903,11 @@ class DevMateChatViewProvider {
             command: 'settingsUpdated',
             settings: {
                 timeoutSeconds: Math.min(1800, Math.max(10, config.get('requestTimeoutSeconds', 900))),
+                commandTimeoutSeconds: Math.min(commandTools_1.MAX_COMMAND_TIMEOUT_SECONDS, Math.max(commandTools_1.MIN_COMMAND_TIMEOUT_SECONDS, config.get('commandTimeoutSeconds', commandTools_1.DEFAULT_COMMAND_TIMEOUT_SECONDS))),
                 maxTokens: Math.min(32_000, Math.max(128, config.get('maxTokens', 16_384))),
-                temperature: Math.min(2, Math.max(0, config.get('temperature', 0.2)))
+                temperature: Math.min(2, Math.max(0, config.get('temperature', 0.2))),
+                rememberedCommands: this.getRememberedCommands(),
+                workspaceTrusted: vscode.workspace.isTrusted
             }
         });
     }
@@ -864,7 +920,7 @@ class DevMateChatViewProvider {
         if (decision === 'allowAlways') {
             try {
                 const updatedPolicy = (0, permissions_1.allowActions)(this.getPermissionPolicy(), pending.actions);
-                await this.extensionContext.globalState.update(permissions_1.FILE_PERMISSION_POLICY_STORAGE_KEY, updatedPolicy);
+                await this.extensionContext.workspaceState.update(permissions_1.FILE_PERMISSION_POLICY_STORAGE_KEY, updatedPolicy);
                 this.postPermissionPolicyState();
             }
             catch {
@@ -872,20 +928,86 @@ class DevMateChatViewProvider {
             }
         }
         pending.resolve(decision !== 'deny');
+        for (const diff of pending.diffs.values()) {
+            this.diffDocuments.delete(diff.originalUri.toString());
+            this.diffDocuments.delete(diff.proposedUri.toString());
+        }
     }
     requestFileChangePermission(summary, files) {
         this.pendingPermission?.resolve(false);
+        this.diffDocuments.clear();
         const requestId = (0, crypto_1.randomUUID)();
         const actions = new Set(files.map((file) => file.operation));
+        const diffs = new Map();
+        for (const file of files) {
+            const encodedPath = file.path.split('/').map(encodeURIComponent).join('/');
+            const originalUri = vscode.Uri.parse(`${DevMateChatViewProvider.diffScheme}:/${requestId}/original/${encodedPath}`);
+            const proposedUri = vscode.Uri.parse(`${DevMateChatViewProvider.diffScheme}:/${requestId}/proposed/${encodedPath}`);
+            this.diffDocuments.set(originalUri.toString(), file.originalContent);
+            this.diffDocuments.set(proposedUri.toString(), file.proposedContent);
+            diffs.set(file.path, {
+                path: file.path,
+                originalContent: file.originalContent,
+                proposedContent: file.proposedContent,
+                originalUri,
+                proposedUri
+            });
+        }
         return new Promise((resolve) => {
-            this.pendingPermission = { id: requestId, actions, resolve };
+            this.pendingPermission = { id: requestId, actions, diffs, resolve };
             this.postMessage({
                 command: 'permissionRequest',
                 requestId,
                 summary,
-                files
+                files: files.map(({ path, operation }) => ({ path, operation, canReview: true }))
             });
         });
+    }
+    async reviewPermissionDiff(requestId, filePath) {
+        const pending = this.pendingPermission;
+        const diff = pending?.id === requestId ? pending.diffs.get(filePath) : undefined;
+        if (!diff) {
+            this.postStatus('That proposed diff is no longer available.', 'warning');
+            return;
+        }
+        await vscode.commands.executeCommand('vscode.diff', diff.originalUri, diff.proposedUri, `DevMate: ${diff.path}`, { preview: true });
+    }
+    requestCommandPermission(signature, label, cwd) {
+        if (this.getRememberedCommands().some((command) => command.signature === signature)) {
+            return Promise.resolve(true);
+        }
+        this.pendingCommandPermission?.resolve(false);
+        const requestId = (0, crypto_1.randomUUID)();
+        return new Promise((resolve) => {
+            this.pendingCommandPermission = {
+                id: requestId,
+                signature,
+                label: `${label} · ${cwd || 'workspace root'}`,
+                resolve
+            };
+            this.postMessage({
+                command: 'commandPermissionRequest',
+                requestId,
+                label,
+                cwd: cwd || 'Workspace root'
+            });
+        });
+    }
+    async handleCommandPermissionDecision(requestId, decision) {
+        const pending = this.pendingCommandPermission;
+        if (!pending || pending.id !== requestId) {
+            return;
+        }
+        this.pendingCommandPermission = undefined;
+        if (decision === 'allowAlways') {
+            const updated = (0, permissions_1.rememberCommand)(this.getRememberedCommands(), {
+                signature: pending.signature,
+                label: pending.label
+            });
+            await this.extensionContext.workspaceState.update(permissions_1.REMEMBERED_COMMANDS_STORAGE_KEY, updated);
+            this.postSettingsState();
+        }
+        pending.resolve(decision !== 'deny');
     }
     async readProjectCandidate(uri) {
         const relativePath = vscode.workspace.asRelativePath(uri, false);
@@ -912,7 +1034,7 @@ class DevMateChatViewProvider {
             return undefined;
         }
     }
-    async executeAgentToolCall(call) {
+    async executeAgentToolCall(call, remainingMutationCharacters = fileChanges_1.MAX_TOTAL_CHANGE_CHARACTERS) {
         let parsedCall;
         try {
             parsedCall = (0, agentTools_1.parseAgentToolCall)(call);
@@ -928,44 +1050,106 @@ class DevMateChatViewProvider {
                     result: (0, agentTools_1.truncateAgentToolResult)(result),
                     isError: true
                 },
-                usedFiles: []
+                usedFiles: [],
+                mutationCharacters: 0
             };
         }
         const activity = describeAgentToolCall(parsedCall);
         this.postAgentToolActivity(call.id, activity.title, activity.detail, 'running');
         try {
-            const execution = await this.runAgentTool(parsedCall);
-            this.postAgentToolActivity(call.id, activity.title, activity.detail, 'completed', execution.resultSummary);
+            const execution = await this.runAgentTool(parsedCall, remainingMutationCharacters);
+            this.postAgentToolActivity(call.id, activity.title, activity.detail, 'completed', execution.resultSummary, parsedCall.name === 'run_command' && this.commandTerminals.has(parsedCall.id));
             return {
                 step: {
                     callId: parsedCall.id,
                     name: parsedCall.name,
-                    arguments: parsedCall.arguments,
+                    arguments: (0, agentTools_1.summarizedAgentToolArguments)(parsedCall),
                     result: (0, agentTools_1.truncateAgentToolResult)(execution.result),
                     isError: false
                 },
-                usedFiles: execution.usedFiles
+                usedFiles: execution.usedFiles,
+                mutationCharacters: execution.mutationCharacters
             };
         }
         catch (error) {
             const result = error instanceof Error ? error.message : 'The tool could not be completed.';
-            this.postAgentToolActivity(call.id, activity.title, activity.detail, 'error', result);
+            this.postAgentToolActivity(call.id, activity.title, activity.detail, 'error', result, parsedCall.name === 'run_command' && this.commandTerminals.has(parsedCall.id));
             return {
                 step: {
                     callId: parsedCall.id,
                     name: parsedCall.name,
-                    arguments: parsedCall.arguments,
+                    arguments: (0, agentTools_1.summarizedAgentToolArguments)(parsedCall),
                     result: (0, agentTools_1.truncateAgentToolResult)(result),
                     isError: true
                 },
-                usedFiles: []
+                usedFiles: [],
+                mutationCharacters: 0
             };
         }
     }
-    async runAgentTool(call) {
+    async runAgentTool(call, remainingMutationCharacters) {
         const folder = vscode.workspace.workspaceFolders?.[0];
         if (!folder) {
             throw new Error('Open a workspace folder before using project tools.');
+        }
+        if (call.name === 'create_file') {
+            await this.assertNoWorkspaceSymlink(folder, call.arguments.path, true);
+            const uri = vscode.Uri.joinPath(folder.uri, ...call.arguments.path.split('/'));
+            try {
+                await vscode.workspace.fs.stat(uri);
+                throw new Error(`${call.arguments.path} already exists; use edit_file instead.`);
+            }
+            catch (error) {
+                if (!(error instanceof vscode.FileSystemError && error.code === 'FileNotFound')) {
+                    throw error;
+                }
+            }
+            const changes = (0, fileChanges_1.validateFileChanges)([call.arguments]);
+            if (call.arguments.content.length > remainingMutationCharacters) {
+                throw new Error('This request reached the total file-mutation size limit.');
+            }
+            const outcome = await this.confirmAndApplyFileChanges(changes, `Create ${call.arguments.path}`, this.activeRequest?.signal ?? new AbortController().signal);
+            if (!outcome.startsWith('Applied file changes:')) {
+                throw new Error('Permission to create the file was denied.');
+            }
+            return {
+                result: outcome,
+                resultSummary: `Created ${call.arguments.path}`,
+                usedFiles: [uri.scheme === 'file' ? uri.fsPath : uri.toString()],
+                mutationCharacters: call.arguments.content.length
+            };
+        }
+        if (call.name === 'edit_file') {
+            await this.assertNoWorkspaceSymlink(folder, call.arguments.path, false);
+            const uri = vscode.Uri.joinPath(folder.uri, ...call.arguments.path.split('/'));
+            let document;
+            try {
+                document = await vscode.workspace.openTextDocument(uri);
+            }
+            catch {
+                throw new Error(`${call.arguments.path} does not exist or cannot be opened.`);
+            }
+            if (document.isDirty) {
+                throw new Error(`Save or discard your unsaved changes in ${call.arguments.path} before DevMate edits it.`);
+            }
+            const updatedContent = (0, fileTools_1.applyExactReplacements)(document.getText(), call.arguments.replacements);
+            if (updatedContent.length > remainingMutationCharacters) {
+                throw new Error('This request reached the total file-mutation size limit.');
+            }
+            const changes = (0, fileChanges_1.validateFileChanges)([{
+                    path: call.arguments.path,
+                    content: updatedContent
+                }]);
+            const outcome = await this.confirmAndApplyFileChanges(changes, `Edit ${call.arguments.path}`, this.activeRequest?.signal ?? new AbortController().signal);
+            if (!outcome.startsWith('Applied file changes:')) {
+                throw new Error('Permission to edit the file was denied.');
+            }
+            return {
+                result: outcome,
+                resultSummary: `Updated ${call.arguments.path}`,
+                usedFiles: [uri.scheme === 'file' ? uri.fsPath : uri.toString()],
+                mutationCharacters: updatedContent.length
+            };
         }
         if (call.name === 'list_files') {
             const uris = await this.findAgentFiles(folder, call.arguments.path);
@@ -979,7 +1163,8 @@ class DevMateChatViewProvider {
             return {
                 result,
                 resultSummary: `${relativePaths.length} eligible ${relativePaths.length === 1 ? 'file' : 'files'}`,
-                usedFiles: []
+                usedFiles: [],
+                mutationCharacters: 0
             };
         }
         if (call.name === 'read_file') {
@@ -989,17 +1174,29 @@ class DevMateChatViewProvider {
                 || !agentPathMatches(normalizeRelativeWorkspacePath(candidate.relativePath), call.arguments.path)) {
                 throw new Error('The file does not exist or is excluded from DevMate context.');
             }
+            const lines = candidate.content.split(/\r?\n/);
+            const startLine = call.arguments.startLine ?? 1;
+            const endLine = Math.min(call.arguments.endLine ?? lines.length, lines.length);
+            if (startLine > lines.length && lines.length > 0) {
+                throw new Error(`${call.arguments.path} has only ${lines.length} lines.`);
+            }
+            const selectedContent = lines.slice(startLine - 1, endLine).join('\n');
             const result = (0, agentTools_1.truncateAgentToolResult)([
                 `Path: ${call.arguments.path}`,
                 `Language: ${candidate.languageId}`,
+                `Lines: ${startLine}-${Math.max(startLine, endLine)} of ${lines.length}`,
                 'Content:',
-                candidate.content
+                selectedContent
             ].join('\n'));
             return {
                 result,
-                resultSummary: `${candidate.content.length} characters read`,
-                usedFiles: [candidate.filePath]
+                resultSummary: `${selectedContent.length} characters read`,
+                usedFiles: [candidate.filePath],
+                mutationCharacters: 0
             };
+        }
+        if (call.name === 'run_command') {
+            return this.runVerificationCommand(call, folder);
         }
         const uris = await this.findAgentFiles(folder, call.arguments.path);
         const query = call.arguments.query.toLocaleLowerCase();
@@ -1036,8 +1233,156 @@ class DevMateChatViewProvider {
         return {
             result,
             resultSummary: `${matches.length} ${matches.length === 1 ? 'match' : 'matches'}`,
-            usedFiles: [...usedFiles]
+            usedFiles: [...usedFiles],
+            mutationCharacters: 0
         };
+    }
+    async runVerificationCommand(call, folder) {
+        if (!vscode.workspace.isTrusted) {
+            throw new Error('Trust this workspace before allowing DevMate to run verification commands.');
+        }
+        const cwdUri = call.arguments.cwd
+            ? vscode.Uri.joinPath(folder.uri, ...call.arguments.cwd.split('/'))
+            : folder.uri;
+        if (call.arguments.cwd) {
+            await this.assertNoWorkspaceSymlink(folder, call.arguments.cwd, false);
+        }
+        if (call.arguments.executable.startsWith('./')) {
+            await this.assertNoWorkspaceSymlink(folder, [call.arguments.cwd, call.arguments.executable.slice(2)].filter(Boolean).join('/'), false);
+        }
+        try {
+            const stat = await vscode.workspace.fs.stat(cwdUri);
+            if ((stat.type & vscode.FileType.Directory) === 0) {
+                throw new Error('The command working directory is not a directory.');
+            }
+        }
+        catch (error) {
+            throw new Error(error instanceof Error
+                ? `Cannot use the command working directory: ${error.message}`
+                : 'Cannot use the command working directory.');
+        }
+        const command = call.arguments;
+        const label = (0, commandTools_1.commandLabel)(command);
+        const signature = (0, commandTools_1.commandSignature)(command);
+        const allowed = await this.requestCommandPermission(signature, label, command.cwd);
+        if (!allowed) {
+            throw new Error('Permission to run the verification command was denied.');
+        }
+        if (!vscode.workspace.isTrusted) {
+            throw new Error('Workspace Trust changed while command permission was pending; the command was not run.');
+        }
+        const signal = this.activeRequest?.signal ?? new AbortController().signal;
+        if (signal.aborted) {
+            throw new Error('The verification command was cancelled.');
+        }
+        const configuredTimeout = vscode.workspace.getConfiguration('devMate').get('commandTimeoutSeconds', commandTools_1.DEFAULT_COMMAND_TIMEOUT_SECONDS);
+        const timeoutSeconds = Math.min(command.timeoutSeconds, commandTools_1.MAX_COMMAND_TIMEOUT_SECONDS, Math.max(commandTools_1.MIN_COMMAND_TIMEOUT_SECONDS, configuredTimeout));
+        const terminal = vscode.window.createTerminal({
+            name: `DevMate: ${label.slice(0, 60)}`,
+            cwd: cwdUri,
+            isTransient: true
+        });
+        this.commandTerminals.set(call.id, terminal);
+        const shellIntegration = await this.waitForShellIntegration(terminal, signal);
+        if (!shellIntegration) {
+            terminal.dispose();
+            this.commandTerminals.delete(call.id);
+            throw new Error('VS Code terminal shell integration was unavailable after 5 seconds; the command was not run.');
+        }
+        const execution = shellIntegration.executeCommand(command.executable, command.args);
+        const startedAt = Date.now();
+        let output = '';
+        const outputReader = (async () => {
+            for await (const data of execution.read()) {
+                output = (0, commandTools_1.sanitizeCommandOutput)(output + data);
+                this.postAgentToolActivity(call.id, 'Running verification command', label, 'running', output, true);
+            }
+        })();
+        const outcome = await new Promise((resolve) => {
+            let settled = false;
+            const finish = (value) => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                clearTimeout(timeout);
+                signal.removeEventListener('abort', cancel);
+                endDisposable.dispose();
+                resolve(value);
+            };
+            const endDisposable = vscode.window.onDidEndTerminalShellExecution((event) => {
+                if (event.execution === execution) {
+                    finish({ state: 'completed', exitCode: event.exitCode });
+                }
+            });
+            const cancel = () => {
+                terminal.dispose();
+                finish({ state: 'cancelled' });
+            };
+            const timeout = setTimeout(() => {
+                terminal.dispose();
+                finish({ state: 'timeout' });
+            }, timeoutSeconds * 1_000);
+            signal.addEventListener('abort', cancel, { once: true });
+        });
+        await Promise.race([outputReader, wait(250)]);
+        const durationSeconds = Math.max(0, (Date.now() - startedAt) / 1_000);
+        const modelOutput = (0, commandTools_1.boundedModelCommandOutput)(output);
+        const result = [
+            `Command: ${label}`,
+            `Working directory: ${command.cwd || '.'}`,
+            outcome.state === 'completed'
+                ? `Exit code: ${outcome.exitCode ?? 'unknown'}`
+                : outcome.state === 'timeout'
+                    ? `Timed out after ${timeoutSeconds} seconds`
+                    : 'Cancelled',
+            `Duration: ${durationSeconds.toFixed(1)} seconds`,
+            modelOutput ? `Output:\n${modelOutput}` : 'Output: (none)'
+        ].join('\n');
+        if (outcome.state === 'cancelled') {
+            this.commandTerminals.delete(call.id);
+            throw new Error('The verification command was cancelled.');
+        }
+        if (outcome.state === 'timeout') {
+            this.commandTerminals.delete(call.id);
+            throw new Error(result);
+        }
+        if (outcome.exitCode !== 0) {
+            throw new Error(result);
+        }
+        return {
+            result,
+            resultSummary: `Passed in ${durationSeconds.toFixed(1)}s`,
+            usedFiles: [],
+            mutationCharacters: 0
+        };
+    }
+    waitForShellIntegration(terminal, signal) {
+        if (terminal.shellIntegration) {
+            return Promise.resolve(terminal.shellIntegration);
+        }
+        return new Promise((resolve) => {
+            const finish = (integration) => {
+                clearTimeout(timeout);
+                signal.removeEventListener('abort', cancel);
+                disposable.dispose();
+                resolve(integration);
+            };
+            const cancel = () => finish();
+            const disposable = vscode.window.onDidChangeTerminalShellIntegration((event) => {
+                if (event.terminal === terminal) {
+                    finish(event.shellIntegration);
+                }
+            });
+            const timeout = setTimeout(() => finish(), 5_000);
+            signal.addEventListener('abort', cancel, { once: true });
+        });
+    }
+    disposeCommandTerminals() {
+        for (const terminal of this.commandTerminals.values()) {
+            terminal.dispose();
+        }
+        this.commandTerminals.clear();
     }
     async findAgentFiles(folder, requestedPath) {
         const uris = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '**/*'), projectContext_1.PROJECT_EXCLUDE_GLOB, projectContext_1.MAX_ATTACHMENT_CANDIDATES);
@@ -1052,11 +1397,63 @@ class DevMateChatViewProvider {
             .sort((left, right) => vscode.workspace.asRelativePath(left, false).localeCompare(vscode.workspace.asRelativePath(right, false)))
             .slice(0, projectContext_1.MAX_PROJECT_CANDIDATES);
     }
-    postAgentToolActivity(id, title, detail, status, result) {
+    async assertNoWorkspaceSymlink(folder, relativePath, allowMissing) {
+        const segments = relativePath.split('/').filter(Boolean);
+        for (let index = 1; index <= segments.length; index += 1) {
+            const uri = vscode.Uri.joinPath(folder.uri, ...segments.slice(0, index));
+            try {
+                const stat = await vscode.workspace.fs.stat(uri);
+                if ((stat.type & vscode.FileType.SymbolicLink) !== 0) {
+                    throw new Error(`DevMate will not use the symbolic-link path ${segments.slice(0, index).join('/')}.`);
+                }
+            }
+            catch (error) {
+                if (allowMissing && error instanceof vscode.FileSystemError && error.code === 'FileNotFound') {
+                    return;
+                }
+                throw error;
+            }
+        }
+    }
+    postAgentToolActivity(id, title, detail, status, result, canOpenTerminal = false) {
         this.postMessage({
             command: 'agentToolActivity',
-            activity: { id, title, detail, status, result }
+            activity: { id, title, detail, status, result, canOpenTerminal }
         });
+    }
+    enabledAgentTools(mode, fileMutationCalls, commandCalls) {
+        const tools = ['list_files', 'read_file', 'search_code'];
+        if (mode === 'ideas' || !vscode.workspace.isTrusted) {
+            return tools;
+        }
+        if (fileMutationCalls < agentTools_1.MAX_AGENT_FILE_MUTATIONS) {
+            tools.push('create_file', 'edit_file');
+        }
+        if (commandCalls < agentTools_1.MAX_AGENT_COMMAND_CALLS) {
+            tools.push('run_command');
+        }
+        return tools;
+    }
+    rejectedToolExecution(call, result) {
+        let historyArguments = call.arguments;
+        try {
+            historyArguments = (0, agentTools_1.summarizedAgentToolArguments)((0, agentTools_1.parseAgentToolCall)(call));
+        }
+        catch {
+            // Keep the provider's bounded raw arguments for an invalid call.
+        }
+        this.postAgentToolActivity(call.id, 'Tool request rejected', call.name, 'error', result);
+        return {
+            step: {
+                callId: call.id,
+                name: call.name,
+                arguments: historyArguments,
+                result,
+                isError: true
+            },
+            usedFiles: [],
+            mutationCharacters: 0
+        };
     }
     async checkBackendHealth() {
         const result = await (0, client_1.health)(getBackendUrl());
@@ -1135,6 +1532,9 @@ class DevMateChatViewProvider {
         const toolHistory = [];
         const toolUsedFiles = new Set();
         const toolSignatures = new Set();
+        let fileMutationCalls = 0;
+        let mutationCharacters = 0;
+        let commandCalls = 0;
         let forceFinalAnswer = false;
         let emptyResponseRecoveryAttempted = false;
         let finalData;
@@ -1144,7 +1544,10 @@ class DevMateChatViewProvider {
             }
             const forceFinalThisTurn = forceFinalAnswer
                 || toolHistory.length >= agentTools_1.MAX_AGENT_TOOL_CALLS;
-            const toolsEnabled = !forceFinalThisTurn;
+            const enabledTools = forceFinalThisTurn
+                ? []
+                : this.enabledAgentTools(message.mode, fileMutationCalls, commandCalls);
+            const toolsEnabled = enabledTools.length > 0;
             const request = {
                 question,
                 mode: message.mode,
@@ -1157,7 +1560,8 @@ class DevMateChatViewProvider {
                     temperature,
                     timeoutSeconds: modelTimeoutSeconds
                 },
-                toolsEnabled,
+                enabledTools,
+                agentEditsEnabled: message.mode === 'code' || message.mode === 'debug',
                 forceFinalAnswer: forceFinalThisTurn,
                 toolHistory
             };
@@ -1217,18 +1621,36 @@ class DevMateChatViewProvider {
                     // The executor reports the validated tool error back to the model.
                 }
                 let execution;
-                if (signature && toolSignatures.has(signature)) {
+                const isFileMutation = toolCall.name === 'create_file' || toolCall.name === 'edit_file';
+                const isCommand = toolCall.name === 'run_command';
+                if (isFileMutation && fileMutationCalls >= agentTools_1.MAX_AGENT_FILE_MUTATIONS) {
+                    execution = this.rejectedToolExecution(toolCall, 'DevMate reached the file-mutation limit for this request.');
+                    forceFinalAnswer = true;
+                }
+                else if (isCommand && commandCalls >= agentTools_1.MAX_AGENT_COMMAND_CALLS) {
+                    execution = this.rejectedToolExecution(toolCall, 'DevMate reached the verification-command limit for this request.');
+                    forceFinalAnswer = true;
+                }
+                else if (signature && toolSignatures.has(signature)) {
                     const repeatedResult = 'This identical tool call was already completed. Use its earlier result.';
                     this.postAgentToolActivity(toolCall.id, 'Skipped repeated tool call', toolCall.name, 'error', repeatedResult);
                     execution = {
                         step: {
                             callId: toolCall.id,
                             name: toolCall.name,
-                            arguments: toolCall.arguments,
+                            arguments: (() => {
+                                try {
+                                    return (0, agentTools_1.summarizedAgentToolArguments)((0, agentTools_1.parseAgentToolCall)(toolCall));
+                                }
+                                catch {
+                                    return toolCall.arguments;
+                                }
+                            })(),
                             result: repeatedResult,
                             isError: true
                         },
-                        usedFiles: []
+                        usedFiles: [],
+                        mutationCharacters: 0
                     };
                     forceFinalAnswer = true;
                 }
@@ -1236,7 +1658,14 @@ class DevMateChatViewProvider {
                     if (signature) {
                         toolSignatures.add(signature);
                     }
-                    execution = await this.executeAgentToolCall(toolCall);
+                    execution = await this.executeAgentToolCall(toolCall, fileChanges_1.MAX_TOTAL_CHANGE_CHARACTERS - mutationCharacters);
+                    mutationCharacters += execution.mutationCharacters;
+                    if (isFileMutation) {
+                        fileMutationCalls += 1;
+                    }
+                    if (isCommand) {
+                        commandCalls += 1;
+                    }
                 }
                 if (this.finishCancelledRequest(signal)) {
                     return;
@@ -1286,15 +1715,25 @@ class DevMateChatViewProvider {
         if (!folder) {
             throw new Error('Open a workspace folder before applying file changes.');
         }
+        if (!vscode.workspace.isTrusted) {
+            throw new Error('Trust this workspace before allowing DevMate to change files.');
+        }
         const plannedChanges = await Promise.all(changes.map(async (change) => {
+            await this.assertNoWorkspaceSymlink(folder, change.path, true);
             const uri = vscode.Uri.joinPath(folder.uri, ...change.path.split('/'));
             let exists = false;
+            let originalContent = '';
             try {
                 const stat = await vscode.workspace.fs.stat(uri);
                 if ((stat.type & vscode.FileType.Directory) !== 0) {
                     throw new Error(`${change.path} is a directory, not a file.`);
                 }
                 exists = true;
+                const document = await vscode.workspace.openTextDocument(uri);
+                if (document.isDirty) {
+                    throw new Error(`Save or discard your unsaved changes in ${change.path} before DevMate edits it.`);
+                }
+                originalContent = document.getText();
             }
             catch (error) {
                 if (!(error instanceof vscode.FileSystemError && error.code === 'FileNotFound')) {
@@ -1303,11 +1742,13 @@ class DevMateChatViewProvider {
                         : `Could not inspect ${change.path}.`);
                 }
             }
-            return { ...change, uri, exists };
+            return { ...change, uri, exists, originalContent };
         }));
         const permissionFiles = plannedChanges.map((change) => ({
             path: change.path,
-            operation: change.exists ? 'update' : 'create'
+            operation: change.exists ? 'update' : 'create',
+            originalContent: change.originalContent,
+            proposedContent: change.content
         }));
         const permissionPolicy = this.getPermissionPolicy();
         const requiresApproval = permissionFiles.some((file) => (0, permissions_1.permissionBehaviorForAction)(permissionPolicy, file.operation) === 'ask');
@@ -1320,6 +1761,28 @@ class DevMateChatViewProvider {
         }
         if (signal.aborted) {
             return 'Proposed file changes were not applied.';
+        }
+        if (!vscode.workspace.isTrusted) {
+            throw new Error('Workspace Trust changed while permission was pending; the files were not changed.');
+        }
+        for (const change of plannedChanges) {
+            if (change.exists) {
+                const document = await vscode.workspace.openTextDocument(change.uri);
+                if (document.isDirty || document.getText() !== change.originalContent) {
+                    throw new Error(`${change.path} changed while permission was pending. Review the request again.`);
+                }
+            }
+            else {
+                try {
+                    await vscode.workspace.fs.stat(change.uri);
+                    throw new Error(`${change.path} was created while permission was pending. Review the request again.`);
+                }
+                catch (error) {
+                    if (!(error instanceof vscode.FileSystemError && error.code === 'FileNotFound')) {
+                        throw error;
+                    }
+                }
+            }
         }
         this.postStatus('Applying file changes');
         for (const change of plannedChanges.filter((item) => !item.exists)) {
@@ -1343,6 +1806,13 @@ class DevMateChatViewProvider {
         const applied = await vscode.workspace.applyEdit(workspaceEdit);
         if (!applied) {
             throw new Error('VS Code could not apply the proposed workspace edit.');
+        }
+        const saved = await Promise.all(plannedChanges.map(async (change) => {
+            const document = await vscode.workspace.openTextDocument(change.uri);
+            return document.save();
+        }));
+        if (saved.some((didSave) => !didSave)) {
+            throw new Error('DevMate applied the changes, but VS Code could not save every file.');
         }
         let openNote = '';
         try {
@@ -1893,10 +2363,16 @@ class DevMateChatViewProvider {
 
     .tool-activity-detail,
     .tool-activity-result {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      overflow: auto;
+      max-height: 140px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
       font-size: 10px;
+    }
+
+    .tool-open-terminal {
+      justify-self: start;
+      margin-top: 4px;
     }
 
     .tool-activity-result:empty {
@@ -2240,6 +2716,52 @@ class DevMateChatViewProvider {
       font-weight: 600;
     }
 
+    .remembered-command-list {
+      display: grid;
+      gap: 6px;
+      margin: 8px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .remembered-command {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      padding: 7px 8px;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      background: var(--surface);
+    }
+
+    .remembered-command-label {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-family: var(--vscode-editor-font-family);
+      font-size: 11px;
+    }
+
+    .remembered-command button,
+    .review-diff-button {
+      width: auto;
+      min-width: 0;
+      padding: 3px 7px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--vscode-foreground);
+      background: transparent;
+      cursor: pointer;
+    }
+
+    .remembered-command-empty {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
     @media (max-width: 480px) {
       .profile-form-row {
         grid-template-columns: 1fr;
@@ -2414,6 +2936,11 @@ class DevMateChatViewProvider {
               <p id="settingsTimeoutHelp" class="field-help">Approximately 15 min.</p>
             </div>
             <div class="profile-field">
+              <label for="settingsCommandTimeoutSeconds">Command timeout (seconds)</label>
+              <input id="settingsCommandTimeoutSeconds" type="number" min="10" max="1800" step="1" required>
+              <p class="field-help">Maximum runtime for each verification command.</p>
+            </div>
+            <div class="profile-field">
               <label for="settingsMaxTokens">Maximum output tokens</label>
               <input id="settingsMaxTokens" type="number" min="128" max="32000" step="1" required>
               <p class="field-help">Shared by reasoning and final output.</p>
@@ -2455,13 +2982,15 @@ class DevMateChatViewProvider {
               </span>
               <span class="permission-blocked-badge">Blocked</span>
             </div>
-            <div class="permission-setting-row permission-blocked">
+            <div class="permission-setting-row">
               <span class="permission-setting-copy">
-                <strong>Run terminal commands</strong>
-                <span>DevMate does not currently execute model-proposed commands.</span>
+                <strong>Verification commands</strong>
+                <span>New exact commands ask first and are remembered only for this workspace.</span>
               </span>
-              <span class="permission-blocked-badge">Blocked</span>
+              <span id="workspaceTrustBadge" class="permission-blocked-badge" hidden>Workspace untrusted</span>
             </div>
+            <ul id="rememberedCommandList" class="remembered-command-list"></ul>
+            <button id="clearRememberedCommands" class="action-button secondary" type="button">Clear remembered commands</button>
           </div>
           <p class="field-help">Instant permission never bypasses workspace boundaries, protected-file rules, or file-size limits.</p>
         </section>
@@ -2492,8 +3021,11 @@ class DevMateChatViewProvider {
       },
       settings: {
         timeoutSeconds: 900,
+        commandTimeoutSeconds: 300,
         maxTokens: 16384,
-        temperature: 0.2
+        temperature: 0.2,
+        rememberedCommands: [],
+        workspaceTrusted: true
       },
       workingStartedAt: 0,
       workingTimer: undefined,
@@ -2532,8 +3064,12 @@ class DevMateChatViewProvider {
     const permissionUpdateFilesEl = document.getElementById('permissionUpdateFiles');
     const settingsTimeoutSecondsEl = document.getElementById('settingsTimeoutSeconds');
     const settingsTimeoutHelpEl = document.getElementById('settingsTimeoutHelp');
+    const settingsCommandTimeoutSecondsEl = document.getElementById('settingsCommandTimeoutSeconds');
     const settingsMaxTokensEl = document.getElementById('settingsMaxTokens');
     const settingsTemperatureEl = document.getElementById('settingsTemperature');
+    const rememberedCommandListEl = document.getElementById('rememberedCommandList');
+    const clearRememberedCommandsEl = document.getElementById('clearRememberedCommands');
+    const workspaceTrustBadgeEl = document.getElementById('workspaceTrustBadge');
     const ollamaDefaultBaseUrl = 'http://127.0.0.1:11434';
 
     document.querySelectorAll('.mode-button').forEach((button) => {
@@ -2595,9 +3131,11 @@ class DevMateChatViewProvider {
       permissionCreateFilesEl.value = state.permissionPolicy.createFiles;
       permissionUpdateFilesEl.value = state.permissionPolicy.updateFiles;
       settingsTimeoutSecondsEl.value = String(state.settings.timeoutSeconds);
+      settingsCommandTimeoutSecondsEl.value = String(state.settings.commandTimeoutSeconds);
       settingsMaxTokensEl.value = String(state.settings.maxTokens);
       settingsTemperatureEl.value = String(state.settings.temperature);
       renderTimeoutApproximation();
+      renderRememberedCommands();
       if (!permissionDialogEl.open) {
         permissionDialogEl.showModal();
       }
@@ -2612,15 +3150,21 @@ class DevMateChatViewProvider {
       permissionDialogEl.close();
     });
 
+    clearRememberedCommandsEl.addEventListener('click', () => {
+      vscode.postMessage({ command: 'clearRememberedCommands' });
+    });
+
     permissionFormEl.addEventListener('submit', (event) => {
       event.preventDefault();
       const timeoutSeconds = Number(settingsTimeoutSecondsEl.value);
+      const commandTimeoutSeconds = Number(settingsCommandTimeoutSecondsEl.value);
       const maxTokens = Number(settingsMaxTokensEl.value);
       const temperature = Number(settingsTemperatureEl.value);
       vscode.postMessage({
         command: 'saveSettings',
         settings: {
           timeoutSeconds,
+          commandTimeoutSeconds,
           maxTokens,
           temperature,
           policy: {
@@ -2795,8 +3339,10 @@ class DevMateChatViewProvider {
 
       if (message.command === 'settingsUpdated') {
         state.settings = message.settings;
+        renderRememberedCommands();
         if (permissionDialogEl.open) {
           settingsTimeoutSecondsEl.value = String(state.settings.timeoutSeconds);
+          settingsCommandTimeoutSecondsEl.value = String(state.settings.commandTimeoutSeconds);
           renderTimeoutApproximation();
         }
       }
@@ -2808,6 +3354,11 @@ class DevMateChatViewProvider {
       if (message.command === 'permissionRequest') {
         updateWorkingTurn('Waiting for permission');
         appendPermissionRequest(message);
+      }
+
+      if (message.command === 'commandPermissionRequest') {
+        updateWorkingTurn('Waiting for command permission');
+        appendCommandPermissionRequest(message);
       }
 
       if (message.command === 'agentToolActivity') {
@@ -2843,6 +3394,42 @@ class DevMateChatViewProvider {
         .toFixed(1)
         .replace(/\.0$/, '');
       settingsTimeoutHelpEl.textContent = 'Approximately ' + roundedMinutes + ' min.';
+    }
+
+    function renderRememberedCommands() {
+      const commands = Array.isArray(state.settings.rememberedCommands)
+        ? state.settings.rememberedCommands
+        : [];
+      rememberedCommandListEl.replaceChildren();
+      workspaceTrustBadgeEl.hidden = state.settings.workspaceTrusted !== false;
+      clearRememberedCommandsEl.disabled = commands.length === 0;
+      if (commands.length === 0) {
+        const empty = document.createElement('li');
+        empty.className = 'remembered-command-empty';
+        empty.textContent = 'No verification commands are remembered.';
+        rememberedCommandListEl.appendChild(empty);
+        return;
+      }
+      commands.forEach((command) => {
+        const item = document.createElement('li');
+        item.className = 'remembered-command';
+        const label = document.createElement('span');
+        label.className = 'remembered-command-label';
+        label.textContent = command.label;
+        label.title = command.label;
+        item.appendChild(label);
+        const revoke = document.createElement('button');
+        revoke.type = 'button';
+        revoke.textContent = 'Forget';
+        revoke.addEventListener('click', () => {
+          vscode.postMessage({
+            command: 'revokeRememberedCommand',
+            signature: command.signature
+          });
+        });
+        item.appendChild(revoke);
+        rememberedCommandListEl.appendChild(item);
+      });
     }
 
     function appendMessage(text, role) {
@@ -3108,6 +3695,20 @@ class DevMateChatViewProvider {
         filePath.textContent = file.path;
         filePath.title = file.path;
         item.appendChild(filePath);
+        if (file.canReview) {
+          const review = document.createElement('button');
+          review.type = 'button';
+          review.className = 'review-diff-button';
+          review.textContent = 'Review diff';
+          review.addEventListener('click', () => {
+            vscode.postMessage({
+              command: 'reviewPermissionDiff',
+              requestId: message.requestId,
+              path: file.path
+            });
+          });
+          item.appendChild(review);
+        }
         list.appendChild(item);
       });
       card.appendChild(list);
@@ -3151,6 +3752,73 @@ class DevMateChatViewProvider {
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
+    function appendCommandPermissionRequest(message) {
+      const card = document.createElement('article');
+      card.className = 'message assistant permission-card';
+      card.dataset.requestId = message.requestId;
+
+      const author = document.createElement('span');
+      author.className = 'message-author';
+      author.textContent = 'DevMate';
+      card.appendChild(author);
+
+      const title = document.createElement('h3');
+      title.className = 'permission-title';
+      title.textContent = 'Permission required to run a command';
+      card.appendChild(title);
+
+      const command = document.createElement('code');
+      command.className = 'permission-summary';
+      command.textContent = message.label;
+      card.appendChild(command);
+
+      const cwd = document.createElement('p');
+      cwd.className = 'permission-summary';
+      cwd.textContent = 'Working directory: ' + message.cwd;
+      card.appendChild(cwd);
+
+      const warning = document.createElement('p');
+      warning.className = 'permission-summary';
+      warning.textContent = 'Verification commands can execute code from this trusted workspace.';
+      card.appendChild(warning);
+
+      const actions = document.createElement('div');
+      actions.className = 'permission-actions';
+      const resolution = document.createElement('div');
+      resolution.className = 'permission-resolution';
+      resolution.hidden = true;
+      const addDecisionButton = (label, decision, primary = false) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'action-button ' + (primary ? 'primary' : 'secondary');
+        button.textContent = label;
+        button.addEventListener('click', () => {
+          actions.querySelectorAll('button').forEach((candidate) => {
+            candidate.disabled = true;
+          });
+          resolution.hidden = false;
+          resolution.textContent = decision === 'deny'
+            ? 'Denied'
+            : decision === 'allowAlways'
+              ? 'Allowed and remembered for this workspace'
+              : 'Allowed once';
+          vscode.postMessage({
+            command: 'commandPermissionDecision',
+            requestId: message.requestId,
+            decision
+          });
+        }, { once: true });
+        actions.appendChild(button);
+      };
+      addDecisionButton('Deny', 'deny');
+      addDecisionButton('Always allow this command', 'allowAlways');
+      addDecisionButton('Allow once', 'allowOnce', true);
+      card.appendChild(actions);
+      card.appendChild(resolution);
+      messagesEl.appendChild(card);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
     function renderAgentToolActivity(activity) {
       let item = Array.from(messagesEl.querySelectorAll('.tool-activity')).find(
         (candidate) => candidate.dataset.activityId === activity.id
@@ -3176,6 +3844,18 @@ class DevMateChatViewProvider {
         const result = document.createElement('span');
         result.className = 'tool-activity-result';
         copy.appendChild(result);
+        const openTerminal = document.createElement('button');
+        openTerminal.type = 'button';
+        openTerminal.className = 'review-diff-button tool-open-terminal';
+        openTerminal.textContent = 'Open terminal';
+        openTerminal.hidden = true;
+        openTerminal.addEventListener('click', () => {
+          vscode.postMessage({
+            command: 'openCommandTerminal',
+            activityId: item.dataset.activityId
+          });
+        });
+        copy.appendChild(openTerminal);
         item.appendChild(copy);
         messagesEl.appendChild(item);
       }
@@ -3189,6 +3869,7 @@ class DevMateChatViewProvider {
       item.querySelector('.tool-activity-title').textContent = activity.title;
       item.querySelector('.tool-activity-detail').textContent = activity.detail;
       item.querySelector('.tool-activity-result').textContent = activity.result || '';
+      item.querySelector('.tool-open-terminal').hidden = !activity.canOpenTerminal;
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
@@ -3394,6 +4075,24 @@ function describeAgentToolCall(call) {
         return {
             title: 'Reading file',
             detail: call.arguments.path
+        };
+    }
+    if (call.name === 'create_file') {
+        return {
+            title: 'Creating file',
+            detail: call.arguments.path
+        };
+    }
+    if (call.name === 'edit_file') {
+        return {
+            title: 'Editing file',
+            detail: call.arguments.path
+        };
+    }
+    if (call.name === 'run_command') {
+        return {
+            title: 'Running verification command',
+            detail: call.arguments.executable
         };
     }
     return {

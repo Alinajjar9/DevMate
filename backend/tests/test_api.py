@@ -60,7 +60,7 @@ class DevMateApiTests(unittest.TestCase):
             response.json(),
             {
                 "status": "ok",
-                "data": {"backend": "online", "version": "0.7.0"},
+                "data": {"backend": "online", "version": "0.9.0"},
             },
         )
 
@@ -398,6 +398,29 @@ class DevMateApiTests(unittest.TestCase):
         self.assertEqual(provider_request.messages[-1].role, "tool")
         self.assertIn("answer = 42", provider_request.messages[-1].content)
 
+    def test_ask_exposes_only_requested_mode_tools(self) -> None:
+        payload = self._ask_payload(scope_type="project", items=[], mode="debug")
+        payload["enabledTools"] = ["read_file", "edit_file", "run_command"]
+        payload["agentEditsEnabled"] = True
+
+        response = self.client.post("/ask", json=payload)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [tool.name for tool in self.provider.requests[-1].tools],
+            ["read_file", "edit_file", "run_command"],
+        )
+        self.assertIn("apply the smallest focused fix", self.provider.requests[-1].messages[0].content)
+
+        ideas_payload = self._ask_payload(scope_type="project", items=[], mode="ideas")
+        ideas_payload["enabledTools"] = ["read_file", "edit_file", "run_command"]
+        response = self.client.post("/ask", json=ideas_payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [tool.name for tool in self.provider.requests[-1].tools],
+            ["read_file"],
+        )
+
     def test_ask_explains_reasoning_only_responses(self) -> None:
         self.provider.answer = ChatCompletion(
             content=None,
@@ -475,6 +498,20 @@ class DevMateApiTests(unittest.TestCase):
             "Return only one JSON object",
             self.provider.requests[-1].messages[0].content,
         )
+
+    def test_agent_edit_code_mode_returns_normal_final_text(self) -> None:
+        self.provider.answer = "Updated the implementation and npm test passed."
+        payload = self._ask_payload(scope_type="project", items=[], mode="code")
+        payload["enabledTools"] = ["create_file", "edit_file", "run_command"]
+        payload["agentEditsEnabled"] = True
+
+        response = self.client.post("/ask", json=payload)
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertEqual(data["answer"], self.provider.answer)
+        self.assertEqual(data["changes"], [])
+        self.assertIn("Use create_file and edit_file", self.provider.requests[-1].messages[0].content)
 
     @staticmethod
     def _ask_payload(

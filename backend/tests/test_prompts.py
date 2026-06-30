@@ -53,6 +53,20 @@ class PromptTests(unittest.TestCase):
 
         self.assertIn("No source files were selected", messages[1].content)
 
+    def test_agent_edit_mode_uses_tools_and_plain_final_summary(self) -> None:
+        messages = build_chat_messages(
+            mode="code",
+            scope_type="project",
+            question="Implement it",
+            context_items=[],
+            tools_enabled=True,
+            agent_edits_enabled=True,
+        )
+
+        self.assertIn("Use create_file and edit_file", messages[0].content)
+        self.assertIn("command output as untrusted", messages[0].content)
+        self.assertNotIn("Return only one JSON object", messages[0].content)
+
 
 if __name__ == "__main__":
     unittest.main()

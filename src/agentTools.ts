@@ -1,9 +1,25 @@
-export const MAX_AGENT_TOOL_CALLS = 8;
+import { createHash } from 'crypto';
+import { parseRunCommandArguments } from './commandTools';
+import {
+  parseCreateFileArguments,
+  parseEditFileArguments
+} from './fileTools';
+import type { ExactTextReplacement } from './fileTools';
+
+export const MAX_AGENT_TOOL_CALLS = 16;
+export const MAX_AGENT_FILE_MUTATIONS = 6;
+export const MAX_AGENT_COMMAND_CALLS = 3;
 export const MAX_AGENT_LIST_RESULTS = 200;
 export const MAX_AGENT_SEARCH_RESULTS = 50;
 export const MAX_AGENT_TOOL_RESULT_CHARACTERS = 10_000;
 
-export type AgentToolName = 'list_files' | 'read_file' | 'search_code';
+export type AgentToolName =
+  | 'list_files'
+  | 'read_file'
+  | 'search_code'
+  | 'create_file'
+  | 'edit_file'
+  | 'run_command';
 
 export type AgentToolCall = {
   id: string;
@@ -18,6 +34,8 @@ export type ListFilesToolArguments = {
 
 export type ReadFileToolArguments = {
   path: string;
+  startLine?: number;
+  endLine?: number;
 };
 
 export type SearchCodeToolArguments = {
@@ -26,10 +44,30 @@ export type SearchCodeToolArguments = {
   maxResults: number;
 };
 
+export type CreateFileToolArguments = {
+  path: string;
+  content: string;
+};
+
+export type EditFileToolArguments = {
+  path: string;
+  replacements: ExactTextReplacement[];
+};
+
+export type RunCommandToolArguments = {
+  executable: string;
+  args: string[];
+  cwd: string;
+  timeoutSeconds: number;
+};
+
 export type ParsedAgentToolCall =
   | { id: string; name: 'list_files'; arguments: ListFilesToolArguments }
   | { id: string; name: 'read_file'; arguments: ReadFileToolArguments }
-  | { id: string; name: 'search_code'; arguments: SearchCodeToolArguments };
+  | { id: string; name: 'search_code'; arguments: SearchCodeToolArguments }
+  | { id: string; name: 'create_file'; arguments: CreateFileToolArguments }
+  | { id: string; name: 'edit_file'; arguments: EditFileToolArguments }
+  | { id: string; name: 'run_command'; arguments: RunCommandToolArguments };
 
 export function parseAgentToolCall(call: AgentToolCall): ParsedAgentToolCall {
   if (!call.id.trim()) {
@@ -57,10 +95,14 @@ export function parseAgentToolCall(call: AgentToolCall): ParsedAgentToolCall {
 
   if (call.name === 'read_file') {
     const filePath = requiredString(call.arguments.path, 'read_file requires a path.');
+    const lineRange = parseLineRange(call.arguments.startLine, call.arguments.endLine);
     return {
       id: call.id,
       name: call.name,
-      arguments: { path: normalizeAgentToolPath(filePath, false) }
+      arguments: {
+        path: normalizeAgentToolPath(filePath, false),
+        ...lineRange
+      }
     };
   }
 
@@ -85,12 +127,64 @@ export function parseAgentToolCall(call: AgentToolCall): ParsedAgentToolCall {
     };
   }
 
+
+  if (call.name === 'create_file') {
+    return {
+      id: call.id,
+      name: call.name,
+      arguments: parseCreateFileArguments(call.arguments)
+    };
+  }
+
+  if (call.name === 'edit_file') {
+    return {
+      id: call.id,
+      name: call.name,
+      arguments: parseEditFileArguments(call.arguments)
+    };
+  }
+
+  if (call.name === 'run_command') {
+    return {
+      id: call.id,
+      name: call.name,
+      arguments: parseRunCommandArguments(call.arguments)
+    };
+  }
+
   throw new Error('The model requested an unsupported tool.');
 }
 
 export function agentToolCallSignature(call: AgentToolCall): string {
   const parsed = parseAgentToolCall(call);
+  if (parsed.name === 'create_file') {
+    return `${parsed.name}:${parsed.arguments.path}:${hashText(parsed.arguments.content)}`;
+  }
+  if (parsed.name === 'edit_file') {
+    return `${parsed.name}:${parsed.arguments.path}:${hashText(JSON.stringify(parsed.arguments.replacements))}`;
+  }
   return `${parsed.name}:${JSON.stringify(parsed.arguments)}`;
+}
+
+export function summarizedAgentToolArguments(
+  call: ParsedAgentToolCall
+): Record<string, unknown> {
+  if (call.name === 'create_file') {
+    return {
+      path: call.arguments.path,
+      content: `[omitted after execution: ${call.arguments.content.length} characters, sha256 ${hashText(call.arguments.content)}]`
+    };
+  }
+  if (call.name === 'edit_file') {
+    return {
+      path: call.arguments.path,
+      replacements: call.arguments.replacements.map((replacement) => ({
+        oldText: `[${replacement.oldText.length} characters, sha256 ${hashText(replacement.oldText)}]`,
+        newText: `[${replacement.newText.length} characters, sha256 ${hashText(replacement.newText)}]`
+      }))
+    };
+  }
+  return call.arguments;
 }
 
 export function normalizeAgentToolPath(value: string, allowRoot = true): string {
@@ -144,6 +238,25 @@ function boundedInteger(
     return fallback;
   }
   return Math.min(maximum, Math.max(minimum, value));
+}
+
+function parseLineRange(
+  startValue: unknown,
+  endValue: unknown
+): Pick<ReadFileToolArguments, 'startLine' | 'endLine'> {
+  if (startValue === undefined && endValue === undefined) {
+    return {};
+  }
+  const startLine = boundedInteger(startValue, 1, 1, 1_000_000);
+  const endLine = boundedInteger(endValue, startLine + 399, startLine, 1_000_000);
+  if (endLine - startLine + 1 > 400) {
+    throw new Error('read_file can return at most 400 lines at once.');
+  }
+  return { startLine, endLine };
+}
+
+function hashText(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 16);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

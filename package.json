@@ -67,7 +67,7 @@
           "default": 0.2,
           "minimum": 0,
           "maximum": 2,
-          "description": "Sampling temperature for later LLM requests."
+          "description": "Sampling temperature for model requests."
         },
         "devMate.requestTimeoutSeconds": {
           "type": "integer",
@@ -75,6 +75,13 @@
           "minimum": 10,
           "maximum": 1800,
           "description": "How long DevMate allows each model-provider call to run. The extension automatically adds a 30-second transport buffer."
+        },
+        "devMate.commandTimeoutSeconds": {
+          "type": "integer",
+          "default": 300,
+          "minimum": 10,
+          "maximum": 1800,
+          "description": "Maximum runtime for each approved DevMate verification command."
         }
       }
     }
@@ -82,7 +89,7 @@
   "scripts": {
     "compile": "tsc -p ./ --listEmittedFiles",
     "check": "tsc -p ./ --noEmit",
-    "test": "npm run compile && node --test tests/agentTools.test.js tests/apiClient.test.js tests/context.test.js tests/fileChanges.test.js tests/llmProfiles.test.js tests/permissions.test.js tests/projectContext.test.js tests/projectIndex.test.js tests/retryPolicy.test.js",
+    "test": "npm run compile && node --test tests/agentTools.test.js tests/apiClient.test.js tests/commandTools.test.js tests/context.test.js tests/fileChanges.test.js tests/fileTools.test.js tests/llmProfiles.test.js tests/permissions.test.js tests/projectContext.test.js tests/projectIndex.test.js tests/retryPolicy.test.js tests/webviewScript.test.js",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile"
   },

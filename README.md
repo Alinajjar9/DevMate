@@ -11,13 +11,13 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 - Local FastAPI backend with `/health` and `/ask`
 - Configurable backend URL and clear offline feedback
 - Real OpenAI-compatible Chat Completions requests
-- Iterative read-only agent tools for listing files, reading files, and searching code
+- Iterative agent tools for project inspection, exact file edits, and approved verification commands
 - In-chat working state with real phases, elapsed time, selected model, and cancellation
 - Compact segmented mode controls and a top-right in-chat Settings dialog
 - Mode-aware prompts for Ideas, Code, and Debug
 - Enter-to-send composer with Shift+Enter for new lines
 - Distinct You and DevMate message bubbles
-- In-chat approval cards and separate create/update instant-permission controls for Code mode
+- Workspace-scoped in-chat approvals, native diff review, and exact-command remembering
 - Bounded Selection and active File context with language and truncation metadata
 - Persistent workspace-local Project index with bounded chunk retrieval and deterministic fallback ranking
 - Workspace-only multi-file attachments with a compact expandable selected-file list
@@ -34,17 +34,17 @@ Retrieval is deterministic and runs entirely in the extension host using BM25-st
 
 ## Agent tools
 
-DevMate can now ask the extension host to inspect the open project before answering. The first agent-tool slice supports `list_files`, `read_file`, and plain-text `search_code`. Tool activity appears as compact cards in the conversation, and the model can continue for up to eight calls before it must finish its answer.
+DevMate can ask the extension host to inspect and improve the open project before answering. Read-only tools support `list_files`, ranged `read_file`, and plain-text `search_code`. In trusted workspaces, Code and Debug additionally receive `create_file`, exact-replacement `edit_file`, and approved `run_command` verification tools. Tool activity appears as compact cards in the conversation, and the model can continue for up to sixteen calls before it must finish its answer.
 
 Each request immediately creates a working card in the conversation. It displays the selected model, elapsed time, actual lifecycle phases such as context collection and tool use, and a Cancel button. Routine progress no longer occupies the top status strip; that area is reserved for warnings and errors. The working card is removed when the final assistant message arrives, while completed tool activity remains visible.
 
 Temporary provider failures (`ResourceExhausted`, HTTP 429, 502, 503, or 504) are retried up to three times after 2, 5, and 10 seconds. The countdown appears as a real phase in the working card and can be cancelled. Authentication, invalid-model, malformed-response, and reasoning-budget errors are never retried. If every transient attempt fails, the stopped card offers **Retry now** without duplicating the user's message.
 
-Read-only tools run instantly because they cannot modify the project. They remain workspace-bound and use the same exclusions as automatic project context, so dependency/build folders, binary files, lock files, environment files, and credential/key files are unavailable. The backend receives bounded tool results but never receives direct filesystem access.
+Read-only tools run instantly because they cannot modify the project. They remain workspace-bound and use the same exclusions as automatic project context, so dependency/build folders, binary files, lock files, environment files, and credential/key files are unavailable. File changes and commands remain in the extension host; the backend receives only bounded tool results and never receives direct filesystem access.
 
 Tool calls are normalized before loop detection, so formatting differences cannot make DevMate reread the same file indefinitely. If a model repeats a completed tool call or returns reasoning without a final answer, DevMate performs one tools-off final turn. Nemotron 3 requests reserve half of the response budget for reasoning and disable thinking during this recovery turn. The default `devMate.maxTokens` is 16,384 so reasoning models and multi-file Code responses have room to finish.
 
-Terminal execution and model-requested deletion are still blocked. File creation and updates continue through the Code-mode permission flow described below.
+Model-requested deletion, rename, move, dependency installation, arbitrary shells, Git commands, servers, generators, and writable formatters remain blocked.
 
 ## DevMate view placement
 
@@ -52,7 +52,7 @@ DevMate is contributed directly to VS Code's Secondary Side Bar in its own dedic
 
 ## DevMate settings
 
-Use the gear button in the top-right of the DevMate view to configure provider timeout, maximum output tokens, temperature, and create/update file permissions in one dialog. Ideas, Code, and Debug use a compact segmented control on the left side of the top bar.
+Use the gear button in the top-right of the DevMate view to configure provider timeout, verification-command timeout, maximum output tokens, temperature, workspace-local create/update permissions, and remembered exact commands. Ideas, Code, and Debug use a compact segmented control on the left side of the top bar.
 
 ## Model profiles
 
@@ -66,11 +66,19 @@ Provider API keys are sent to the DevMate backend only when its configured URL p
 
 ## Code-mode changes
 
-Code mode can inspect the project with read-only agent tools before returning structured file changes instead of displaying implementation snippets as the answer. DevMate shows proposed changes in an in-chat permission card with **Deny**, **Allow once**, and **Always allow these** actions. The compact permission button beside the model selector independently controls whether creating and updating files should ask or happen instantly. Changes use a VS Code workspace edit so they participate in the editor's undo flow.
+Code and Debug can now inspect, edit, verify, and repair in one bounded agent loop. New files use complete content, while existing files use sequential exact-text replacements. DevMate shows proposed changes in an in-chat permission card with **Deny**, **Allow once**, and **Always allow these** actions. Every file row includes **Review diff**, which opens VS Code's native diff editor before approval. Approved changes use a VS Code workspace edit, are saved to disk for verification, and participate in the editor's undo flow.
+
+Targets with pre-existing unsaved changes are rejected instead of being overwritten or silently saved. The extension rechecks file contents after permission is granted and rejects stale proposals. Mutations are disabled entirely in untrusted workspaces. The earlier final-JSON change format remains accepted for compatibility, while new Code requests use agent editing tools and finish with normal text.
 
 After applying a change set, DevMate opens the first created or updated file in the main left editor group instead of beside the DevMate tab.
 
-Only workspace-relative text files in the first open folder can be changed. Absolute paths, parent traversal, duplicate paths, dependency/build folders, binary files, lock files, environment files, and credential/key files are rejected—even when instant permission is enabled. Code mode does not delete files or run model-proposed terminal commands. A single response can change at most 10 files, with bounded per-file and total content sizes.
+Only workspace-relative text files in the first open folder can be changed. Absolute paths, parent traversal, symbolic-link paths, duplicate paths, dependency/build folders, binary files, lock files, environment files, and credential/key files are rejected—even when instant permission is enabled. DevMate still does not delete files. A request is limited to six mutation calls, ten files, and the existing per-file and total content limits.
+
+## Verification commands
+
+`run_command` accepts an executable and argument array rather than a raw shell string. Each new exact command asks inside the conversation; **Always allow this command** remembers only that executable, arguments, and working directory for the current workspace. Remembered commands can be revoked from Settings. Verification requires Workspace Trust and VS Code terminal shell integration.
+
+The first registry covers common test, lint, type-check, and build commands for JavaScript/TypeScript, Python, Rust, Go, .NET, Maven, and Gradle. Output streams into a bounded chat card, while **Open terminal** exposes the complete VS Code terminal. Commands default to a five-minute limit, can be configured from 10 through 1800 seconds, and are limited to three calls per request.
 
 ## Requirements
 
@@ -108,6 +116,8 @@ Start the local service:
 The health endpoint is available at `http://127.0.0.1:8000/health`. The extension uses this address by default; change `devMate.backendUrl` in VS Code settings if the backend runs elsewhere.
 
 DevMate waits up to fifteen minutes for each model-provider call by default, and the extension automatically adds a 30-second transport buffer. Change **DevMate: Request Timeout Seconds** (`devMate.requestTimeoutSeconds`) in VS Code Settings to any value from 10 through 1800. The value is sent with every request and controls both sides, so changing it does not require a backend restart. `DEVMATE_PROVIDER_TIMEOUT_SECONDS` remains the backend fallback for older clients or requests that omit the setting.
+
+Verification commands default to a five-minute maximum. Configure `devMate.commandTimeoutSeconds` from the in-chat Settings dialog or VS Code Settings. A model-requested shorter timeout is honored; it cannot exceed the configured maximum.
 
 Run the backend contract tests with:
 

@@ -3,11 +3,14 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import {
   MAX_AGENT_TOOL_CALLS,
+  MAX_AGENT_COMMAND_CALLS,
+  MAX_AGENT_FILE_MUTATIONS,
   agentToolCallSignature,
   parseAgentToolCall,
+  summarizedAgentToolArguments,
   truncateAgentToolResult
 } from './agentTools';
-import type { AgentToolCall, ParsedAgentToolCall } from './agentTools';
+import type { AgentToolCall, AgentToolName, ParsedAgentToolCall } from './agentTools';
 import { ask, health } from './api/client';
 import type {
   AgentToolStep,
@@ -19,8 +22,19 @@ import type {
   AssistantMode
 } from './api/types';
 import { createBoundedContextItem } from './context';
-import { validateFileChanges } from './fileChanges';
+import {
+  boundedModelCommandOutput,
+  commandLabel,
+  commandSignature,
+  DEFAULT_COMMAND_TIMEOUT_SECONDS,
+  MAX_COMMAND_TIMEOUT_SECONDS,
+  MIN_COMMAND_TIMEOUT_SECONDS,
+  sanitizeCommandOutput
+} from './commandTools';
+import type { ValidatedCommand } from './commandTools';
+import { MAX_TOTAL_CHANGE_CHARACTERS, validateFileChanges } from './fileChanges';
 import type { ValidatedFileChange } from './fileChanges';
+import { applyExactReplacements } from './fileTools';
 import {
   ACTIVE_LLM_PROFILE_STORAGE_KEY,
   LLM_PROFILES_STORAGE_KEY,
@@ -35,9 +49,17 @@ import {
   allowActions,
   FILE_PERMISSION_POLICY_STORAGE_KEY,
   parseFilePermissionPolicy,
-  permissionBehaviorForAction
+  parseRememberedCommands,
+  permissionBehaviorForAction,
+  REMEMBERED_COMMANDS_STORAGE_KEY,
+  rememberCommand,
+  revokeRememberedCommand
 } from './permissions';
-import type { FilePermissionAction, FilePermissionPolicy } from './permissions';
+import type {
+  FilePermissionAction,
+  FilePermissionPolicy,
+  RememberedCommand
+} from './permissions';
 import {
   containsBinaryData,
   languageIdForPath,
@@ -107,20 +129,38 @@ type LlmProfileFormSubmission = {
 
 type DevMateSettingsSubmission = {
   timeoutSeconds: number;
+  commandTimeoutSeconds: number;
   maxTokens: number;
   temperature: number;
   policy: FilePermissionPolicy;
 };
 
+type PendingCommandPermission = {
+  id: string;
+  signature: string;
+  label: string;
+  resolve: (allowed: boolean) => void;
+};
+
 type PendingPermissionRequest = {
   id: string;
   actions: Set<FilePermissionAction>;
+  diffs: Map<string, PendingFileDiff>;
   resolve: (allowed: boolean) => void;
+};
+
+type PendingFileDiff = {
+  path: string;
+  originalContent: string;
+  proposedContent: string;
+  originalUri: vscode.Uri;
+  proposedUri: vscode.Uri;
 };
 
 type AgentToolExecution = {
   step: AgentToolStep;
   usedFiles: string[];
+  mutationCharacters: number;
 };
 
 type WebviewMessage =
@@ -132,6 +172,15 @@ type WebviewMessage =
   | { command: 'chooseLlmProfile' }
   | { command: 'saveLlmProfile'; profile: LlmProfileFormSubmission }
   | { command: 'saveSettings'; settings: DevMateSettingsSubmission }
+  | { command: 'reviewPermissionDiff'; requestId: string; path: string }
+  | { command: 'revokeRememberedCommand'; signature: string }
+  | { command: 'clearRememberedCommands' }
+  | {
+      command: 'commandPermissionDecision';
+      requestId: string;
+      decision: 'deny' | 'allowOnce' | 'allowAlways';
+    }
+  | { command: 'openCommandTerminal'; activityId: string }
   | {
       command: 'permissionDecision';
       requestId: string;
@@ -159,6 +208,13 @@ export function activate(context: vscode.ExtensionContext): void {
       );
     }
   });
+  const diffContentRegistration = vscode.workspace.registerTextDocumentContentProvider(
+    DevMateChatViewProvider.diffScheme,
+    chatViewProvider
+  );
+  const workspaceTrustRegistration = vscode.workspace.onDidGrantWorkspaceTrust(() => {
+    chatViewProvider.notifyWorkspaceTrustChanged();
+  });
   const statusBarItem = vscode.window.createStatusBarItem(
     'devMate.statusBar',
     vscode.StatusBarAlignment.Right,
@@ -172,6 +228,8 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     chatViewProvider,
     viewRegistration,
+    diffContentRegistration,
+    workspaceTrustRegistration,
     openChatCommand,
     statusBarItem
   );
@@ -181,17 +239,24 @@ export function deactivate(): void {
   // VS Code disposes registered views and subscriptions.
 }
 
-class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
+class DevMateChatViewProvider implements
+  vscode.WebviewViewProvider,
+  vscode.TextDocumentContentProvider,
+  vscode.Disposable {
   static readonly viewId = 'devmate.dedicatedAssistantView';
   static readonly containerId = 'devmate-dedicated-chat';
+  static readonly diffScheme = 'devmate-diff';
 
   private view?: vscode.WebviewView;
   private readonly attachedFiles = new Map<string, vscode.Uri>();
   private readonly viewDisposables: vscode.Disposable[] = [];
   private readonly extensionUri: vscode.Uri;
   private pendingPermission?: PendingPermissionRequest;
+  private pendingCommandPermission?: PendingCommandPermission;
   private activeRequest?: AbortController;
   private projectIndexCache?: ProjectIndex;
+  private readonly diffDocuments = new Map<string, string>();
+  private readonly commandTerminals = new Map<string, vscode.Terminal>();
 
   constructor(private readonly extensionContext: vscode.ExtensionContext) {
     this.extensionUri = extensionContext.extensionUri;
@@ -219,6 +284,14 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     void this.checkBackendHealth();
   }
 
+  provideTextDocumentContent(uri: vscode.Uri): string {
+    return this.diffDocuments.get(uri.toString()) ?? '';
+  }
+
+  notifyWorkspaceTrustChanged(): void {
+    this.postSettingsState();
+  }
+
   async show(): Promise<void> {
     await vscode.commands.executeCommand(
       `workbench.view.extension.${DevMateChatViewProvider.containerId}`
@@ -243,6 +316,10 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.activeRequest = undefined;
     this.pendingPermission?.resolve(false);
     this.pendingPermission = undefined;
+    this.pendingCommandPermission?.resolve(false);
+    this.pendingCommandPermission = undefined;
+    this.diffDocuments.clear();
+    this.disposeCommandTerminals();
     while (this.viewDisposables.length > 0) {
       this.viewDisposables.pop()?.dispose();
     }
@@ -259,6 +336,7 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           return;
         }
         const requestController = new AbortController();
+        this.disposeCommandTerminals();
         this.activeRequest = requestController;
         try {
           await this.answerQuestion(message, requestController.signal);
@@ -286,6 +364,25 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         return;
       case 'saveSettings':
         await this.saveSettings(message.settings);
+        return;
+      case 'reviewPermissionDiff':
+        await this.reviewPermissionDiff(message.requestId, message.path);
+        return;
+      case 'revokeRememberedCommand':
+        await this.revokeRememberedCommand(message.signature);
+        return;
+      case 'clearRememberedCommands':
+        await this.extensionContext.workspaceState.update(
+          REMEMBERED_COMMANDS_STORAGE_KEY,
+          []
+        );
+        this.postSettingsState();
+        return;
+      case 'commandPermissionDecision':
+        await this.handleCommandPermissionDecision(message.requestId, message.decision);
+        return;
+      case 'openCommandTerminal':
+        this.commandTerminals.get(message.activityId)?.show(false);
         return;
       case 'permissionDecision':
         await this.handlePermissionDecision(
@@ -880,6 +977,10 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.activeRequest.abort();
     this.pendingPermission?.resolve(false);
     this.pendingPermission = undefined;
+    this.pendingCommandPermission?.resolve(false);
+    this.pendingCommandPermission = undefined;
+    this.diffDocuments.clear();
+    this.disposeCommandTerminals();
     this.postMessage({ command: 'requestCancelling' });
   }
 
@@ -1131,8 +1232,20 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   private getPermissionPolicy(): FilePermissionPolicy {
     return parseFilePermissionPolicy(
-      this.extensionContext.globalState.get<unknown>(FILE_PERMISSION_POLICY_STORAGE_KEY)
+      this.extensionContext.workspaceState.get<unknown>(FILE_PERMISSION_POLICY_STORAGE_KEY)
     );
+  }
+
+  private getRememberedCommands(): RememberedCommand[] {
+    return parseRememberedCommands(
+      this.extensionContext.workspaceState.get<unknown>(REMEMBERED_COMMANDS_STORAGE_KEY)
+    );
+  }
+
+  private async revokeRememberedCommand(signature: string): Promise<void> {
+    const updated = revokeRememberedCommand(this.getRememberedCommands(), signature);
+    await this.extensionContext.workspaceState.update(REMEMBERED_COMMANDS_STORAGE_KEY, updated);
+    this.postSettingsState();
   }
 
   private async saveSettings(settings: DevMateSettingsSubmission): Promise<void> {
@@ -1140,6 +1253,9 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       !Number.isInteger(settings.timeoutSeconds)
       || settings.timeoutSeconds < 10
       || settings.timeoutSeconds > 1800
+      || !Number.isInteger(settings.commandTimeoutSeconds)
+      || settings.commandTimeoutSeconds < MIN_COMMAND_TIMEOUT_SECONDS
+      || settings.commandTimeoutSeconds > MAX_COMMAND_TIMEOUT_SECONDS
       || !Number.isInteger(settings.maxTokens)
       || settings.maxTokens < 128
       || settings.maxTokens > 32_000
@@ -1160,9 +1276,14 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           settings.timeoutSeconds,
           vscode.ConfigurationTarget.Global
         ),
+        config.update(
+          'commandTimeoutSeconds',
+          settings.commandTimeoutSeconds,
+          vscode.ConfigurationTarget.Global
+        ),
         config.update('maxTokens', settings.maxTokens, vscode.ConfigurationTarget.Global),
         config.update('temperature', settings.temperature, vscode.ConfigurationTarget.Global),
-        this.extensionContext.globalState.update(
+        this.extensionContext.workspaceState.update(
           FILE_PERMISSION_POLICY_STORAGE_KEY,
           normalizedPolicy
         )
@@ -1194,6 +1315,13 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           1800,
           Math.max(10, config.get<number>('requestTimeoutSeconds', 900))
         ),
+        commandTimeoutSeconds: Math.min(
+          MAX_COMMAND_TIMEOUT_SECONDS,
+          Math.max(
+            MIN_COMMAND_TIMEOUT_SECONDS,
+            config.get<number>('commandTimeoutSeconds', DEFAULT_COMMAND_TIMEOUT_SECONDS)
+          )
+        ),
         maxTokens: Math.min(
           32_000,
           Math.max(128, config.get<number>('maxTokens', 16_384))
@@ -1201,7 +1329,9 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         temperature: Math.min(
           2,
           Math.max(0, config.get<number>('temperature', 0.2))
-        )
+        ),
+        rememberedCommands: this.getRememberedCommands(),
+        workspaceTrusted: vscode.workspace.isTrusted
       }
     });
   }
@@ -1219,7 +1349,7 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (decision === 'allowAlways') {
       try {
         const updatedPolicy = allowActions(this.getPermissionPolicy(), pending.actions);
-        await this.extensionContext.globalState.update(
+        await this.extensionContext.workspaceState.update(
           FILE_PERMISSION_POLICY_STORAGE_KEY,
           updatedPolicy
         );
@@ -1233,25 +1363,116 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
 
     pending.resolve(decision !== 'deny');
+    for (const diff of pending.diffs.values()) {
+      this.diffDocuments.delete(diff.originalUri.toString());
+      this.diffDocuments.delete(diff.proposedUri.toString());
+    }
   }
 
   private requestFileChangePermission(
     summary: string,
-    files: Array<{ path: string; operation: FilePermissionAction }>
+    files: Array<{
+      path: string;
+      operation: FilePermissionAction;
+      originalContent: string;
+      proposedContent: string;
+    }>
   ): Promise<boolean> {
     this.pendingPermission?.resolve(false);
+    this.diffDocuments.clear();
     const requestId = randomUUID();
     const actions = new Set(files.map((file) => file.operation));
+    const diffs = new Map<string, PendingFileDiff>();
+    for (const file of files) {
+      const encodedPath = file.path.split('/').map(encodeURIComponent).join('/');
+      const originalUri = vscode.Uri.parse(
+        `${DevMateChatViewProvider.diffScheme}:/${requestId}/original/${encodedPath}`
+      );
+      const proposedUri = vscode.Uri.parse(
+        `${DevMateChatViewProvider.diffScheme}:/${requestId}/proposed/${encodedPath}`
+      );
+      this.diffDocuments.set(originalUri.toString(), file.originalContent);
+      this.diffDocuments.set(proposedUri.toString(), file.proposedContent);
+      diffs.set(file.path, {
+        path: file.path,
+        originalContent: file.originalContent,
+        proposedContent: file.proposedContent,
+        originalUri,
+        proposedUri
+      });
+    }
 
     return new Promise((resolve) => {
-      this.pendingPermission = { id: requestId, actions, resolve };
+      this.pendingPermission = { id: requestId, actions, diffs, resolve };
       this.postMessage({
         command: 'permissionRequest',
         requestId,
         summary,
-        files
+        files: files.map(({ path, operation }) => ({ path, operation, canReview: true }))
       });
     });
+  }
+
+  private async reviewPermissionDiff(requestId: string, filePath: string): Promise<void> {
+    const pending = this.pendingPermission;
+    const diff = pending?.id === requestId ? pending.diffs.get(filePath) : undefined;
+    if (!diff) {
+      this.postStatus('That proposed diff is no longer available.', 'warning');
+      return;
+    }
+    await vscode.commands.executeCommand(
+      'vscode.diff',
+      diff.originalUri,
+      diff.proposedUri,
+      `DevMate: ${diff.path}`,
+      { preview: true }
+    );
+  }
+
+  private requestCommandPermission(
+    signature: string,
+    label: string,
+    cwd: string
+  ): Promise<boolean> {
+    if (this.getRememberedCommands().some((command) => command.signature === signature)) {
+      return Promise.resolve(true);
+    }
+    this.pendingCommandPermission?.resolve(false);
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      this.pendingCommandPermission = {
+        id: requestId,
+        signature,
+        label: `${label} · ${cwd || 'workspace root'}`,
+        resolve
+      };
+      this.postMessage({
+        command: 'commandPermissionRequest',
+        requestId,
+        label,
+        cwd: cwd || 'Workspace root'
+      });
+    });
+  }
+
+  private async handleCommandPermissionDecision(
+    requestId: string,
+    decision: 'deny' | 'allowOnce' | 'allowAlways'
+  ): Promise<void> {
+    const pending = this.pendingCommandPermission;
+    if (!pending || pending.id !== requestId) {
+      return;
+    }
+    this.pendingCommandPermission = undefined;
+    if (decision === 'allowAlways') {
+      const updated = rememberCommand(this.getRememberedCommands(), {
+        signature: pending.signature,
+        label: pending.label
+      });
+      await this.extensionContext.workspaceState.update(REMEMBERED_COMMANDS_STORAGE_KEY, updated);
+      this.postSettingsState();
+    }
+    pending.resolve(decision !== 'deny');
   }
 
   private async readProjectCandidate(uri: vscode.Uri): Promise<ProjectFileCandidate | undefined> {
@@ -1282,7 +1503,10 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
   }
 
-  private async executeAgentToolCall(call: AgentToolCall): Promise<AgentToolExecution> {
+  private async executeAgentToolCall(
+    call: AgentToolCall,
+    remainingMutationCharacters = MAX_TOTAL_CHANGE_CHARACTERS
+  ): Promise<AgentToolExecution> {
     let parsedCall: ParsedAgentToolCall;
     try {
       parsedCall = parseAgentToolCall(call);
@@ -1297,7 +1521,8 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           result: truncateAgentToolResult(result),
           isError: true
         },
-        usedFiles: []
+        usedFiles: [],
+        mutationCharacters: 0
       };
     }
 
@@ -1305,23 +1530,25 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.postAgentToolActivity(call.id, activity.title, activity.detail, 'running');
 
     try {
-      const execution = await this.runAgentTool(parsedCall);
+      const execution = await this.runAgentTool(parsedCall, remainingMutationCharacters);
       this.postAgentToolActivity(
         call.id,
         activity.title,
         activity.detail,
         'completed',
-        execution.resultSummary
+        execution.resultSummary,
+        parsedCall.name === 'run_command' && this.commandTerminals.has(parsedCall.id)
       );
       return {
         step: {
           callId: parsedCall.id,
           name: parsedCall.name,
-          arguments: parsedCall.arguments,
+          arguments: summarizedAgentToolArguments(parsedCall),
           result: truncateAgentToolResult(execution.result),
           isError: false
         },
-        usedFiles: execution.usedFiles
+        usedFiles: execution.usedFiles,
+        mutationCharacters: execution.mutationCharacters
       };
     } catch (error) {
       const result = error instanceof Error ? error.message : 'The tool could not be completed.';
@@ -1330,29 +1557,105 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         activity.title,
         activity.detail,
         'error',
-        result
+        result,
+        parsedCall.name === 'run_command' && this.commandTerminals.has(parsedCall.id)
       );
       return {
         step: {
           callId: parsedCall.id,
           name: parsedCall.name,
-          arguments: parsedCall.arguments,
+            arguments: summarizedAgentToolArguments(parsedCall),
           result: truncateAgentToolResult(result),
           isError: true
         },
-        usedFiles: []
+        usedFiles: [],
+        mutationCharacters: 0
       };
     }
   }
 
-  private async runAgentTool(call: ParsedAgentToolCall): Promise<{
+  private async runAgentTool(
+    call: ParsedAgentToolCall,
+    remainingMutationCharacters: number
+  ): Promise<{
     result: string;
     resultSummary: string;
     usedFiles: string[];
+    mutationCharacters: number;
   }> {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) {
       throw new Error('Open a workspace folder before using project tools.');
+    }
+
+    if (call.name === 'create_file') {
+      await this.assertNoWorkspaceSymlink(folder, call.arguments.path, true);
+      const uri = vscode.Uri.joinPath(folder.uri, ...call.arguments.path.split('/'));
+      try {
+        await vscode.workspace.fs.stat(uri);
+        throw new Error(`${call.arguments.path} already exists; use edit_file instead.`);
+      } catch (error) {
+        if (!(error instanceof vscode.FileSystemError && error.code === 'FileNotFound')) {
+          throw error;
+        }
+      }
+      const changes = validateFileChanges([call.arguments]);
+      if (call.arguments.content.length > remainingMutationCharacters) {
+        throw new Error('This request reached the total file-mutation size limit.');
+      }
+      const outcome = await this.confirmAndApplyFileChanges(
+        changes,
+        `Create ${call.arguments.path}`,
+        this.activeRequest?.signal ?? new AbortController().signal
+      );
+      if (!outcome.startsWith('Applied file changes:')) {
+        throw new Error('Permission to create the file was denied.');
+      }
+      return {
+        result: outcome,
+        resultSummary: `Created ${call.arguments.path}`,
+        usedFiles: [uri.scheme === 'file' ? uri.fsPath : uri.toString()],
+        mutationCharacters: call.arguments.content.length
+      };
+    }
+
+    if (call.name === 'edit_file') {
+      await this.assertNoWorkspaceSymlink(folder, call.arguments.path, false);
+      const uri = vscode.Uri.joinPath(folder.uri, ...call.arguments.path.split('/'));
+      let document: vscode.TextDocument;
+      try {
+        document = await vscode.workspace.openTextDocument(uri);
+      } catch {
+        throw new Error(`${call.arguments.path} does not exist or cannot be opened.`);
+      }
+      if (document.isDirty) {
+        throw new Error(`Save or discard your unsaved changes in ${call.arguments.path} before DevMate edits it.`);
+      }
+      const updatedContent = applyExactReplacements(
+        document.getText(),
+        call.arguments.replacements
+      );
+      if (updatedContent.length > remainingMutationCharacters) {
+        throw new Error('This request reached the total file-mutation size limit.');
+      }
+      const changes = validateFileChanges([{
+        path: call.arguments.path,
+        content: updatedContent
+      }]);
+      const outcome = await this.confirmAndApplyFileChanges(
+        changes,
+        `Edit ${call.arguments.path}`,
+        this.activeRequest?.signal ?? new AbortController().signal
+      );
+      if (!outcome.startsWith('Applied file changes:')) {
+        throw new Error('Permission to edit the file was denied.');
+      }
+      return {
+        result: outcome,
+        resultSummary: `Updated ${call.arguments.path}`,
+        usedFiles: [uri.scheme === 'file' ? uri.fsPath : uri.toString()],
+        mutationCharacters: updatedContent.length
+      };
     }
 
     if (call.name === 'list_files') {
@@ -1367,7 +1670,8 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       return {
         result,
         resultSummary: `${relativePaths.length} eligible ${relativePaths.length === 1 ? 'file' : 'files'}`,
-        usedFiles: []
+        usedFiles: [],
+        mutationCharacters: 0
       };
     }
 
@@ -1383,17 +1687,30 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       ) {
         throw new Error('The file does not exist or is excluded from DevMate context.');
       }
+      const lines = candidate.content.split(/\r?\n/);
+      const startLine = call.arguments.startLine ?? 1;
+      const endLine = Math.min(call.arguments.endLine ?? lines.length, lines.length);
+      if (startLine > lines.length && lines.length > 0) {
+        throw new Error(`${call.arguments.path} has only ${lines.length} lines.`);
+      }
+      const selectedContent = lines.slice(startLine - 1, endLine).join('\n');
       const result = truncateAgentToolResult([
         `Path: ${call.arguments.path}`,
         `Language: ${candidate.languageId}`,
+        `Lines: ${startLine}-${Math.max(startLine, endLine)} of ${lines.length}`,
         'Content:',
-        candidate.content
+        selectedContent
       ].join('\n'));
       return {
         result,
-        resultSummary: `${candidate.content.length} characters read`,
-        usedFiles: [candidate.filePath]
+        resultSummary: `${selectedContent.length} characters read`,
+        usedFiles: [candidate.filePath],
+        mutationCharacters: 0
       };
+    }
+
+    if (call.name === 'run_command') {
+      return this.runVerificationCommand(call, folder);
     }
 
     const uris = await this.findAgentFiles(folder, call.arguments.path);
@@ -1434,8 +1751,197 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     return {
       result,
       resultSummary: `${matches.length} ${matches.length === 1 ? 'match' : 'matches'}`,
-      usedFiles: [...usedFiles]
+      usedFiles: [...usedFiles],
+      mutationCharacters: 0
     };
+  }
+
+  private async runVerificationCommand(
+    call: Extract<ParsedAgentToolCall, { name: 'run_command' }>,
+    folder: vscode.WorkspaceFolder
+  ): Promise<{
+    result: string;
+    resultSummary: string;
+    usedFiles: string[];
+    mutationCharacters: number;
+  }> {
+    if (!vscode.workspace.isTrusted) {
+      throw new Error('Trust this workspace before allowing DevMate to run verification commands.');
+    }
+    const cwdUri = call.arguments.cwd
+      ? vscode.Uri.joinPath(folder.uri, ...call.arguments.cwd.split('/'))
+      : folder.uri;
+    if (call.arguments.cwd) {
+      await this.assertNoWorkspaceSymlink(folder, call.arguments.cwd, false);
+    }
+    if (call.arguments.executable.startsWith('./')) {
+      await this.assertNoWorkspaceSymlink(
+        folder,
+        [call.arguments.cwd, call.arguments.executable.slice(2)].filter(Boolean).join('/'),
+        false
+      );
+    }
+    try {
+      const stat = await vscode.workspace.fs.stat(cwdUri);
+      if ((stat.type & vscode.FileType.Directory) === 0) {
+        throw new Error('The command working directory is not a directory.');
+      }
+    } catch (error) {
+      throw new Error(
+        error instanceof Error
+          ? `Cannot use the command working directory: ${error.message}`
+          : 'Cannot use the command working directory.'
+      );
+    }
+
+    const command: ValidatedCommand = call.arguments;
+    const label = commandLabel(command);
+    const signature = commandSignature(command);
+    const allowed = await this.requestCommandPermission(signature, label, command.cwd);
+    if (!allowed) {
+      throw new Error('Permission to run the verification command was denied.');
+    }
+    if (!vscode.workspace.isTrusted) {
+      throw new Error('Workspace Trust changed while command permission was pending; the command was not run.');
+    }
+    const signal = this.activeRequest?.signal ?? new AbortController().signal;
+    if (signal.aborted) {
+      throw new Error('The verification command was cancelled.');
+    }
+
+    const configuredTimeout = vscode.workspace.getConfiguration('devMate').get<number>(
+      'commandTimeoutSeconds',
+      DEFAULT_COMMAND_TIMEOUT_SECONDS
+    );
+    const timeoutSeconds = Math.min(
+      command.timeoutSeconds,
+      MAX_COMMAND_TIMEOUT_SECONDS,
+      Math.max(MIN_COMMAND_TIMEOUT_SECONDS, configuredTimeout)
+    );
+    const terminal = vscode.window.createTerminal({
+      name: `DevMate: ${label.slice(0, 60)}`,
+      cwd: cwdUri,
+      isTransient: true
+    });
+    this.commandTerminals.set(call.id, terminal);
+    const shellIntegration = await this.waitForShellIntegration(terminal, signal);
+    if (!shellIntegration) {
+      terminal.dispose();
+      this.commandTerminals.delete(call.id);
+      throw new Error('VS Code terminal shell integration was unavailable after 5 seconds; the command was not run.');
+    }
+
+    const execution = shellIntegration.executeCommand(command.executable, command.args);
+    const startedAt = Date.now();
+    let output = '';
+    const outputReader = (async () => {
+      for await (const data of execution.read()) {
+        output = sanitizeCommandOutput(output + data);
+        this.postAgentToolActivity(
+          call.id,
+          'Running verification command',
+          label,
+          'running',
+          output,
+          true
+        );
+      }
+    })();
+
+    const outcome = await new Promise<{
+      state: 'completed' | 'cancelled' | 'timeout';
+      exitCode?: number;
+    }>((resolve) => {
+      let settled = false;
+      const finish = (value: { state: 'completed' | 'cancelled' | 'timeout'; exitCode?: number }) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        signal.removeEventListener('abort', cancel);
+        endDisposable.dispose();
+        resolve(value);
+      };
+      const endDisposable = vscode.window.onDidEndTerminalShellExecution((event) => {
+        if (event.execution === execution) {
+          finish({ state: 'completed', exitCode: event.exitCode });
+        }
+      });
+      const cancel = () => {
+        terminal.dispose();
+        finish({ state: 'cancelled' });
+      };
+      const timeout = setTimeout(() => {
+        terminal.dispose();
+        finish({ state: 'timeout' });
+      }, timeoutSeconds * 1_000);
+      signal.addEventListener('abort', cancel, { once: true });
+    });
+    await Promise.race([outputReader, wait(250)]);
+    const durationSeconds = Math.max(0, (Date.now() - startedAt) / 1_000);
+    const modelOutput = boundedModelCommandOutput(output);
+    const result = [
+      `Command: ${label}`,
+      `Working directory: ${command.cwd || '.'}`,
+      outcome.state === 'completed'
+        ? `Exit code: ${outcome.exitCode ?? 'unknown'}`
+        : outcome.state === 'timeout'
+          ? `Timed out after ${timeoutSeconds} seconds`
+          : 'Cancelled',
+      `Duration: ${durationSeconds.toFixed(1)} seconds`,
+      modelOutput ? `Output:\n${modelOutput}` : 'Output: (none)'
+    ].join('\n');
+
+    if (outcome.state === 'cancelled') {
+      this.commandTerminals.delete(call.id);
+      throw new Error('The verification command was cancelled.');
+    }
+    if (outcome.state === 'timeout') {
+      this.commandTerminals.delete(call.id);
+      throw new Error(result);
+    }
+    if (outcome.exitCode !== 0) {
+      throw new Error(result);
+    }
+    return {
+      result,
+      resultSummary: `Passed in ${durationSeconds.toFixed(1)}s`,
+      usedFiles: [],
+      mutationCharacters: 0
+    };
+  }
+
+  private waitForShellIntegration(
+    terminal: vscode.Terminal,
+    signal: AbortSignal
+  ): Promise<vscode.TerminalShellIntegration | undefined> {
+    if (terminal.shellIntegration) {
+      return Promise.resolve(terminal.shellIntegration);
+    }
+    return new Promise((resolve) => {
+      const finish = (integration?: vscode.TerminalShellIntegration) => {
+        clearTimeout(timeout);
+        signal.removeEventListener('abort', cancel);
+        disposable.dispose();
+        resolve(integration);
+      };
+      const cancel = () => finish();
+      const disposable = vscode.window.onDidChangeTerminalShellIntegration((event) => {
+        if (event.terminal === terminal) {
+          finish(event.shellIntegration);
+        }
+      });
+      const timeout = setTimeout(() => finish(), 5_000);
+      signal.addEventListener('abort', cancel, { once: true });
+    });
+  }
+
+  private disposeCommandTerminals(): void {
+    for (const terminal of this.commandTerminals.values()) {
+      terminal.dispose();
+    }
+    this.commandTerminals.clear();
   }
 
   private async findAgentFiles(
@@ -1463,17 +1969,85 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       .slice(0, MAX_PROJECT_CANDIDATES);
   }
 
+  private async assertNoWorkspaceSymlink(
+    folder: vscode.WorkspaceFolder,
+    relativePath: string,
+    allowMissing: boolean
+  ): Promise<void> {
+    const segments = relativePath.split('/').filter(Boolean);
+    for (let index = 1; index <= segments.length; index += 1) {
+      const uri = vscode.Uri.joinPath(folder.uri, ...segments.slice(0, index));
+      try {
+        const stat = await vscode.workspace.fs.stat(uri);
+        if ((stat.type & vscode.FileType.SymbolicLink) !== 0) {
+          throw new Error(`DevMate will not use the symbolic-link path ${segments.slice(0, index).join('/')}.`);
+        }
+      } catch (error) {
+        if (allowMissing && error instanceof vscode.FileSystemError && error.code === 'FileNotFound') {
+          return;
+        }
+        throw error;
+      }
+    }
+  }
+
   private postAgentToolActivity(
     id: string,
     title: string,
     detail: string,
     status: 'running' | 'completed' | 'error',
-    result?: string
+    result?: string,
+    canOpenTerminal = false
   ): void {
     this.postMessage({
       command: 'agentToolActivity',
-      activity: { id, title, detail, status, result }
+      activity: { id, title, detail, status, result, canOpenTerminal }
     });
+  }
+
+  private enabledAgentTools(
+    mode: AssistantMode,
+    fileMutationCalls: number,
+    commandCalls: number
+  ): AgentToolName[] {
+    const tools: AgentToolName[] = ['list_files', 'read_file', 'search_code'];
+    if (mode === 'ideas' || !vscode.workspace.isTrusted) {
+      return tools;
+    }
+    if (fileMutationCalls < MAX_AGENT_FILE_MUTATIONS) {
+      tools.push('create_file', 'edit_file');
+    }
+    if (commandCalls < MAX_AGENT_COMMAND_CALLS) {
+      tools.push('run_command');
+    }
+    return tools;
+  }
+
+  private rejectedToolExecution(call: AgentToolCall, result: string): AgentToolExecution {
+    let historyArguments = call.arguments;
+    try {
+      historyArguments = summarizedAgentToolArguments(parseAgentToolCall(call));
+    } catch {
+      // Keep the provider's bounded raw arguments for an invalid call.
+    }
+    this.postAgentToolActivity(
+      call.id,
+      'Tool request rejected',
+      call.name,
+      'error',
+      result
+    );
+    return {
+      step: {
+        callId: call.id,
+        name: call.name,
+        arguments: historyArguments,
+        result,
+        isError: true
+      },
+      usedFiles: [],
+      mutationCharacters: 0
+    };
   }
 
   private async checkBackendHealth(): Promise<void> {
@@ -1585,6 +2159,9 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const toolHistory: AgentToolStep[] = [];
     const toolUsedFiles = new Set<string>();
     const toolSignatures = new Set<string>();
+    let fileMutationCalls = 0;
+    let mutationCharacters = 0;
+    let commandCalls = 0;
     let forceFinalAnswer = false;
     let emptyResponseRecoveryAttempted = false;
     let finalData: AskResponse | undefined;
@@ -1595,7 +2172,10 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       }
       const forceFinalThisTurn = forceFinalAnswer
         || toolHistory.length >= MAX_AGENT_TOOL_CALLS;
-      const toolsEnabled = !forceFinalThisTurn;
+      const enabledTools = forceFinalThisTurn
+        ? []
+        : this.enabledAgentTools(message.mode, fileMutationCalls, commandCalls);
+      const toolsEnabled = enabledTools.length > 0;
       const request: AskRequest = {
         question,
         mode: message.mode,
@@ -1608,7 +2188,8 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           temperature,
           timeoutSeconds: modelTimeoutSeconds
         },
-        toolsEnabled,
+        enabledTools,
+        agentEditsEnabled: message.mode === 'code' || message.mode === 'debug',
         forceFinalAnswer: forceFinalThisTurn,
         toolHistory
       };
@@ -1679,7 +2260,21 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           // The executor reports the validated tool error back to the model.
         }
         let execution: AgentToolExecution;
-        if (signature && toolSignatures.has(signature)) {
+        const isFileMutation = toolCall.name === 'create_file' || toolCall.name === 'edit_file';
+        const isCommand = toolCall.name === 'run_command';
+        if (isFileMutation && fileMutationCalls >= MAX_AGENT_FILE_MUTATIONS) {
+          execution = this.rejectedToolExecution(
+            toolCall,
+            'DevMate reached the file-mutation limit for this request.'
+          );
+          forceFinalAnswer = true;
+        } else if (isCommand && commandCalls >= MAX_AGENT_COMMAND_CALLS) {
+          execution = this.rejectedToolExecution(
+            toolCall,
+            'DevMate reached the verification-command limit for this request.'
+          );
+          forceFinalAnswer = true;
+        } else if (signature && toolSignatures.has(signature)) {
           const repeatedResult = 'This identical tool call was already completed. Use its earlier result.';
           this.postAgentToolActivity(
             toolCall.id,
@@ -1692,18 +2287,35 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             step: {
               callId: toolCall.id,
               name: toolCall.name,
-              arguments: toolCall.arguments,
+              arguments: (() => {
+                try {
+                  return summarizedAgentToolArguments(parseAgentToolCall(toolCall));
+                } catch {
+                  return toolCall.arguments;
+                }
+              })(),
               result: repeatedResult,
               isError: true
             },
-            usedFiles: []
+            usedFiles: [],
+            mutationCharacters: 0
           };
           forceFinalAnswer = true;
         } else {
           if (signature) {
             toolSignatures.add(signature);
           }
-          execution = await this.executeAgentToolCall(toolCall);
+          execution = await this.executeAgentToolCall(
+            toolCall,
+            MAX_TOTAL_CHANGE_CHARACTERS - mutationCharacters
+          );
+          mutationCharacters += execution.mutationCharacters;
+          if (isFileMutation) {
+            fileMutationCalls += 1;
+          }
+          if (isCommand) {
+            commandCalls += 1;
+          }
         }
         if (this.finishCancelledRequest(signal)) {
           return;
@@ -1771,17 +2383,27 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (!folder) {
       throw new Error('Open a workspace folder before applying file changes.');
     }
+    if (!vscode.workspace.isTrusted) {
+      throw new Error('Trust this workspace before allowing DevMate to change files.');
+    }
 
     const plannedChanges = await Promise.all(
       changes.map(async (change) => {
+        await this.assertNoWorkspaceSymlink(folder, change.path, true);
         const uri = vscode.Uri.joinPath(folder.uri, ...change.path.split('/'));
         let exists = false;
+        let originalContent = '';
         try {
           const stat = await vscode.workspace.fs.stat(uri);
           if ((stat.type & vscode.FileType.Directory) !== 0) {
             throw new Error(`${change.path} is a directory, not a file.`);
           }
           exists = true;
+          const document = await vscode.workspace.openTextDocument(uri);
+          if (document.isDirty) {
+            throw new Error(`Save or discard your unsaved changes in ${change.path} before DevMate edits it.`);
+          }
+          originalContent = document.getText();
         } catch (error) {
           if (!(error instanceof vscode.FileSystemError && error.code === 'FileNotFound')) {
             throw new Error(
@@ -1791,12 +2413,14 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             );
           }
         }
-        return { ...change, uri, exists };
+        return { ...change, uri, exists, originalContent };
       })
     );
     const permissionFiles = plannedChanges.map((change) => ({
       path: change.path,
-      operation: change.exists ? 'update' as const : 'create' as const
+      operation: change.exists ? 'update' as const : 'create' as const,
+      originalContent: change.originalContent,
+      proposedContent: change.content
     }));
     const permissionPolicy = this.getPermissionPolicy();
     const requiresApproval = permissionFiles.some(
@@ -1811,6 +2435,27 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
     if (signal.aborted) {
       return 'Proposed file changes were not applied.';
+    }
+    if (!vscode.workspace.isTrusted) {
+      throw new Error('Workspace Trust changed while permission was pending; the files were not changed.');
+    }
+
+    for (const change of plannedChanges) {
+      if (change.exists) {
+        const document = await vscode.workspace.openTextDocument(change.uri);
+        if (document.isDirty || document.getText() !== change.originalContent) {
+          throw new Error(`${change.path} changed while permission was pending. Review the request again.`);
+        }
+      } else {
+        try {
+          await vscode.workspace.fs.stat(change.uri);
+          throw new Error(`${change.path} was created while permission was pending. Review the request again.`);
+        } catch (error) {
+          if (!(error instanceof vscode.FileSystemError && error.code === 'FileNotFound')) {
+            throw error;
+          }
+        }
+      }
     }
 
     this.postStatus('Applying file changes');
@@ -1841,6 +2486,14 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const applied = await vscode.workspace.applyEdit(workspaceEdit);
     if (!applied) {
       throw new Error('VS Code could not apply the proposed workspace edit.');
+    }
+
+    const saved = await Promise.all(plannedChanges.map(async (change) => {
+      const document = await vscode.workspace.openTextDocument(change.uri);
+      return document.save();
+    }));
+    if (saved.some((didSave) => !didSave)) {
+      throw new Error('DevMate applied the changes, but VS Code could not save every file.');
     }
 
     let openNote = '';
@@ -2396,10 +3049,16 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
     .tool-activity-detail,
     .tool-activity-result {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      overflow: auto;
+      max-height: 140px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
       font-size: 10px;
+    }
+
+    .tool-open-terminal {
+      justify-self: start;
+      margin-top: 4px;
     }
 
     .tool-activity-result:empty {
@@ -2743,6 +3402,52 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       font-weight: 600;
     }
 
+    .remembered-command-list {
+      display: grid;
+      gap: 6px;
+      margin: 8px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .remembered-command {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      padding: 7px 8px;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      background: var(--surface);
+    }
+
+    .remembered-command-label {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-family: var(--vscode-editor-font-family);
+      font-size: 11px;
+    }
+
+    .remembered-command button,
+    .review-diff-button {
+      width: auto;
+      min-width: 0;
+      padding: 3px 7px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--vscode-foreground);
+      background: transparent;
+      cursor: pointer;
+    }
+
+    .remembered-command-empty {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
     @media (max-width: 480px) {
       .profile-form-row {
         grid-template-columns: 1fr;
@@ -2917,6 +3622,11 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
               <p id="settingsTimeoutHelp" class="field-help">Approximately 15 min.</p>
             </div>
             <div class="profile-field">
+              <label for="settingsCommandTimeoutSeconds">Command timeout (seconds)</label>
+              <input id="settingsCommandTimeoutSeconds" type="number" min="10" max="1800" step="1" required>
+              <p class="field-help">Maximum runtime for each verification command.</p>
+            </div>
+            <div class="profile-field">
               <label for="settingsMaxTokens">Maximum output tokens</label>
               <input id="settingsMaxTokens" type="number" min="128" max="32000" step="1" required>
               <p class="field-help">Shared by reasoning and final output.</p>
@@ -2958,13 +3668,15 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
               </span>
               <span class="permission-blocked-badge">Blocked</span>
             </div>
-            <div class="permission-setting-row permission-blocked">
+            <div class="permission-setting-row">
               <span class="permission-setting-copy">
-                <strong>Run terminal commands</strong>
-                <span>DevMate does not currently execute model-proposed commands.</span>
+                <strong>Verification commands</strong>
+                <span>New exact commands ask first and are remembered only for this workspace.</span>
               </span>
-              <span class="permission-blocked-badge">Blocked</span>
+              <span id="workspaceTrustBadge" class="permission-blocked-badge" hidden>Workspace untrusted</span>
             </div>
+            <ul id="rememberedCommandList" class="remembered-command-list"></ul>
+            <button id="clearRememberedCommands" class="action-button secondary" type="button">Clear remembered commands</button>
           </div>
           <p class="field-help">Instant permission never bypasses workspace boundaries, protected-file rules, or file-size limits.</p>
         </section>
@@ -2995,8 +3707,11 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       },
       settings: {
         timeoutSeconds: 900,
+        commandTimeoutSeconds: 300,
         maxTokens: 16384,
-        temperature: 0.2
+        temperature: 0.2,
+        rememberedCommands: [],
+        workspaceTrusted: true
       },
       workingStartedAt: 0,
       workingTimer: undefined,
@@ -3035,8 +3750,12 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const permissionUpdateFilesEl = document.getElementById('permissionUpdateFiles');
     const settingsTimeoutSecondsEl = document.getElementById('settingsTimeoutSeconds');
     const settingsTimeoutHelpEl = document.getElementById('settingsTimeoutHelp');
+    const settingsCommandTimeoutSecondsEl = document.getElementById('settingsCommandTimeoutSeconds');
     const settingsMaxTokensEl = document.getElementById('settingsMaxTokens');
     const settingsTemperatureEl = document.getElementById('settingsTemperature');
+    const rememberedCommandListEl = document.getElementById('rememberedCommandList');
+    const clearRememberedCommandsEl = document.getElementById('clearRememberedCommands');
+    const workspaceTrustBadgeEl = document.getElementById('workspaceTrustBadge');
     const ollamaDefaultBaseUrl = 'http://127.0.0.1:11434';
 
     document.querySelectorAll('.mode-button').forEach((button) => {
@@ -3098,9 +3817,11 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       permissionCreateFilesEl.value = state.permissionPolicy.createFiles;
       permissionUpdateFilesEl.value = state.permissionPolicy.updateFiles;
       settingsTimeoutSecondsEl.value = String(state.settings.timeoutSeconds);
+      settingsCommandTimeoutSecondsEl.value = String(state.settings.commandTimeoutSeconds);
       settingsMaxTokensEl.value = String(state.settings.maxTokens);
       settingsTemperatureEl.value = String(state.settings.temperature);
       renderTimeoutApproximation();
+      renderRememberedCommands();
       if (!permissionDialogEl.open) {
         permissionDialogEl.showModal();
       }
@@ -3115,15 +3836,21 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       permissionDialogEl.close();
     });
 
+    clearRememberedCommandsEl.addEventListener('click', () => {
+      vscode.postMessage({ command: 'clearRememberedCommands' });
+    });
+
     permissionFormEl.addEventListener('submit', (event) => {
       event.preventDefault();
       const timeoutSeconds = Number(settingsTimeoutSecondsEl.value);
+      const commandTimeoutSeconds = Number(settingsCommandTimeoutSecondsEl.value);
       const maxTokens = Number(settingsMaxTokensEl.value);
       const temperature = Number(settingsTemperatureEl.value);
       vscode.postMessage({
         command: 'saveSettings',
         settings: {
           timeoutSeconds,
+          commandTimeoutSeconds,
           maxTokens,
           temperature,
           policy: {
@@ -3298,8 +4025,10 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
       if (message.command === 'settingsUpdated') {
         state.settings = message.settings;
+        renderRememberedCommands();
         if (permissionDialogEl.open) {
           settingsTimeoutSecondsEl.value = String(state.settings.timeoutSeconds);
+          settingsCommandTimeoutSecondsEl.value = String(state.settings.commandTimeoutSeconds);
           renderTimeoutApproximation();
         }
       }
@@ -3311,6 +4040,11 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       if (message.command === 'permissionRequest') {
         updateWorkingTurn('Waiting for permission');
         appendPermissionRequest(message);
+      }
+
+      if (message.command === 'commandPermissionRequest') {
+        updateWorkingTurn('Waiting for command permission');
+        appendCommandPermissionRequest(message);
       }
 
       if (message.command === 'agentToolActivity') {
@@ -3346,6 +4080,42 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         .toFixed(1)
         .replace(/\.0$/, '');
       settingsTimeoutHelpEl.textContent = 'Approximately ' + roundedMinutes + ' min.';
+    }
+
+    function renderRememberedCommands() {
+      const commands = Array.isArray(state.settings.rememberedCommands)
+        ? state.settings.rememberedCommands
+        : [];
+      rememberedCommandListEl.replaceChildren();
+      workspaceTrustBadgeEl.hidden = state.settings.workspaceTrusted !== false;
+      clearRememberedCommandsEl.disabled = commands.length === 0;
+      if (commands.length === 0) {
+        const empty = document.createElement('li');
+        empty.className = 'remembered-command-empty';
+        empty.textContent = 'No verification commands are remembered.';
+        rememberedCommandListEl.appendChild(empty);
+        return;
+      }
+      commands.forEach((command) => {
+        const item = document.createElement('li');
+        item.className = 'remembered-command';
+        const label = document.createElement('span');
+        label.className = 'remembered-command-label';
+        label.textContent = command.label;
+        label.title = command.label;
+        item.appendChild(label);
+        const revoke = document.createElement('button');
+        revoke.type = 'button';
+        revoke.textContent = 'Forget';
+        revoke.addEventListener('click', () => {
+          vscode.postMessage({
+            command: 'revokeRememberedCommand',
+            signature: command.signature
+          });
+        });
+        item.appendChild(revoke);
+        rememberedCommandListEl.appendChild(item);
+      });
     }
 
     function appendMessage(text, role) {
@@ -3611,6 +4381,20 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         filePath.textContent = file.path;
         filePath.title = file.path;
         item.appendChild(filePath);
+        if (file.canReview) {
+          const review = document.createElement('button');
+          review.type = 'button';
+          review.className = 'review-diff-button';
+          review.textContent = 'Review diff';
+          review.addEventListener('click', () => {
+            vscode.postMessage({
+              command: 'reviewPermissionDiff',
+              requestId: message.requestId,
+              path: file.path
+            });
+          });
+          item.appendChild(review);
+        }
         list.appendChild(item);
       });
       card.appendChild(list);
@@ -3654,6 +4438,73 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
+    function appendCommandPermissionRequest(message) {
+      const card = document.createElement('article');
+      card.className = 'message assistant permission-card';
+      card.dataset.requestId = message.requestId;
+
+      const author = document.createElement('span');
+      author.className = 'message-author';
+      author.textContent = 'DevMate';
+      card.appendChild(author);
+
+      const title = document.createElement('h3');
+      title.className = 'permission-title';
+      title.textContent = 'Permission required to run a command';
+      card.appendChild(title);
+
+      const command = document.createElement('code');
+      command.className = 'permission-summary';
+      command.textContent = message.label;
+      card.appendChild(command);
+
+      const cwd = document.createElement('p');
+      cwd.className = 'permission-summary';
+      cwd.textContent = 'Working directory: ' + message.cwd;
+      card.appendChild(cwd);
+
+      const warning = document.createElement('p');
+      warning.className = 'permission-summary';
+      warning.textContent = 'Verification commands can execute code from this trusted workspace.';
+      card.appendChild(warning);
+
+      const actions = document.createElement('div');
+      actions.className = 'permission-actions';
+      const resolution = document.createElement('div');
+      resolution.className = 'permission-resolution';
+      resolution.hidden = true;
+      const addDecisionButton = (label, decision, primary = false) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'action-button ' + (primary ? 'primary' : 'secondary');
+        button.textContent = label;
+        button.addEventListener('click', () => {
+          actions.querySelectorAll('button').forEach((candidate) => {
+            candidate.disabled = true;
+          });
+          resolution.hidden = false;
+          resolution.textContent = decision === 'deny'
+            ? 'Denied'
+            : decision === 'allowAlways'
+              ? 'Allowed and remembered for this workspace'
+              : 'Allowed once';
+          vscode.postMessage({
+            command: 'commandPermissionDecision',
+            requestId: message.requestId,
+            decision
+          });
+        }, { once: true });
+        actions.appendChild(button);
+      };
+      addDecisionButton('Deny', 'deny');
+      addDecisionButton('Always allow this command', 'allowAlways');
+      addDecisionButton('Allow once', 'allowOnce', true);
+      card.appendChild(actions);
+      card.appendChild(resolution);
+      messagesEl.appendChild(card);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
     function renderAgentToolActivity(activity) {
       let item = Array.from(messagesEl.querySelectorAll('.tool-activity')).find(
         (candidate) => candidate.dataset.activityId === activity.id
@@ -3679,6 +4530,18 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         const result = document.createElement('span');
         result.className = 'tool-activity-result';
         copy.appendChild(result);
+        const openTerminal = document.createElement('button');
+        openTerminal.type = 'button';
+        openTerminal.className = 'review-diff-button tool-open-terminal';
+        openTerminal.textContent = 'Open terminal';
+        openTerminal.hidden = true;
+        openTerminal.addEventListener('click', () => {
+          vscode.postMessage({
+            command: 'openCommandTerminal',
+            activityId: item.dataset.activityId
+          });
+        });
+        copy.appendChild(openTerminal);
         item.appendChild(copy);
         messagesEl.appendChild(item);
       }
@@ -3692,6 +4555,7 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       item.querySelector('.tool-activity-title').textContent = activity.title;
       item.querySelector('.tool-activity-detail').textContent = activity.detail;
       item.querySelector('.tool-activity-result').textContent = activity.result || '';
+      item.querySelector('.tool-open-terminal').hidden = !activity.canOpenTerminal;
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
@@ -3908,6 +4772,24 @@ function describeAgentToolCall(call: ParsedAgentToolCall): { title: string; deta
     return {
       title: 'Reading file',
       detail: call.arguments.path
+    };
+  }
+  if (call.name === 'create_file') {
+    return {
+      title: 'Creating file',
+      detail: call.arguments.path
+    };
+  }
+  if (call.name === 'edit_file') {
+    return {
+      title: 'Editing file',
+      detail: call.arguments.path
+    };
+  }
+  if (call.name === 'run_command') {
+    return {
+      title: 'Running verification command',
+      detail: call.arguments.executable
     };
   }
   return {

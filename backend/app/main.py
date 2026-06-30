@@ -25,10 +25,27 @@ MAX_PROJECT_CONTEXT_CHARACTERS = 40_000
 MAX_ATTACHED_FILES = 5
 MAX_REQUEST_CONTEXT_ITEMS = 6
 MAX_REQUEST_CONTEXT_CHARACTERS = 40_000
-MAX_AGENT_TOOL_STEPS = 8
+MAX_AGENT_TOOL_STEPS = 16
 MAX_AGENT_TOOL_RESULT_CHARACTERS = 10_000
 MAX_AGENT_TOOL_HISTORY_CHARACTERS = 80_000
-AgentToolName = Literal["list_files", "read_file", "search_code"]
+AgentToolName = Literal[
+    "list_files",
+    "read_file",
+    "search_code",
+    "create_file",
+    "edit_file",
+    "run_command",
+]
+READ_ONLY_AGENT_TOOLS: tuple[AgentToolName, ...] = (
+    "list_files",
+    "read_file",
+    "search_code",
+)
+MUTATING_AGENT_TOOLS: tuple[AgentToolName, ...] = (
+    "create_file",
+    "edit_file",
+    "run_command",
+)
 
 
 def _utf16_character_count(value: str) -> int:
@@ -131,6 +148,8 @@ class AskRequest(BaseModel):
     scope: AskScope
     settings: LlmSettings
     toolsEnabled: bool = True
+    enabledTools: list[AgentToolName] | None = None
+    agentEditsEnabled: bool = False
     forceFinalAnswer: bool = False
     toolHistory: list[AgentToolStep] = Field(
         default_factory=list,
@@ -144,6 +163,8 @@ class AskRequest(BaseModel):
             raise ValueError("tool history contains duplicate call ids")
         if sum(len(step.result) for step in self.toolHistory) > MAX_AGENT_TOOL_HISTORY_CHARACTERS:
             raise ValueError("tool history is too large")
+        if self.enabledTools is not None and len(self.enabledTools) != len(set(self.enabledTools)):
+            raise ValueError("enabled tools contains duplicates")
         return self
 
 
@@ -207,6 +228,8 @@ AGENT_TOOL_DEFINITIONS = (
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
+                "startLine": {"type": "integer", "minimum": 1},
+                "endLine": {"type": "integer", "minimum": 1},
             },
             "required": ["path"],
             "additionalProperties": False,
@@ -233,10 +256,82 @@ AGENT_TOOL_DEFINITIONS = (
             "additionalProperties": False,
         },
     ),
+    ChatToolDefinition(
+        name="create_file",
+        description=(
+            "Create one new eligible workspace text file. Use complete file content and never use this for an existing file."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["path", "content"],
+            "additionalProperties": False,
+        },
+    ),
+    ChatToolDefinition(
+        name="edit_file",
+        description=(
+            "Edit an existing text file with 1-20 sequential exact replacements. Each oldText must match exactly once."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "replacements": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 20,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "oldText": {"type": "string", "minLength": 1},
+                            "newText": {"type": "string"},
+                        },
+                        "required": ["oldText", "newText"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["path", "replacements"],
+            "additionalProperties": False,
+        },
+    ),
+    ChatToolDefinition(
+        name="run_command",
+        description=(
+            "Run one approved verification command such as a test, lint, type-check, or build command. "
+            "Installation, Git, shells, servers, generators, and writable formatters are blocked."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "executable": {"type": "string"},
+                "args": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "items": {"type": "string", "maxLength": 500},
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": "Optional workspace-relative working directory.",
+                },
+                "timeoutSeconds": {
+                    "type": "integer",
+                    "minimum": 10,
+                    "maximum": 1800,
+                },
+            },
+            "required": ["executable"],
+            "additionalProperties": False,
+        },
+    ),
 )
 
 
-app = FastAPI(title="DevMate Backend", version="0.7.0")
+app = FastAPI(title="DevMate Backend", version="0.9.0")
 _chat_provider = OpenAICompatibleProvider()
 
 
@@ -263,7 +358,19 @@ async def ask(
 ) -> AskResult:
     used_files = _used_files(request.scope)
     api_key = provider_api_key.strip() if provider_api_key else None
-    tools_enabled = request.toolsEnabled and not request.forceFinalAnswer
+    requested_tools = (
+        tuple(request.enabledTools)
+        if request.enabledTools is not None
+        else READ_ONLY_AGENT_TOOLS if request.toolsEnabled else ()
+    )
+    mode_tools = READ_ONLY_AGENT_TOOLS if request.mode == "ideas" else (
+        *READ_ONLY_AGENT_TOOLS,
+        *MUTATING_AGENT_TOOLS,
+    )
+    enabled_tools = tuple(
+        tool for tool in requested_tools if tool in mode_tools
+    ) if not request.forceFinalAnswer else ()
+    tools_enabled = bool(enabled_tools)
     messages = build_chat_messages(
         mode=request.mode,
         scope_type=request.scope.type,
@@ -272,6 +379,7 @@ async def ask(
         tool_steps=request.toolHistory,
         tools_enabled=tools_enabled,
         force_final_answer=request.forceFinalAnswer,
+        agent_edits_enabled=request.agentEditsEnabled,
     )
     try:
         completion_value = await chat_provider.complete(
@@ -284,7 +392,11 @@ async def ask(
                 max_tokens=request.settings.maxTokens,
                 temperature=request.settings.temperature,
                 timeout_seconds=request.settings.timeoutSeconds,
-                tools=AGENT_TOOL_DEFINITIONS if tools_enabled else (),
+                tools=tuple(
+                    definition
+                    for definition in AGENT_TOOL_DEFINITIONS
+                    if definition.name in enabled_tools
+                ),
                 force_final_answer=request.forceFinalAnswer,
             )
         )
@@ -297,7 +409,7 @@ async def ask(
     if completion.tool_calls:
         if not tools_enabled:
             raise HTTPException(status_code=502, detail="The model requested a tool after the tool limit was reached.")
-        tool_calls = _parse_agent_tool_calls(completion.tool_calls)
+        tool_calls = _parse_agent_tool_calls(completion.tool_calls, set(enabled_tools))
         history_call_ids = {step.callId for step in request.toolHistory}
         if any(tool_call.id in history_call_ids for tool_call in tool_calls):
             raise HTTPException(status_code=502, detail="The model reused an invalid tool-call id.")
@@ -326,7 +438,7 @@ async def ask(
         )
 
     changes: list[FileChange] = []
-    if request.mode == "code":
+    if request.mode == "code" and not request.agentEditsEnabled:
         try:
             answer, parsed_changes = parse_code_change_response(answer)
         except CodeChangeParseError as error:
@@ -346,7 +458,10 @@ async def ask(
     )
 
 
-def _parse_agent_tool_calls(tool_calls: tuple[object, ...]) -> list[AgentToolCall]:
+def _parse_agent_tool_calls(
+    tool_calls: tuple[object, ...],
+    enabled_tools: set[AgentToolName],
+) -> list[AgentToolCall]:
     parsed_calls: list[AgentToolCall] = []
     seen_ids: set[str] = set()
     for tool_call in tool_calls:
@@ -358,9 +473,9 @@ def _parse_agent_tool_calls(tool_calls: tuple[object, ...]) -> list[AgentToolCal
             or not call_id
             or len(call_id) > 120
             or call_id in seen_ids
-            or name not in {"list_files", "read_file", "search_code"}
+            or name not in enabled_tools
             or not isinstance(arguments_json, str)
-            or len(arguments_json) > 4_000
+            or len(arguments_json) > 1_200_000
         ):
             raise HTTPException(status_code=502, detail="The model requested an invalid tool.")
         try:
