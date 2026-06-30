@@ -59,6 +59,12 @@ export type AskRequest = {
   agentEditsEnabled?: boolean;
   forceFinalAnswer?: boolean;
   toolHistory?: AgentToolStep[];
+  conversationHistory?: ConversationTurn[];
+};
+
+export type ConversationTurn = {
+  user: string;
+  assistant: string;
 };
 
 export type AskResponse = {

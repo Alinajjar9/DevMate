@@ -41,6 +41,7 @@ const vscode = __importStar(require("vscode"));
 const agentTools_1 = require("./agentTools");
 const client_1 = require("./api/client");
 const context_1 = require("./context");
+const conversation_1 = require("./conversation");
 const commandTools_1 = require("./commandTools");
 const fileChanges_1 = require("./fileChanges");
 const fileTools_1 = require("./fileTools");
@@ -49,6 +50,9 @@ const permissions_1 = require("./permissions");
 const projectContext_1 = require("./projectContext");
 const projectIndex_1 = require("./projectIndex");
 const retryPolicy_1 = require("./retryPolicy");
+class StartedCommandError extends Error {
+    commandAttempted = true;
+}
 function activate(context) {
     const chatViewProvider = new DevMateChatViewProvider(context);
     const viewRegistration = vscode.window.registerWebviewViewProvider(DevMateChatViewProvider.viewId, chatViewProvider, {
@@ -93,6 +97,7 @@ class DevMateChatViewProvider {
     projectIndexCache;
     diffDocuments = new Map();
     commandTerminals = new Map();
+    conversationHistory = [];
     constructor(extensionContext) {
         this.extensionContext = extensionContext;
         this.extensionUri = extensionContext.extensionUri;
@@ -1068,7 +1073,8 @@ class DevMateChatViewProvider {
                     isError: false
                 },
                 usedFiles: execution.usedFiles,
-                mutationCharacters: execution.mutationCharacters
+                mutationCharacters: execution.mutationCharacters,
+                commandAttempted: execution.commandAttempted
             };
         }
         catch (error) {
@@ -1083,7 +1089,8 @@ class DevMateChatViewProvider {
                     isError: true
                 },
                 usedFiles: [],
-                mutationCharacters: 0
+                mutationCharacters: 0,
+                commandAttempted: error instanceof StartedCommandError
             };
         }
     }
@@ -1341,20 +1348,21 @@ class DevMateChatViewProvider {
         ].join('\n');
         if (outcome.state === 'cancelled') {
             this.commandTerminals.delete(call.id);
-            throw new Error('The verification command was cancelled.');
+            throw new StartedCommandError('The verification command was cancelled.');
         }
         if (outcome.state === 'timeout') {
             this.commandTerminals.delete(call.id);
-            throw new Error(result);
+            throw new StartedCommandError(result);
         }
         if (outcome.exitCode !== 0) {
-            throw new Error(result);
+            throw new StartedCommandError(result);
         }
         return {
             result,
             resultSummary: `Passed in ${durationSeconds.toFixed(1)}s`,
             usedFiles: [],
-            mutationCharacters: 0
+            mutationCharacters: 0,
+            commandAttempted: true
         };
     }
     waitForShellIntegration(terminal, signal) {
@@ -1563,7 +1571,8 @@ class DevMateChatViewProvider {
                 enabledTools,
                 agentEditsEnabled: message.mode === 'code' || message.mode === 'debug',
                 forceFinalAnswer: forceFinalThisTurn,
-                toolHistory
+                toolHistory,
+                conversationHistory: this.conversationHistory
             };
             this.postStatus(forceFinalThisTurn
                 ? 'Requesting concise final answer'
@@ -1663,7 +1672,7 @@ class DevMateChatViewProvider {
                     if (isFileMutation) {
                         fileMutationCalls += 1;
                     }
-                    if (isCommand) {
+                    if (isCommand && execution.commandAttempted) {
                         commandCalls += 1;
                     }
                 }
@@ -1704,6 +1713,7 @@ class DevMateChatViewProvider {
             formatAskResponse(finalData.answer, [...new Set([...finalData.usedFiles, ...toolUsedFiles])]),
             changeOutcome
         ].filter(Boolean).join('\n\n');
+        this.conversationHistory = (0, conversation_1.appendConversationTurn)(this.conversationHistory, question, [finalData.answer, changeOutcome].filter(Boolean).join('\n\n'));
         this.postMessage({
             command: 'assistantResponse',
             response

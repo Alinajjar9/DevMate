@@ -421,6 +421,33 @@ class DevMateApiTests(unittest.TestCase):
             ["read_file"],
         )
 
+    def test_ask_replays_bounded_conversation_history(self) -> None:
+        payload = self._ask_payload(scope_type="project", items=[], mode="code")
+        payload["agentEditsEnabled"] = True
+        payload["conversationHistory"] = [
+            {
+                "user": "Create a unittest for app.py.",
+                "assistant": "Created test_app.py, but pytest was unavailable.",
+            }
+        ]
+
+        response = self.client.post("/ask", json=payload)
+
+        self.assertEqual(response.status_code, 200)
+        messages = self.provider.requests[-1].messages
+        self.assertEqual([message.role for message in messages[:4]], [
+            "system", "user", "assistant", "user"
+        ])
+        self.assertIn("Create a unittest", messages[1].content)
+        self.assertIn("pytest was unavailable", messages[2].content)
+
+        payload["conversationHistory"] = [
+            {"user": "u" * 6_000, "assistant": "a" * 6_000},
+            {"user": "u" * 6_000, "assistant": "a" * 6_000},
+        ]
+        response = self.client.post("/ask", json=payload)
+        self.assertEqual(response.status_code, 422)
+
     def test_ask_explains_reasoning_only_responses(self) -> None:
         self.provider.answer = ChatCompletion(
             content=None,

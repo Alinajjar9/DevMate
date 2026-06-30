@@ -18,6 +18,7 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 - Enter-to-send composer with Shift+Enter for new lines
 - Distinct You and DevMate message bubbles
 - Workspace-scoped in-chat approvals, native diff review, and exact-command remembering
+- Bounded in-memory follow-up context for the current DevMate session
 - Bounded Selection and active File context with language and truncation metadata
 - Persistent workspace-local Project index with bounded chunk retrieval and deterministic fallback ranking
 - Workspace-only multi-file attachments with a compact expandable selected-file list
@@ -43,6 +44,8 @@ Temporary provider failures (`ResourceExhausted`, HTTP 429, 502, 503, or 504) ar
 Read-only tools run instantly because they cannot modify the project. They remain workspace-bound and use the same exclusions as automatic project context, so dependency/build folders, binary files, lock files, environment files, and credential/key files are unavailable. File changes and commands remain in the extension host; the backend receives only bounded tool results and never receives direct filesystem access.
 
 Tool calls are normalized before loop detection, so formatting differences cannot make DevMate reread the same file indefinitely. If a model repeats a completed tool call or returns reasoning without a final answer, DevMate performs one tools-off final turn. Nemotron 3 requests reserve half of the response budget for reasoning and disable thinking during this recovery turn. The default `devMate.maxTokens` is 16,384 so reasoning models and multi-file Code responses have room to finish.
+
+Completed user/assistant turns are retained in bounded memory for the current Extension Host session, so follow-ups such as “okay, do it” keep the immediately preceding task context. The newest six turns are kept within a 20,000-character limit. This history is not yet persisted after VS Code or the Extension Host restarts.
 
 Model-requested deletion, rename, move, dependency installation, arbitrary shells, Git commands, servers, generators, and writable formatters remain blocked.
 
@@ -78,7 +81,9 @@ Only workspace-relative text files in the first open folder can be changed. Abso
 
 `run_command` accepts an executable and argument array rather than a raw shell string. Each new exact command asks inside the conversation; **Always allow this command** remembers only that executable, arguments, and working directory for the current workspace. Remembered commands can be revoked from Settings. Verification requires Workspace Trust and VS Code terminal shell integration.
 
-The first registry covers common test, lint, type-check, and build commands for JavaScript/TypeScript, Python, Rust, Go, .NET, Maven, and Gradle. Output streams into a bounded chat card, while **Open terminal** exposes the complete VS Code terminal. Commands default to a five-minute limit, can be configured from 10 through 1800 seconds, and are limited to three calls per request.
+The first registry covers common test, lint, type-check, and build commands for JavaScript/TypeScript, Python, Rust, Go, .NET, Maven, and Gradle. Output streams into a bounded chat card, while **Open terminal** exposes the complete VS Code terminal. Commands default to a five-minute limit, can be configured from 10 through 1800 seconds, and are limited to three executions per request. Locally rejected requests do not consume that execution limit.
+
+The working directory is always workspace-relative; omitted values and `.`, `./`, or `.\\` all select the workspace root. If `pytest` is unavailable, the agent is instructed to convert compatible tests to the standard-library `unittest` format and run `python -m unittest <test-file> -v` instead of attempting package installation.
 
 ## Requirements
 

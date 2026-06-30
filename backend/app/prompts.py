@@ -24,6 +24,11 @@ class ToolStep(Protocol):
     isError: bool
 
 
+class ConversationTurn(Protocol):
+    user: str
+    assistant: str
+
+
 MODE_INSTRUCTIONS: dict[AssistantMode, str] = {
     "ideas": (
         "Explore practical approaches, architecture choices, and tradeoffs. "
@@ -54,6 +59,7 @@ def build_chat_messages(
     tools_enabled: bool = False,
     force_final_answer: bool = False,
     agent_edits_enabled: bool = False,
+    conversation_turns: Sequence[ConversationTurn] = (),
 ) -> tuple[ChatMessage, ...]:
     if force_final_answer:
         tool_instruction = (
@@ -64,7 +70,8 @@ def build_chat_messages(
         tool_instruction = (
             "You can use the tools enabled for this turn. Prefer targeted searches and reads, ask for file changes "
             "only when needed, run a relevant verification command after editing when one is available, and never "
-            "repeat an identical tool call."
+            "repeat an identical tool call. Never try to install a missing test dependency. If pytest is unavailable, "
+            "convert the test to Python's built-in unittest format and run python -m unittest <test-file> -v."
         )
     else:
         tool_instruction = (
@@ -108,10 +115,11 @@ def build_chat_messages(
                 ]
             )
 
-    messages = [
-        ChatMessage(role="system", content=system_message),
-        ChatMessage(role="user", content="\n".join(user_parts)),
-    ]
+    messages = [ChatMessage(role="system", content=system_message)]
+    for turn in conversation_turns:
+        messages.append(ChatMessage(role="user", content=turn.user))
+        messages.append(ChatMessage(role="assistant", content=turn.assistant))
+    messages.append(ChatMessage(role="user", content="\n".join(user_parts)))
     for step in tool_steps:
         tool_call = ChatToolCall(
             id=step.callId,

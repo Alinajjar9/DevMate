@@ -186,7 +186,7 @@ function parseArguments(value) {
 }
 function normalizeCommandCwd(value) {
     const trimmed = value.trim();
-    if (!trimmed) {
+    if (!trimmed || trimmed === '.' || trimmed === './' || trimmed === '.\\') {
         return '';
     }
     if (trimmed.startsWith('/') || trimmed.startsWith('\\') || /^[A-Za-z]:/.test(trimmed)) {

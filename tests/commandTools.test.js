@@ -53,6 +53,10 @@ test('normalizes exact command signatures by command, arguments, and cwd', () =>
   assert.equal(commandSignature(first), commandSignature(same));
   assert.notEqual(commandSignature(first), commandSignature(different));
   assert.equal(commandLabel(first), 'npm test');
+  assert.equal(
+    commandSignature(parseRunCommandArguments({ executable: 'npm', args: ['test'], cwd: '.' })),
+    commandSignature(parseRunCommandArguments({ executable: 'npm', args: ['test'] }))
+  );
 });
 
 test('sanitizes and bounds command output', () => {

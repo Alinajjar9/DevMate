@@ -204,7 +204,7 @@ function parseArguments(value: unknown): string[] {
 
 function normalizeCommandCwd(value: string): string {
   const trimmed = value.trim();
-  if (!trimmed) {
+  if (!trimmed || trimmed === '.' || trimmed === './' || trimmed === '.\\') {
     return '';
   }
   if (trimmed.startsWith('/') || trimmed.startsWith('\\') || /^[A-Za-z]:/.test(trimmed)) {

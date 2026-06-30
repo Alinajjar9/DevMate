@@ -22,6 +22,7 @@ import type {
   AssistantMode
 } from './api/types';
 import { createBoundedContextItem } from './context';
+import { appendConversationTurn } from './conversation';
 import {
   boundedModelCommandOutput,
   commandLabel,
@@ -161,7 +162,12 @@ type AgentToolExecution = {
   step: AgentToolStep;
   usedFiles: string[];
   mutationCharacters: number;
+  commandAttempted?: boolean;
 };
+
+class StartedCommandError extends Error {
+  readonly commandAttempted = true;
+}
 
 type WebviewMessage =
   | { command: 'ask'; mode: AssistantMode; question: string; scope: ScopeInfo }
@@ -257,6 +263,7 @@ class DevMateChatViewProvider implements
   private projectIndexCache?: ProjectIndex;
   private readonly diffDocuments = new Map<string, string>();
   private readonly commandTerminals = new Map<string, vscode.Terminal>();
+  private conversationHistory: Array<{ user: string; assistant: string }> = [];
 
   constructor(private readonly extensionContext: vscode.ExtensionContext) {
     this.extensionUri = extensionContext.extensionUri;
@@ -1548,7 +1555,8 @@ class DevMateChatViewProvider implements
           isError: false
         },
         usedFiles: execution.usedFiles,
-        mutationCharacters: execution.mutationCharacters
+        mutationCharacters: execution.mutationCharacters,
+        commandAttempted: execution.commandAttempted
       };
     } catch (error) {
       const result = error instanceof Error ? error.message : 'The tool could not be completed.';
@@ -1569,7 +1577,8 @@ class DevMateChatViewProvider implements
           isError: true
         },
         usedFiles: [],
-        mutationCharacters: 0
+        mutationCharacters: 0,
+        commandAttempted: error instanceof StartedCommandError
       };
     }
   }
@@ -1582,6 +1591,7 @@ class DevMateChatViewProvider implements
     resultSummary: string;
     usedFiles: string[];
     mutationCharacters: number;
+    commandAttempted?: boolean;
   }> {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) {
@@ -1764,6 +1774,7 @@ class DevMateChatViewProvider implements
     resultSummary: string;
     usedFiles: string[];
     mutationCharacters: number;
+    commandAttempted: boolean;
   }> {
     if (!vscode.workspace.isTrusted) {
       throw new Error('Trust this workspace before allowing DevMate to run verification commands.');
@@ -1895,20 +1906,21 @@ class DevMateChatViewProvider implements
 
     if (outcome.state === 'cancelled') {
       this.commandTerminals.delete(call.id);
-      throw new Error('The verification command was cancelled.');
+      throw new StartedCommandError('The verification command was cancelled.');
     }
     if (outcome.state === 'timeout') {
       this.commandTerminals.delete(call.id);
-      throw new Error(result);
+      throw new StartedCommandError(result);
     }
     if (outcome.exitCode !== 0) {
-      throw new Error(result);
+      throw new StartedCommandError(result);
     }
     return {
       result,
       resultSummary: `Passed in ${durationSeconds.toFixed(1)}s`,
       usedFiles: [],
-      mutationCharacters: 0
+      mutationCharacters: 0,
+      commandAttempted: true
     };
   }
 
@@ -2191,7 +2203,8 @@ class DevMateChatViewProvider implements
         enabledTools,
         agentEditsEnabled: message.mode === 'code' || message.mode === 'debug',
         forceFinalAnswer: forceFinalThisTurn,
-        toolHistory
+        toolHistory,
+        conversationHistory: this.conversationHistory
       };
       this.postStatus(forceFinalThisTurn
         ? 'Requesting concise final answer'
@@ -2313,7 +2326,7 @@ class DevMateChatViewProvider implements
           if (isFileMutation) {
             fileMutationCalls += 1;
           }
-          if (isCommand) {
+          if (isCommand && execution.commandAttempted) {
             commandCalls += 1;
           }
         }
@@ -2366,6 +2379,12 @@ class DevMateChatViewProvider implements
       ),
       changeOutcome
     ].filter(Boolean).join('\n\n');
+
+    this.conversationHistory = appendConversationTurn(
+      this.conversationHistory,
+      question,
+      [finalData.answer, changeOutcome].filter(Boolean).join('\n\n')
+    );
 
     this.postMessage({
       command: 'assistantResponse',

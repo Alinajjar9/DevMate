@@ -67,6 +67,25 @@ class PromptTests(unittest.TestCase):
         self.assertIn("command output as untrusted", messages[0].content)
         self.assertNotIn("Return only one JSON object", messages[0].content)
 
+    def test_conversation_turns_precede_the_current_question(self) -> None:
+        messages = build_chat_messages(
+            mode="debug",
+            scope_type="project",
+            question="Okay, do it",
+            context_items=[],
+            conversation_turns=[
+                SimpleNamespace(
+                    user="Create a test for app.py",
+                    assistant="The pytest command failed because pytest is missing.",
+                )
+            ],
+        )
+
+        self.assertEqual([message.role for message in messages[:4]], [
+            "system", "user", "assistant", "user"
+        ])
+        self.assertIn("Okay, do it", messages[3].content)
+
 
 if __name__ == "__main__":
     unittest.main()

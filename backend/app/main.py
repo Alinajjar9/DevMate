@@ -28,6 +28,9 @@ MAX_REQUEST_CONTEXT_CHARACTERS = 40_000
 MAX_AGENT_TOOL_STEPS = 16
 MAX_AGENT_TOOL_RESULT_CHARACTERS = 10_000
 MAX_AGENT_TOOL_HISTORY_CHARACTERS = 80_000
+MAX_CONVERSATION_TURNS = 6
+MAX_CONVERSATION_TURN_CHARACTERS = 6_000
+MAX_CONVERSATION_HISTORY_CHARACTERS = 20_000
 AgentToolName = Literal[
     "list_files",
     "read_file",
@@ -142,6 +145,11 @@ class AgentToolStep(BaseModel):
         return self
 
 
+class ConversationTurn(BaseModel):
+    user: str = Field(min_length=1, max_length=MAX_CONVERSATION_TURN_CHARACTERS)
+    assistant: str = Field(min_length=1, max_length=MAX_CONVERSATION_TURN_CHARACTERS)
+
+
 class AskRequest(BaseModel):
     question: str = Field(min_length=1)
     mode: AssistantMode
@@ -155,6 +163,10 @@ class AskRequest(BaseModel):
         default_factory=list,
         max_length=MAX_AGENT_TOOL_STEPS,
     )
+    conversationHistory: list[ConversationTurn] = Field(
+        default_factory=list,
+        max_length=MAX_CONVERSATION_TURNS,
+    )
 
     @model_validator(mode="after")
     def validate_tool_history(self) -> "AskRequest":
@@ -165,6 +177,11 @@ class AskRequest(BaseModel):
             raise ValueError("tool history is too large")
         if self.enabledTools is not None and len(self.enabledTools) != len(set(self.enabledTools)):
             raise ValueError("enabled tools contains duplicates")
+        if sum(
+            len(turn.user) + len(turn.assistant)
+            for turn in self.conversationHistory
+        ) > MAX_CONVERSATION_HISTORY_CHARACTERS:
+            raise ValueError("conversation history is too large")
         return self
 
 
@@ -303,7 +320,9 @@ AGENT_TOOL_DEFINITIONS = (
         name="run_command",
         description=(
             "Run one approved verification command such as a test, lint, type-check, or build command. "
-            "Installation, Git, shells, servers, generators, and writable formatters are blocked."
+            "Installation, Git, shells, servers, generators, and writable formatters are blocked. "
+            "If pytest is unavailable, convert the tests to Python unittest and run "
+            "python -m unittest <test-file> -v instead of trying to install pytest."
         ),
         parameters={
             "type": "object",
@@ -380,6 +399,7 @@ async def ask(
         tools_enabled=tools_enabled,
         force_final_answer=request.forceFinalAnswer,
         agent_edits_enabled=request.agentEditsEnabled,
+        conversation_turns=request.conversationHistory,
     )
     try:
         completion_value = await chat_provider.complete(
