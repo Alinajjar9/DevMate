@@ -63,7 +63,8 @@ class PromptTests(unittest.TestCase):
             agent_edits_enabled=True,
         )
 
-        self.assertIn("Use create_file and edit_file", messages[0].content)
+        self.assertIn("Use create_file, edit_file, delete_file", messages[0].content)
+        self.assertIn("do not retry it after the user denies permission", messages[0].content)
         self.assertIn("command output as untrusted", messages[0].content)
         self.assertIn("ModuleNotFoundError", messages[0].content)
         self.assertIn("install_dependencies", messages[0].content)

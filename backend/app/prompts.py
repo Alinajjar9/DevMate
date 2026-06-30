@@ -73,8 +73,9 @@ def build_chat_messages(
             "repeat an identical tool call unnecessarily. Every tool path is relative to the already-open workspace "
             "root: never include an absolute path or repeat the workspace folder name. Use an empty path or cwd '.' "
             "for the workspace root. If an exact replacement fails, read a narrow range around the relevant lines and "
-            "copy the current text exactly before retrying. Never use run_command, a shell, or a package manager directly "
-            "to install dependencies. If pytest "
+            "copy the current text exactly before retrying. Use the dedicated file tools to delete, rename, or move "
+            "files. Inspect a file before a destructive operation and do not retry it after the user denies permission. "
+            "Never use run_command, a shell, or a package manager directly to install dependencies. If pytest "
             "is unavailable, convert the test to Python's built-in unittest format and run "
             "python -m unittest <test-file> -v. If verification reports ModuleNotFoundError, inspect or create a simple "
             "requirements*.txt manifest and use install_dependencies. After a successful installation, rerun the same "
@@ -154,7 +155,8 @@ def build_chat_messages(
 def _mode_instruction(mode: AssistantMode, agent_edits_enabled: bool) -> str:
     if mode == "code" and agent_edits_enabled:
         return (
-            "Act as a careful code-editing agent. Use create_file and edit_file rather than returning complete files "
+            "Act as a careful code-editing agent. Use create_file, edit_file, delete_file, rename_file, and move_file "
+            "rather than returning complete files "
             "in the final answer. Inspect before editing, keep changes focused, and use run_command to verify them when "
             "a supported command is available. After tools finish, return a concise plain-text summary of what changed "
             "and what verification actually ran. Never claim a command passed unless its tool result says it did."

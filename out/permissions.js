@@ -26,7 +26,13 @@ function parseFilePermissionPolicy(value) {
     };
 }
 function permissionBehaviorForAction(policy, action) {
-    return action === 'create' ? policy.createFiles : policy.updateFiles;
+    if (action === 'create') {
+        return policy.createFiles;
+    }
+    if (action === 'update') {
+        return policy.updateFiles;
+    }
+    return 'ask';
 }
 function allowActions(policy, actions) {
     const updated = { ...policy };
@@ -34,7 +40,7 @@ function allowActions(policy, actions) {
         if (action === 'create') {
             updated.createFiles = 'allow';
         }
-        else {
+        else if (action === 'update') {
             updated.updateFiles = 'allow';
         }
     }

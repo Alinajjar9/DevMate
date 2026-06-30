@@ -4,7 +4,7 @@ export const REMEMBERED_COMMANDS_STORAGE_KEY = 'devMate.rememberedCommands.v1';
 export const MAX_REMEMBERED_COMMANDS = 50;
 
 export type PermissionBehavior = 'ask' | 'allow';
-export type FilePermissionAction = 'create' | 'update';
+export type FilePermissionAction = 'create' | 'update' | 'delete' | 'rename' | 'move';
 
 export type FilePermissionPolicy = {
   createFiles: PermissionBehavior;
@@ -36,7 +36,13 @@ export function permissionBehaviorForAction(
   policy: FilePermissionPolicy,
   action: FilePermissionAction
 ): PermissionBehavior {
-  return action === 'create' ? policy.createFiles : policy.updateFiles;
+  if (action === 'create') {
+    return policy.createFiles;
+  }
+  if (action === 'update') {
+    return policy.updateFiles;
+  }
+  return 'ask';
 }
 
 export function allowActions(
@@ -47,7 +53,7 @@ export function allowActions(
   for (const action of actions) {
     if (action === 'create') {
       updated.createFiles = 'allow';
-    } else {
+    } else if (action === 'update') {
       updated.updateFiles = 'allow';
     }
   }

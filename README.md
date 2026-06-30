@@ -35,9 +35,11 @@ Retrieval is deterministic and runs entirely in the extension host using BM25-st
 
 ## Agent tools
 
-DevMate can ask the extension host to inspect and improve the open project before answering. Read-only tools support `list_files`, ranged `read_file`, and plain-text `search_code`. In trusted workspaces, Code and Debug additionally receive `create_file`, exact-replacement `edit_file`, approved `run_command` verification, and manifest-based `install_dependencies` tools. Tool activity appears as compact cards in the conversation. The per-request tool limit defaults to 16 and is configurable from 4 through 32; older results are compacted first when a longer loop approaches the bounded context budget.
+DevMate can ask the extension host to inspect and improve the open project before answering. Read-only tools support `list_files`, ranged `read_file`, and plain-text `search_code`. In trusted workspaces, Code and Debug additionally receive `create_file`, exact-replacement `edit_file`, `delete_file`, `rename_file`, `move_file`, approved `run_command` verification, and manifest-based `install_dependencies` tools. Tool activity appears as compact cards in the conversation. The per-request tool limit defaults to 16 and is configurable from 4 through 32; older results are compacted first when a longer loop approaches the bounded context budget.
 
-Each request immediately creates a working card in the conversation. It displays the selected model, elapsed time, actual lifecycle phases such as context collection and tool use, and a Cancel button. The active card remains pinned near the top of the chat viewport while tool and permission cards accumulate. Its deliberately restrained edge, sheen, indicator, and active-phase animations run on slower cycles and respect reduced-motion preferences. Routine progress no longer occupies the top status strip; that area is reserved for warnings and errors. The working card is removed when the final assistant message arrives, while completed tool activity remains visible.
+Each request immediately creates a working card in the conversation. It displays the selected model, elapsed time, actual lifecycle phases such as context collection and tool use, and a Cancel button. The active card remains pinned near the top of the chat viewport while tool and permission cards accumulate. Conversation cards are non-shrinking flex items, so a long tool run scrolls normally instead of compressing and clipping the working card. Its deliberately restrained edge, sheen, indicator, and active-phase animations run on slower cycles and respect reduced-motion preferences. Routine progress no longer occupies the top status strip; that area is reserved for warnings and errors. The working card is removed when the final assistant message arrives, while completed tool activity remains visible.
+
+Warnings from scope selection, health checks, and other UI actions do not end an active request. Only explicit success, failure, or cancellation events release the pending state and re-enable Send. Mode, scope, attachment, and model selectors remain locked for the duration, preventing context changes or a second request from colliding with work still running in the extension host.
 
 Temporary provider failures (`ResourceExhausted`, HTTP 429, 502, 503, or 504) are retried up to three times after 2, 5, and 10 seconds. The countdown appears as a real phase in the working card and can be cancelled. Authentication, invalid-model, malformed-response, and reasoning-budget errors are never retried. If every transient attempt fails, the stopped card offers **Retry now** without duplicating the user's message.
 
@@ -49,7 +51,7 @@ If a model repeats another completed tool call or returns reasoning without a fi
 
 Completed user/assistant turns are retained in bounded memory for the current Extension Host session, so follow-ups such as “okay, do it” keep the immediately preceding task context. The newest six turns are kept within a 20,000-character limit. This history is not yet persisted after VS Code or the Extension Host restarts.
 
-Model-requested deletion, rename, move, arbitrary dependency commands, arbitrary shells, Git commands, servers, generators, and writable formatters remain blocked.
+Directory deletion and movement, arbitrary dependency commands, arbitrary shells, Git commands, servers, generators, and writable formatters remain blocked.
 
 ## DevMate view placement
 
@@ -57,7 +59,7 @@ DevMate is contributed directly to VS Code's Secondary Side Bar in its own dedic
 
 ## DevMate settings
 
-Use the gear button in the top-right of the DevMate view to configure provider timeout, verification-command timeout, per-request tool-call limit, maximum output tokens, temperature, workspace-local create/update permissions, and remembered exact commands. Ideas, Code, and Debug use a compact segmented control on the left side of the top bar.
+Use the gear button in the top-right of the DevMate view to configure provider timeout, verification-command timeout, per-request tool-call limit, maximum output tokens, temperature, workspace-local create/update permissions, and remembered exact commands. File deletion, rename, and move always ask once and cannot be remembered. Ideas, Code, and Debug use a compact segmented control on the left side of the top bar.
 
 ## Model profiles
 
@@ -71,13 +73,13 @@ Provider API keys are sent to the DevMate backend only when its configured URL p
 
 ## Code-mode changes
 
-Code and Debug can now inspect, edit, verify, and repair in one bounded agent loop. New files use complete content, while existing files use sequential exact-text replacements. Exact replacements tolerate the LF-normalized text returned to the model when the underlying file uses CRLF, while preserving the file's original line-ending style. DevMate shows proposed changes in an in-chat permission card with **Deny**, **Allow once**, and **Always allow these** actions. Every file row includes **Review diff**, which opens VS Code's native diff editor before approval. Approved changes use a VS Code workspace edit, are saved to disk for verification, and participate in the editor's undo flow.
+Code and Debug can now inspect, edit, reorganize, verify, and repair in one bounded agent loop. New files use complete content, while existing files use sequential exact-text replacements. Exact replacements tolerate the LF-normalized text returned to the model when the underlying file uses CRLF, while preserving the file's original line-ending style. Individual eligible text files can also be deleted, renamed within a directory, or moved to a new workspace-relative path; recursive directory operations remain blocked. DevMate shows proposed changes in an in-chat permission card. Every file row includes **Review diff**, which opens VS Code's native diff editor before approval. Create/update requests offer **Deny**, **Allow once**, and **Always allow these**; lifecycle operations deliberately offer only **Deny** and **Allow once**. Approved changes use a VS Code workspace edit and participate in the editor's undo flow.
 
 Targets with pre-existing unsaved changes are rejected instead of being overwritten or silently saved. The extension rechecks file contents after permission is granted and rejects stale proposals. Mutations are disabled entirely in untrusted workspaces. The earlier final-JSON change format remains accepted for compatibility, while new Code requests use agent editing tools and finish with normal text.
 
 After applying a change set, DevMate opens the first created or updated file in the main left editor group instead of beside the DevMate tab.
 
-Only workspace-relative text files in the first open folder can be changed. Absolute paths, parent traversal, symbolic-link paths, duplicate paths, dependency/build folders, binary files, lock files, environment files, and credential/key files are rejected—even when instant permission is enabled. DevMate still does not delete files. A request is limited to six mutation calls, ten files, and the existing per-file and total content limits.
+Only workspace-relative text files in the first open folder can be changed. Absolute paths, parent traversal, symbolic-link paths, duplicate paths, occupied move destinations, dependency/build folders, binary files, lock files, environment files, and credential/key files are rejected—even when instant permission is enabled. Dirty files and lifecycle operations whose source changed during approval are left untouched. A request is limited to six mutation calls, ten files, and the existing per-file and total content limits.
 
 ## Verification commands
 

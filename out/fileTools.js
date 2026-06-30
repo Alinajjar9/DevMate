@@ -3,8 +3,12 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.MAX_EDIT_REPLACEMENTS = void 0;
 exports.parseCreateFileArguments = parseCreateFileArguments;
 exports.parseEditFileArguments = parseEditFileArguments;
+exports.parseDeleteFileArguments = parseDeleteFileArguments;
+exports.parseRenameFileArguments = parseRenameFileArguments;
+exports.parseMoveFileArguments = parseMoveFileArguments;
 exports.applyExactReplacements = applyExactReplacements;
 const fileChanges_1 = require("./fileChanges");
+const projectContext_1 = require("./projectContext");
 exports.MAX_EDIT_REPLACEMENTS = 20;
 function parseCreateFileArguments(value) {
     if (typeof value.path !== 'string' || typeof value.content !== 'string') {
@@ -47,6 +51,22 @@ function parseEditFileArguments(value) {
         path: (0, fileChanges_1.normalizeWorkspaceRelativePath)(value.path),
         replacements
     };
+}
+function parseDeleteFileArguments(value) {
+    if (typeof value.path !== 'string') {
+        throw new Error('delete_file requires a workspace-relative path.');
+    }
+    return { path: eligibleLifecyclePath(value.path) };
+}
+function parseRenameFileArguments(value) {
+    const parsed = parseRelocateFileArguments(value, 'rename_file');
+    if (parentPath(parsed.path).toLocaleLowerCase() !== parentPath(parsed.newPath).toLocaleLowerCase()) {
+        throw new Error('rename_file must keep the file in the same directory; use move_file instead.');
+    }
+    return parsed;
+}
+function parseMoveFileArguments(value) {
+    return parseRelocateFileArguments(value, 'move_file');
 }
 function applyExactReplacements(content, replacements) {
     let updated = content;
@@ -114,6 +134,27 @@ function countOccurrences(content, value, limit) {
         offset = index + value.length;
     }
     return count;
+}
+function parseRelocateFileArguments(value, toolName) {
+    if (typeof value.path !== 'string' || typeof value.newPath !== 'string') {
+        throw new Error(`${toolName} requires workspace-relative path and newPath values.`);
+    }
+    const path = eligibleLifecyclePath(value.path);
+    const newPath = eligibleLifecyclePath(value.newPath);
+    if (path.toLocaleLowerCase() === newPath.toLocaleLowerCase()) {
+        throw new Error(`${toolName} requires a different destination path.`);
+    }
+    return { path, newPath };
+}
+function eligibleLifecyclePath(value) {
+    const path = (0, fileChanges_1.normalizeWorkspaceRelativePath)(value);
+    if ((0, projectContext_1.shouldSkipProjectFile)(path)) {
+        throw new Error(`DevMate will not change the protected or unsupported path ${path}.`);
+    }
+    return path;
+}
+function parentPath(value) {
+    return value.split('/').slice(0, -1).join('/');
 }
 function isRecord(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value);

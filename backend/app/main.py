@@ -37,6 +37,9 @@ AgentToolName = Literal[
     "search_code",
     "create_file",
     "edit_file",
+    "delete_file",
+    "rename_file",
+    "move_file",
     "install_dependencies",
     "run_command",
 ]
@@ -48,6 +51,9 @@ READ_ONLY_AGENT_TOOLS: tuple[AgentToolName, ...] = (
 MUTATING_AGENT_TOOLS: tuple[AgentToolName, ...] = (
     "create_file",
     "edit_file",
+    "delete_file",
+    "rename_file",
+    "move_file",
     "install_dependencies",
     "run_command",
 )
@@ -324,6 +330,68 @@ AGENT_TOOL_DEFINITIONS = (
                 },
             },
             "required": ["path", "replacements"],
+            "additionalProperties": False,
+        },
+    ),
+    ChatToolDefinition(
+        name="delete_file",
+        description=(
+            "Delete one existing eligible workspace text file. Use only when removal is necessary. "
+            "The extension always asks the user for one-time approval and does not delete directories."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Existing file path relative to the open workspace; never an absolute path.",
+                },
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    ),
+    ChatToolDefinition(
+        name="rename_file",
+        description=(
+            "Rename one existing eligible workspace text file within its current directory. "
+            "The destination must not exist and the extension always asks for one-time approval."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Existing file path relative to the open workspace.",
+                },
+                "newPath": {
+                    "type": "string",
+                    "description": "New file path in the same directory, relative to the open workspace.",
+                },
+            },
+            "required": ["path", "newPath"],
+            "additionalProperties": False,
+        },
+    ),
+    ChatToolDefinition(
+        name="move_file",
+        description=(
+            "Move one existing eligible workspace text file to a different workspace-relative path. "
+            "The destination must not exist and the extension always asks for one-time approval."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Existing file path relative to the open workspace.",
+                },
+                "newPath": {
+                    "type": "string",
+                    "description": "Destination file path relative to the open workspace.",
+                },
+            },
+            "required": ["path", "newPath"],
             "additionalProperties": False,
         },
     ),

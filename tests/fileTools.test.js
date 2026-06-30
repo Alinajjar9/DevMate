@@ -5,7 +5,10 @@ const {
   applyExactReplacements,
   MAX_EDIT_REPLACEMENTS,
   parseCreateFileArguments,
-  parseEditFileArguments
+  parseDeleteFileArguments,
+  parseEditFileArguments,
+  parseMoveFileArguments,
+  parseRenameFileArguments
 } = require('../out/fileTools');
 
 test('parses safe create and edit arguments', () => {
@@ -20,6 +23,43 @@ test('parses safe create and edit arguments', () => {
     path: 'src/app.ts',
     replacements: [{ oldText: 'value = 1', newText: 'value = 2' }]
   }).replacements, [{ oldText: 'value = 1', newText: 'value = 2' }]);
+});
+
+test('parses safe delete, rename, and move arguments', () => {
+  assert.deepEqual(parseDeleteFileArguments({ path: 'src/old.ts' }), {
+    path: 'src/old.ts'
+  });
+  assert.deepEqual(parseRenameFileArguments({
+    path: 'src/old.ts',
+    newPath: 'src/new.ts'
+  }), {
+    path: 'src/old.ts',
+    newPath: 'src/new.ts'
+  });
+  assert.deepEqual(parseMoveFileArguments({
+    path: 'src/new.ts',
+    newPath: 'archive/new.ts'
+  }), {
+    path: 'src/new.ts',
+    newPath: 'archive/new.ts'
+  });
+});
+
+test('rejects unsafe or ambiguous lifecycle operations', () => {
+  assert.throws(() => parseDeleteFileArguments({ path: '.env' }), /protected|unsupported/);
+  assert.throws(() => parseDeleteFileArguments({ path: '../secret.txt' }), /workspace-relative|unsafe/);
+  assert.throws(() => parseRenameFileArguments({
+    path: 'src/old.ts',
+    newPath: 'archive/new.ts'
+  }), /same directory/);
+  assert.throws(() => parseMoveFileArguments({
+    path: 'src/old.ts',
+    newPath: 'src/old.ts'
+  }), /different destination/);
+  assert.throws(() => parseMoveFileArguments({
+    path: 'src/old.ts',
+    newPath: 'node_modules/new.ts'
+  }), /protected|unsupported/);
 });
 
 test('applies sequential exact replacements', () => {

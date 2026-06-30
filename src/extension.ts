@@ -49,7 +49,11 @@ import {
   workspacePythonCandidates,
   workspacePythonExecutable
 } from './pythonEnvironment';
-import { MAX_TOTAL_CHANGE_CHARACTERS, validateFileChanges } from './fileChanges';
+import {
+  MAX_FILE_CHANGE_CHARACTERS,
+  MAX_TOTAL_CHANGE_CHARACTERS,
+  validateFileChanges
+} from './fileChanges';
 import type { ValidatedFileChange } from './fileChanges';
 import { applyExactReplacements } from './fileTools';
 import {
@@ -164,6 +168,7 @@ type PendingCommandPermission = {
 type PendingPermissionRequest = {
   id: string;
   actions: Set<FilePermissionAction>;
+  rememberable: boolean;
   diffs: Map<string, PendingFileDiff>;
   resolve: (allowed: boolean) => void;
 };
@@ -382,6 +387,12 @@ class DevMateChatViewProvider implements
         this.activeRequest = requestController;
         try {
           await this.answerQuestion(message, requestController.signal);
+        } catch (error) {
+          if (!this.finishCancelledRequest(requestController.signal)) {
+            this.postRequestFailure(
+              error instanceof Error ? error.message : 'DevMate could not complete the request.'
+            );
+          }
         } finally {
           if (this.activeRequest === requestController) {
             this.activeRequest = undefined;
@@ -1035,6 +1046,18 @@ class DevMateChatViewProvider implements
     return true;
   }
 
+  private postRequestFailure(
+    message: string,
+    options: { level?: 'warning' | 'error'; retryable?: boolean } = {}
+  ): void {
+    this.postMessage({
+      command: 'requestFailed',
+      message,
+      retryable: options.retryable === true
+    });
+    this.postStatus(message, options.level ?? 'error');
+  }
+
   private async showLlmProfileForm(profile?: LlmProfile): Promise<void> {
     const hasApiKey = profile
       ? Boolean(await this.extensionContext.secrets.get(secretKeyForProfile(profile.id)))
@@ -1399,7 +1422,7 @@ class DevMateChatViewProvider implements
     }
     this.pendingPermission = undefined;
 
-    if (decision === 'allowAlways') {
+    if (decision === 'allowAlways' && pending.rememberable) {
       try {
         const updatedPolicy = allowActions(this.getPermissionPolicy(), pending.actions);
         await this.extensionContext.workspaceState.update(
@@ -1435,6 +1458,9 @@ class DevMateChatViewProvider implements
     this.diffDocuments.clear();
     const requestId = randomUUID();
     const actions = new Set(files.map((file) => file.operation));
+    const rememberable = [...actions].every(
+      (action) => action === 'create' || action === 'update'
+    );
     const diffs = new Map<string, PendingFileDiff>();
     for (const file of files) {
       const encodedPath = file.path.split('/').map(encodeURIComponent).join('/');
@@ -1456,11 +1482,12 @@ class DevMateChatViewProvider implements
     }
 
     return new Promise((resolve) => {
-      this.pendingPermission = { id: requestId, actions, diffs, resolve };
+      this.pendingPermission = { id: requestId, actions, rememberable, diffs, resolve };
       this.postMessage({
         command: 'permissionRequest',
         requestId,
         summary,
+        rememberable,
         files: files.map(({ path, operation }) => ({ path, operation, canReview: true }))
       });
     });
@@ -1745,6 +1772,14 @@ class DevMateChatViewProvider implements
       };
     }
 
+    if (call.name === 'delete_file') {
+      return this.deleteAgentFile(call, folder, remainingMutationCharacters);
+    }
+
+    if (call.name === 'rename_file' || call.name === 'move_file') {
+      return this.relocateAgentFile(call, folder);
+    }
+
     if (call.name === 'list_files') {
       const uris = await this.findAgentFiles(folder, call.arguments.path);
       const relativePaths = uris
@@ -1845,6 +1880,224 @@ class DevMateChatViewProvider implements
       usedFiles: [...usedFiles],
       mutationCharacters: 0
     };
+  }
+
+  private async deleteAgentFile(
+    call: Extract<ParsedAgentToolCall, { name: 'delete_file' }>,
+    folder: vscode.WorkspaceFolder,
+    remainingMutationCharacters: number
+  ): Promise<{
+    result: string;
+    resultSummary: string;
+    usedFiles: string[];
+    mutationCharacters: number;
+    mutationApplied: boolean;
+  }> {
+    this.assertTrustedFileLifecycle();
+    const source = await this.inspectAgentLifecycleFile(folder, call.arguments.path);
+    if (source.content.length > remainingMutationCharacters) {
+      throw new Error('This request reached the total file-mutation size limit.');
+    }
+    this.postStatus('Waiting for permission');
+    const allowed = await this.requestFileChangePermission(
+      `Delete ${call.arguments.path}`,
+      [{
+        path: call.arguments.path,
+        operation: 'delete',
+        originalContent: source.content,
+        proposedContent: ''
+      }]
+    );
+    if (!allowed) {
+      throw new Error('Permission to delete the file was denied.');
+    }
+    const signal = this.activeRequest?.signal;
+    if (signal?.aborted) {
+      throw new Error('The file deletion was cancelled.');
+    }
+    this.assertTrustedFileLifecycle();
+    await this.assertNoWorkspaceSymlink(folder, call.arguments.path, false);
+    await this.revalidateAgentLifecycleFile(source);
+
+    this.postStatus('Deleting file');
+    const workspaceEdit = new vscode.WorkspaceEdit();
+    workspaceEdit.deleteFile(source.uri, { recursive: false, ignoreIfNotExists: false });
+    if (!await vscode.workspace.applyEdit(workspaceEdit)) {
+      throw new Error('VS Code could not delete the approved file.');
+    }
+    return {
+      result: `Applied file changes:\n- Deleted ${call.arguments.path}`,
+      resultSummary: `Deleted ${call.arguments.path}`,
+      usedFiles: [source.displayPath],
+      mutationCharacters: source.content.length,
+      mutationApplied: true
+    };
+  }
+
+  private async relocateAgentFile(
+    call: Extract<ParsedAgentToolCall, { name: 'rename_file' | 'move_file' }>,
+    folder: vscode.WorkspaceFolder
+  ): Promise<{
+    result: string;
+    resultSummary: string;
+    usedFiles: string[];
+    mutationCharacters: number;
+    mutationApplied: boolean;
+  }> {
+    this.assertTrustedFileLifecycle();
+    const source = await this.inspectAgentLifecycleFile(folder, call.arguments.path);
+    await this.assertNoWorkspaceSymlink(folder, call.arguments.newPath, true);
+    const destinationUri = vscode.Uri.joinPath(folder.uri, ...call.arguments.newPath.split('/'));
+    await this.assertAgentLifecycleDestinationAvailable(destinationUri, call.arguments.newPath);
+    const operation = call.name === 'rename_file' ? 'rename' as const : 'move' as const;
+    const operationLabel = operation === 'rename' ? 'Rename' : 'Move';
+
+    this.postStatus('Waiting for permission');
+    const allowed = await this.requestFileChangePermission(
+      `${operationLabel} ${call.arguments.path} to ${call.arguments.newPath}`,
+      [{
+        path: `${call.arguments.path} → ${call.arguments.newPath}`,
+        operation,
+        originalContent: source.content,
+        proposedContent: source.content
+      }]
+    );
+    if (!allowed) {
+      throw new Error(`Permission to ${operation} the file was denied.`);
+    }
+    const signal = this.activeRequest?.signal;
+    if (signal?.aborted) {
+      throw new Error(`The file ${operation} was cancelled.`);
+    }
+    this.assertTrustedFileLifecycle();
+    await this.assertNoWorkspaceSymlink(folder, call.arguments.path, false);
+    await this.assertNoWorkspaceSymlink(folder, call.arguments.newPath, true);
+    await this.revalidateAgentLifecycleFile(source);
+    await this.assertAgentLifecycleDestinationAvailable(destinationUri, call.arguments.newPath);
+
+    const parentSegments = call.arguments.newPath.split('/').slice(0, -1);
+    if (parentSegments.length > 0) {
+      await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(folder.uri, ...parentSegments));
+    }
+    this.postStatus(operation === 'rename' ? 'Renaming file' : 'Moving file');
+    const workspaceEdit = new vscode.WorkspaceEdit();
+    workspaceEdit.renameFile(source.uri, destinationUri, {
+      overwrite: false,
+      ignoreIfExists: false
+    });
+    if (!await vscode.workspace.applyEdit(workspaceEdit)) {
+      throw new Error(`VS Code could not ${operation} the approved file.`);
+    }
+
+    let openNote = '';
+    try {
+      const document = await vscode.workspace.openTextDocument(destinationUri);
+      if (!await document.save()) {
+        openNote = '\n\nThe file was relocated, but VS Code could not confirm it was saved.';
+      }
+      await vscode.window.showTextDocument(document, {
+        viewColumn: vscode.ViewColumn.One,
+        preview: false,
+        preserveFocus: false
+      });
+    } catch {
+      openNote = '\n\nThe file was relocated, but VS Code could not open the destination.';
+    }
+
+    return {
+      result: `Applied file changes:\n- ${operation === 'rename' ? 'Renamed' : 'Moved'} `
+        + `${call.arguments.path} to ${call.arguments.newPath}${openNote}`,
+      resultSummary: `${operation === 'rename' ? 'Renamed' : 'Moved'} ${call.arguments.path}`,
+      usedFiles: [
+        source.displayPath,
+        destinationUri.scheme === 'file' ? destinationUri.fsPath : destinationUri.toString()
+      ],
+      mutationCharacters: 0,
+      mutationApplied: true
+    };
+  }
+
+  private assertTrustedFileLifecycle(): void {
+    if (!vscode.workspace.isTrusted) {
+      throw new Error('Trust this workspace before allowing DevMate to delete, rename, or move files.');
+    }
+  }
+
+  private async inspectAgentLifecycleFile(
+    folder: vscode.WorkspaceFolder,
+    relativePath: string
+  ): Promise<{
+    path: string;
+    uri: vscode.Uri;
+    displayPath: string;
+    content: string;
+  }> {
+    await this.assertNoWorkspaceSymlink(folder, relativePath, false);
+    const uri = vscode.Uri.joinPath(folder.uri, ...relativePath.split('/'));
+    let stat: vscode.FileStat;
+    try {
+      stat = await vscode.workspace.fs.stat(uri);
+    } catch {
+      throw new Error(`${relativePath} does not exist or cannot be inspected.`);
+    }
+    if ((stat.type & vscode.FileType.File) === 0) {
+      throw new Error(`${relativePath} is not a file. Recursive directory operations are blocked.`);
+    }
+    if (stat.size > MAX_PROJECT_FILE_BYTES) {
+      throw new Error(`${relativePath} exceeds the file-size limit.`);
+    }
+    const bytes = await vscode.workspace.fs.readFile(uri);
+    if (containsBinaryData(bytes)) {
+      throw new Error(`DevMate will not change binary content at ${relativePath}.`);
+    }
+    const document = await vscode.workspace.openTextDocument(uri);
+    if (document.isDirty) {
+      throw new Error(`Save or discard your unsaved changes in ${relativePath} before DevMate changes it.`);
+    }
+    const content = document.getText();
+    if (content.length > MAX_FILE_CHANGE_CHARACTERS) {
+      throw new Error(`${relativePath} exceeds the per-file change limit.`);
+    }
+    return {
+      path: relativePath,
+      uri,
+      displayPath: uri.scheme === 'file' ? uri.fsPath : uri.toString(),
+      content
+    };
+  }
+
+  private async revalidateAgentLifecycleFile(source: {
+    path: string;
+    uri: vscode.Uri;
+    content: string;
+  }): Promise<void> {
+    let document: vscode.TextDocument;
+    try {
+      const stat = await vscode.workspace.fs.stat(source.uri);
+      if ((stat.type & vscode.FileType.File) === 0) {
+        throw new Error('The source is no longer a file.');
+      }
+      document = await vscode.workspace.openTextDocument(source.uri);
+    } catch {
+      throw new Error(`${source.path} changed while permission was pending. Review the request again.`);
+    }
+    if (document.isDirty || document.getText() !== source.content) {
+      throw new Error(`${source.path} changed while permission was pending. Review the request again.`);
+    }
+  }
+
+  private async assertAgentLifecycleDestinationAvailable(
+    uri: vscode.Uri,
+    relativePath: string
+  ): Promise<void> {
+    try {
+      await vscode.workspace.fs.stat(uri);
+      throw new Error(`${relativePath} already exists; choose a different destination.`);
+    } catch (error) {
+      if (!(error instanceof vscode.FileSystemError && error.code === 'FileNotFound')) {
+        throw error;
+      }
+    }
   }
 
   private async runVerificationCommand(
@@ -2434,7 +2687,7 @@ class DevMateChatViewProvider implements
       return tools;
     }
     if (fileMutationCalls < MAX_AGENT_FILE_MUTATIONS) {
-      tools.push('create_file', 'edit_file');
+      tools.push('create_file', 'edit_file', 'delete_file', 'rename_file', 'move_file');
     }
     if (dependencyInstallCalls < MAX_AGENT_DEPENDENCY_INSTALLS) {
       tools.push('install_dependencies');
@@ -2527,13 +2780,13 @@ class DevMateChatViewProvider implements
   ): Promise<void> {
     const question = message.question.trim();
     if (!question) {
-      this.postStatus('Enter a question before asking.', 'warning');
+      this.postRequestFailure('Enter a question before asking.', { level: 'warning' });
       return;
     }
 
     const activeProfile = this.getActiveLlmProfile();
     if (!activeProfile) {
-      this.postStatus('Add a model profile before asking.', 'warning');
+      this.postRequestFailure('Add a model profile before asking.', { level: 'warning' });
       await this.showLlmProfileForm();
       return;
     }
@@ -2544,9 +2797,9 @@ class DevMateChatViewProvider implements
       return;
     }
     if (!collectedScope) {
-      this.postStatus(
+      this.postRequestFailure(
         message.scope.kind === 'selection' ? 'Select code first.' : 'Open a file first.',
-        'warning'
+        { level: 'warning' }
       );
       return;
     }
@@ -2577,7 +2830,9 @@ class DevMateChatViewProvider implements
       ? await this.extensionContext.secrets.get(secretKeyForProfile(activeProfile.id))
       : undefined;
     if (activeProfile.provider === 'openai' && !providerApiKey) {
-      this.postStatus('The selected model profile is missing an API key.', 'warning');
+      this.postRequestFailure('The selected model profile is missing an API key.', {
+        level: 'warning'
+      });
       return;
     }
 
@@ -2655,14 +2910,9 @@ class DevMateChatViewProvider implements
           this.postStatus('Model returned no final answer — retrying without tools');
           continue;
         }
-        if (providerAttempt.retriesExhausted) {
-          this.postMessage({
-            command: 'requestFailed',
-            message: errorMessage,
-            retryable: true
-          });
-        }
-        this.postStatus(errorMessage, 'error');
+        this.postRequestFailure(errorMessage, {
+          retryable: providerAttempt.retriesExhausted
+        });
         return;
       }
 
@@ -2672,7 +2922,7 @@ class DevMateChatViewProvider implements
         break;
       }
       if (!toolsEnabled) {
-        this.postStatus('The model exceeded the project-tool limit.', 'error');
+        this.postRequestFailure('The model exceeded the project-tool limit.');
         return;
       }
 
@@ -2689,7 +2939,7 @@ class DevMateChatViewProvider implements
           })
           : rawToolCall;
         if (toolHistory.some((step) => step.callId === toolCall.id)) {
-          this.postStatus('The model reused an invalid tool-call id.', 'error');
+          this.postRequestFailure('The model reused an invalid tool-call id.');
           return;
         }
 
@@ -2700,7 +2950,11 @@ class DevMateChatViewProvider implements
           // The executor reports the validated tool error back to the model.
         }
         let execution: AgentToolExecution;
-        const isFileMutation = toolCall.name === 'create_file' || toolCall.name === 'edit_file';
+        const isFileMutation = toolCall.name === 'create_file'
+          || toolCall.name === 'edit_file'
+          || toolCall.name === 'delete_file'
+          || toolCall.name === 'rename_file'
+          || toolCall.name === 'move_file';
         const isCommand = toolCall.name === 'run_command';
         const isDependencyInstall = toolCall.name === 'install_dependencies';
         const isReadOnly = toolCall.name === 'list_files'
@@ -2812,7 +3066,7 @@ class DevMateChatViewProvider implements
       }
 
       if (executedCalls === 0) {
-        this.postStatus('The model could not complete a valid project tool call.', 'error');
+        this.postRequestFailure('The model could not complete a valid project tool call.');
         return;
       }
     }
@@ -3338,6 +3592,12 @@ class DevMateChatViewProvider implements
       min-height: 0;
       padding: 10px;
       overflow-y: auto;
+      overflow-anchor: none;
+      scrollbar-gutter: stable;
+    }
+
+    .messages > * {
+      flex: 0 0 auto;
     }
 
     .message {
@@ -3388,6 +3648,7 @@ class DevMateChatViewProvider implements
       isolation: isolate;
       width: min(100%, 620px);
       max-width: min(100%, 620px);
+      min-height: max-content;
       padding: 10px 11px;
       overflow: hidden;
     }
@@ -3401,6 +3662,7 @@ class DevMateChatViewProvider implements
       position: sticky;
       z-index: 20;
       top: 8px;
+      flex-shrink: 0;
       animation: working-card-breathe 4.2s ease-in-out infinite;
     }
 
@@ -4318,12 +4580,12 @@ class DevMateChatViewProvider implements
                 <option value="allow">Allow instantly</option>
               </select>
             </label>
-            <div class="permission-setting-row permission-blocked">
+            <div class="permission-setting-row">
               <span class="permission-setting-copy">
-                <strong>Delete files</strong>
-                <span>DevMate does not currently accept delete operations.</span>
+                <strong>Delete, rename, or move files</strong>
+                <span>File lifecycle operations always require one-time approval and diff review.</span>
               </span>
-              <span class="permission-blocked-badge">Blocked</span>
+              <span class="permission-blocked-badge">Always ask</span>
             </div>
             <div class="permission-setting-row">
               <span class="permission-setting-copy">
@@ -4390,6 +4652,7 @@ class DevMateChatViewProvider implements
     const scopeDetailEl = document.getElementById('scopeDetail');
     const attachmentPanelEl = document.getElementById('attachmentPanel');
     const attachmentListEl = document.getElementById('attachmentList');
+    const attachFilesEl = document.getElementById('attachFiles');
     const attachmentToggleEl = document.getElementById('toggleAttachments');
     const llmProfileSelectorEl = document.getElementById('llmProfileSelector');
     const llmProfileLabelEl = document.getElementById('llmProfileLabel');
@@ -4471,7 +4734,7 @@ class DevMateChatViewProvider implements
       }
     });
 
-    document.getElementById('attachFiles').addEventListener('click', () => {
+    attachFilesEl.addEventListener('click', () => {
       vscode.postMessage({ command: 'pickFiles' });
     });
 
@@ -4617,14 +4880,6 @@ class DevMateChatViewProvider implements
           }
         } else {
           setStatus(message.text, message.level);
-        }
-        const terminalStatus = message.level === 'error'
-          || (message.level === 'warning'
-            && !message.text.startsWith('The changes are allowed this time'));
-        if (state.askPending && terminalStatus) {
-          stopWorkingTurn('error', message.text);
-          state.askPending = false;
-          renderAskAvailability();
         }
       }
 
@@ -5047,7 +5302,13 @@ class DevMateChatViewProvider implements
 
         const operation = document.createElement('span');
         operation.className = 'permission-operation';
-        operation.textContent = file.operation === 'update' ? 'Update' : 'Create';
+        operation.textContent = ({
+          create: 'Create',
+          update: 'Update',
+          delete: 'Delete',
+          rename: 'Rename',
+          move: 'Move'
+        })[file.operation] || 'Change';
         item.appendChild(operation);
 
         const filePath = document.createElement('span');
@@ -5104,7 +5365,9 @@ class DevMateChatViewProvider implements
       };
 
       addDecisionButton('Deny', 'deny');
-      addDecisionButton('Always allow these', 'allowAlways');
+      if (message.rememberable !== false) {
+        addDecisionButton('Always allow these', 'allowAlways');
+      }
       addDecisionButton('Allow once', 'allowOnce', true);
       card.appendChild(actions);
       card.appendChild(resolution);
@@ -5261,6 +5524,11 @@ class DevMateChatViewProvider implements
 
     function renderAskAvailability() {
       askEl.disabled = !state.activeProfile || state.askPending;
+      document.querySelectorAll('.mode-button, .scope-button[data-scope]').forEach((button) => {
+        button.disabled = state.askPending;
+      });
+      attachFilesEl.disabled = state.askPending;
+      llmProfileSelectorEl.disabled = state.askPending;
       askEl.title = !state.activeProfile
         ? 'Add a model profile before asking'
         : state.askPending
@@ -5461,6 +5729,24 @@ function describeAgentToolCall(call: ParsedAgentToolCall): { title: string; deta
     return {
       title: 'Editing file',
       detail: call.arguments.path
+    };
+  }
+  if (call.name === 'delete_file') {
+    return {
+      title: 'Deleting file',
+      detail: call.arguments.path
+    };
+  }
+  if (call.name === 'rename_file') {
+    return {
+      title: 'Renaming file',
+      detail: `${call.arguments.path} → ${call.arguments.newPath}`
+    };
+  }
+  if (call.name === 'move_file') {
+    return {
+      title: 'Moving file',
+      detail: `${call.arguments.path} → ${call.arguments.newPath}`
     };
   }
   if (call.name === 'install_dependencies') {

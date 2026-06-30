@@ -453,7 +453,8 @@ class DevMateApiTests(unittest.TestCase):
     def test_ask_exposes_only_requested_mode_tools(self) -> None:
         payload = self._ask_payload(scope_type="project", items=[], mode="debug")
         payload["enabledTools"] = [
-            "read_file", "edit_file", "install_dependencies", "run_command"
+            "read_file", "edit_file", "delete_file", "rename_file", "move_file",
+            "install_dependencies", "run_command"
         ]
         payload["agentEditsEnabled"] = True
 
@@ -462,7 +463,10 @@ class DevMateApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             [tool.name for tool in self.provider.requests[-1].tools],
-            ["read_file", "edit_file", "install_dependencies", "run_command"],
+            [
+                "read_file", "edit_file", "delete_file", "rename_file", "move_file",
+                "install_dependencies", "run_command"
+            ],
         )
         self.assertIn("apply the smallest focused fix", self.provider.requests[-1].messages[0].content)
 
@@ -594,7 +598,7 @@ class DevMateApiTests(unittest.TestCase):
         data = response.json()["data"]
         self.assertEqual(data["answer"], self.provider.answer)
         self.assertEqual(data["changes"], [])
-        self.assertIn("Use create_file and edit_file", self.provider.requests[-1].messages[0].content)
+        self.assertIn("Use create_file, edit_file, delete_file", self.provider.requests[-1].messages[0].content)
 
     @staticmethod
     def _ask_payload(

@@ -90,6 +90,17 @@ test('normalizes harmless workspace-qualified model paths', () => {
     name: 'edit_file',
     arguments: { path: 'testing the ai project/test_app.py', replacements: [] }
   }, workspace).arguments.path, 'test_app.py');
+  assert.deepEqual(normalizeAgentToolCallForWorkspace({
+    id: 'named-move',
+    name: 'move_file',
+    arguments: {
+      path: 'testing the ai project/app.py',
+      newPath: 'testing the ai project/src/app.py'
+    }
+  }, workspace).arguments, {
+    path: 'app.py',
+    newPath: 'src/app.py'
+  });
   assert.equal(normalizeAgentToolCallForWorkspace({
     id: 'dot-cwd',
     name: 'run_command',
@@ -136,6 +147,32 @@ test('parses mutation tools and summarizes large history arguments', () => {
   assert.notEqual(
     agentToolCallSignature({ ...create, arguments: { path: 'src/new.ts', content: 'one' } }),
     agentToolCallSignature({ ...create, arguments: { path: 'src/new.ts', content: 'two' } })
+  );
+});
+
+test('parses and signs file lifecycle tools', () => {
+  const deletion = parseAgentToolCall({
+    id: 'delete',
+    name: 'delete_file',
+    arguments: { path: 'src/old.ts' }
+  });
+  const rename = parseAgentToolCall({
+    id: 'rename',
+    name: 'rename_file',
+    arguments: { path: 'src/old.ts', newPath: 'src/new.ts' }
+  });
+  const move = parseAgentToolCall({
+    id: 'move',
+    name: 'move_file',
+    arguments: { path: 'src/new.ts', newPath: 'archive/new.ts' }
+  });
+
+  assert.deepEqual(deletion.arguments, { path: 'src/old.ts' });
+  assert.equal(rename.arguments.newPath, 'src/new.ts');
+  assert.equal(move.arguments.newPath, 'archive/new.ts');
+  assert.notEqual(
+    agentToolCallSignature({ ...move, arguments: { path: 'src/new.ts', newPath: 'one/new.ts' } }),
+    agentToolCallSignature({ ...move, arguments: { path: 'src/new.ts', newPath: 'two/new.ts' } })
   );
 });
 

@@ -4,9 +4,12 @@ import { parseInstallDependenciesArguments } from './dependencyTools';
 import type { InstallDependenciesToolArguments } from './dependencyTools';
 import {
   parseCreateFileArguments,
-  parseEditFileArguments
+  parseDeleteFileArguments,
+  parseEditFileArguments,
+  parseMoveFileArguments,
+  parseRenameFileArguments
 } from './fileTools';
-import type { ExactTextReplacement } from './fileTools';
+import type { ExactTextReplacement, RelocateFileToolArguments } from './fileTools';
 
 export const DEFAULT_AGENT_TOOL_CALL_LIMIT = 16;
 export const MIN_AGENT_TOOL_CALL_LIMIT = 4;
@@ -49,6 +52,9 @@ export type AgentToolName =
   | 'search_code'
   | 'create_file'
   | 'edit_file'
+  | 'delete_file'
+  | 'rename_file'
+  | 'move_file'
   | 'install_dependencies'
   | 'run_command';
 
@@ -90,6 +96,10 @@ export type EditFileToolArguments = {
   replacements: ExactTextReplacement[];
 };
 
+export type DeleteFileToolArguments = {
+  path: string;
+};
+
 export type RunCommandToolArguments = {
   executable: string;
   args: string[];
@@ -103,6 +113,9 @@ export type ParsedAgentToolCall =
   | { id: string; name: 'search_code'; arguments: SearchCodeToolArguments }
   | { id: string; name: 'create_file'; arguments: CreateFileToolArguments }
   | { id: string; name: 'edit_file'; arguments: EditFileToolArguments }
+  | { id: string; name: 'delete_file'; arguments: DeleteFileToolArguments }
+  | { id: string; name: 'rename_file'; arguments: RelocateFileToolArguments }
+  | { id: string; name: 'move_file'; arguments: RelocateFileToolArguments }
   | { id: string; name: 'install_dependencies'; arguments: InstallDependenciesToolArguments }
   | { id: string; name: 'run_command'; arguments: RunCommandToolArguments };
 
@@ -181,6 +194,30 @@ export function parseAgentToolCall(call: AgentToolCall): ParsedAgentToolCall {
     };
   }
 
+  if (call.name === 'delete_file') {
+    return {
+      id: call.id,
+      name: call.name,
+      arguments: parseDeleteFileArguments(call.arguments)
+    };
+  }
+
+  if (call.name === 'rename_file') {
+    return {
+      id: call.id,
+      name: call.name,
+      arguments: parseRenameFileArguments(call.arguments)
+    };
+  }
+
+  if (call.name === 'move_file') {
+    return {
+      id: call.id,
+      name: call.name,
+      arguments: parseMoveFileArguments(call.arguments)
+    };
+  }
+
   if (call.name === 'install_dependencies') {
     return {
       id: call.id,
@@ -204,30 +241,42 @@ export function normalizeAgentToolCallForWorkspace(
   call: AgentToolCall,
   workspace: AgentWorkspacePathInfo
 ): AgentToolCall {
-  const argumentName = call.name === 'run_command'
+  const primaryArgumentName = call.name === 'run_command'
     ? 'cwd'
     : call.name === 'install_dependencies'
       ? 'manifestPath'
-    : ['list_files', 'read_file', 'search_code', 'create_file', 'edit_file'].includes(call.name)
+    : [
+        'list_files',
+        'read_file',
+        'search_code',
+        'create_file',
+        'edit_file',
+        'delete_file',
+        'rename_file',
+        'move_file'
+      ].includes(call.name)
       ? 'path'
       : undefined;
-  if (!argumentName || typeof call.arguments[argumentName] !== 'string') {
+  const argumentNames = primaryArgumentName
+    ? [primaryArgumentName, ...(['rename_file', 'move_file'].includes(call.name) ? ['newPath'] : [])]
+    : [];
+  if (argumentNames.length === 0) {
     return call;
   }
   const allowRoot = call.name === 'list_files'
     || call.name === 'search_code'
     || call.name === 'run_command';
-  return {
-    ...call,
-    arguments: {
-      ...call.arguments,
-      [argumentName]: normalizeWorkspaceQualifiedPath(
-        call.arguments[argumentName] as string,
+  const normalizedArguments = { ...call.arguments };
+  for (const argumentName of argumentNames) {
+    if (typeof normalizedArguments[argumentName] === 'string') {
+      normalizedArguments[argumentName] = normalizeWorkspaceQualifiedPath(
+        normalizedArguments[argumentName] as string,
         workspace,
         allowRoot
-      )
+      );
     }
-  };
+  }
+  return { ...call, arguments: normalizedArguments };
 }
 
 export function agentToolCallSignature(call: AgentToolCall): string {

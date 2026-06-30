@@ -101,6 +101,27 @@ function parseAgentToolCall(call) {
             arguments: (0, fileTools_1.parseEditFileArguments)(call.arguments)
         };
     }
+    if (call.name === 'delete_file') {
+        return {
+            id: call.id,
+            name: call.name,
+            arguments: (0, fileTools_1.parseDeleteFileArguments)(call.arguments)
+        };
+    }
+    if (call.name === 'rename_file') {
+        return {
+            id: call.id,
+            name: call.name,
+            arguments: (0, fileTools_1.parseRenameFileArguments)(call.arguments)
+        };
+    }
+    if (call.name === 'move_file') {
+        return {
+            id: call.id,
+            name: call.name,
+            arguments: (0, fileTools_1.parseMoveFileArguments)(call.arguments)
+        };
+    }
     if (call.name === 'install_dependencies') {
         return {
             id: call.id,
@@ -118,26 +139,38 @@ function parseAgentToolCall(call) {
     throw new Error('The model requested an unsupported tool.');
 }
 function normalizeAgentToolCallForWorkspace(call, workspace) {
-    const argumentName = call.name === 'run_command'
+    const primaryArgumentName = call.name === 'run_command'
         ? 'cwd'
         : call.name === 'install_dependencies'
             ? 'manifestPath'
-            : ['list_files', 'read_file', 'search_code', 'create_file', 'edit_file'].includes(call.name)
+            : [
+                'list_files',
+                'read_file',
+                'search_code',
+                'create_file',
+                'edit_file',
+                'delete_file',
+                'rename_file',
+                'move_file'
+            ].includes(call.name)
                 ? 'path'
                 : undefined;
-    if (!argumentName || typeof call.arguments[argumentName] !== 'string') {
+    const argumentNames = primaryArgumentName
+        ? [primaryArgumentName, ...(['rename_file', 'move_file'].includes(call.name) ? ['newPath'] : [])]
+        : [];
+    if (argumentNames.length === 0) {
         return call;
     }
     const allowRoot = call.name === 'list_files'
         || call.name === 'search_code'
         || call.name === 'run_command';
-    return {
-        ...call,
-        arguments: {
-            ...call.arguments,
-            [argumentName]: normalizeWorkspaceQualifiedPath(call.arguments[argumentName], workspace, allowRoot)
+    const normalizedArguments = { ...call.arguments };
+    for (const argumentName of argumentNames) {
+        if (typeof normalizedArguments[argumentName] === 'string') {
+            normalizedArguments[argumentName] = normalizeWorkspaceQualifiedPath(normalizedArguments[argumentName], workspace, allowRoot);
         }
-    };
+    }
+    return { ...call, arguments: normalizedArguments };
 }
 function agentToolCallSignature(call) {
     const parsed = parseAgentToolCall(call);

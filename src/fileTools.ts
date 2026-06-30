@@ -4,12 +4,18 @@ import {
   normalizeWorkspaceRelativePath,
   validateFileChanges
 } from './fileChanges';
+import { shouldSkipProjectFile } from './projectContext';
 
 export const MAX_EDIT_REPLACEMENTS = 20;
 
 export type ExactTextReplacement = {
   oldText: string;
   newText: string;
+};
+
+export type RelocateFileToolArguments = {
+  path: string;
+  newPath: string;
 };
 
 export function parseCreateFileArguments(value: Record<string, unknown>): {
@@ -62,6 +68,25 @@ export function parseEditFileArguments(value: Record<string, unknown>): {
     path: normalizeWorkspaceRelativePath(value.path),
     replacements
   };
+}
+
+export function parseDeleteFileArguments(value: Record<string, unknown>): { path: string } {
+  if (typeof value.path !== 'string') {
+    throw new Error('delete_file requires a workspace-relative path.');
+  }
+  return { path: eligibleLifecyclePath(value.path) };
+}
+
+export function parseRenameFileArguments(value: Record<string, unknown>): RelocateFileToolArguments {
+  const parsed = parseRelocateFileArguments(value, 'rename_file');
+  if (parentPath(parsed.path).toLocaleLowerCase() !== parentPath(parsed.newPath).toLocaleLowerCase()) {
+    throw new Error('rename_file must keep the file in the same directory; use move_file instead.');
+  }
+  return parsed;
+}
+
+export function parseMoveFileArguments(value: Record<string, unknown>): RelocateFileToolArguments {
+  return parseRelocateFileArguments(value, 'move_file');
 }
 
 export function applyExactReplacements(
@@ -143,6 +168,33 @@ function countOccurrences(content: string, value: string, limit: number): number
     offset = index + value.length;
   }
   return count;
+}
+
+function parseRelocateFileArguments(
+  value: Record<string, unknown>,
+  toolName: 'rename_file' | 'move_file'
+): RelocateFileToolArguments {
+  if (typeof value.path !== 'string' || typeof value.newPath !== 'string') {
+    throw new Error(`${toolName} requires workspace-relative path and newPath values.`);
+  }
+  const path = eligibleLifecyclePath(value.path);
+  const newPath = eligibleLifecyclePath(value.newPath);
+  if (path.toLocaleLowerCase() === newPath.toLocaleLowerCase()) {
+    throw new Error(`${toolName} requires a different destination path.`);
+  }
+  return { path, newPath };
+}
+
+function eligibleLifecyclePath(value: string): string {
+  const path = normalizeWorkspaceRelativePath(value);
+  if (shouldSkipProjectFile(path)) {
+    throw new Error(`DevMate will not change the protected or unsupported path ${path}.`);
+  }
+  return path;
+}
+
+function parentPath(value: string): string {
+  return value.split('/').slice(0, -1).join('/');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
