@@ -14,6 +14,8 @@ function isRetryableProviderFailure(result) {
         || /empty (?:or invalid |final )?answer/i.test(message)
         || /file-change response/i.test(message)
         || /invalid tool/i.test(message)
+        || /tool (?:after|call).*tool limit/i.test(message)
+        || /tool limit was reached/i.test(message)
         || /non-json response/i.test(message)
         || /returned a redirect/i.test(message)) {
         return false;

@@ -1074,6 +1074,7 @@ class DevMateChatViewProvider {
                 },
                 usedFiles: execution.usedFiles,
                 mutationCharacters: execution.mutationCharacters,
+                mutationApplied: execution.mutationApplied,
                 commandAttempted: execution.commandAttempted
             };
         }
@@ -1123,7 +1124,8 @@ class DevMateChatViewProvider {
                 result: outcome,
                 resultSummary: `Created ${call.arguments.path}`,
                 usedFiles: [uri.scheme === 'file' ? uri.fsPath : uri.toString()],
-                mutationCharacters: call.arguments.content.length
+                mutationCharacters: call.arguments.content.length,
+                mutationApplied: true
             };
         }
         if (call.name === 'edit_file') {
@@ -1155,7 +1157,8 @@ class DevMateChatViewProvider {
                 result: outcome,
                 resultSummary: `Updated ${call.arguments.path}`,
                 usedFiles: [uri.scheme === 'file' ? uri.fsPath : uri.toString()],
-                mutationCharacters: updatedContent.length
+                mutationCharacters: updatedContent.length,
+                mutationApplied: true
             };
         }
         if (call.name === 'list_files') {
@@ -1539,10 +1542,11 @@ class DevMateChatViewProvider {
         }
         const toolHistory = [];
         const toolUsedFiles = new Set();
-        const toolSignatures = new Set();
+        const toolSignatures = new Map();
         let fileMutationCalls = 0;
         let mutationCharacters = 0;
         let commandCalls = 0;
+        let workspaceRevision = 0;
         let forceFinalAnswer = false;
         let emptyResponseRecoveryAttempted = false;
         let finalData;
@@ -1614,10 +1618,17 @@ class DevMateChatViewProvider {
                 return;
             }
             let executedCalls = 0;
-            for (const toolCall of toolCalls) {
+            for (const rawToolCall of toolCalls) {
                 if (toolHistory.length >= agentTools_1.MAX_AGENT_TOOL_CALLS) {
                     break;
                 }
+                const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+                const toolCall = workspaceFolder
+                    ? (0, agentTools_1.normalizeAgentToolCallForWorkspace)(rawToolCall, {
+                        name: workspaceFolder.name,
+                        fsPath: workspaceFolder.uri.scheme === 'file' ? workspaceFolder.uri.fsPath : undefined
+                    })
+                    : rawToolCall;
                 if (toolHistory.some((step) => step.callId === toolCall.id)) {
                     this.postStatus('The model reused an invalid tool-call id.', 'error');
                     return;
@@ -1632,6 +1643,11 @@ class DevMateChatViewProvider {
                 let execution;
                 const isFileMutation = toolCall.name === 'create_file' || toolCall.name === 'edit_file';
                 const isCommand = toolCall.name === 'run_command';
+                const isReadOnly = toolCall.name === 'list_files'
+                    || toolCall.name === 'read_file'
+                    || toolCall.name === 'search_code';
+                const priorSignature = signature ? toolSignatures.get(signature) : undefined;
+                const repeatedAtCurrentRevision = priorSignature?.revision === workspaceRevision;
                 if (isFileMutation && fileMutationCalls >= agentTools_1.MAX_AGENT_FILE_MUTATIONS) {
                     execution = this.rejectedToolExecution(toolCall, 'DevMate reached the file-mutation limit for this request.');
                     forceFinalAnswer = true;
@@ -1640,7 +1656,10 @@ class DevMateChatViewProvider {
                     execution = this.rejectedToolExecution(toolCall, 'DevMate reached the verification-command limit for this request.');
                     forceFinalAnswer = true;
                 }
-                else if (signature && toolSignatures.has(signature)) {
+                else if (signature
+                    && priorSignature
+                    && (isFileMutation
+                        || (repeatedAtCurrentRevision && (!isReadOnly || priorSignature.executions >= 2)))) {
                     const repeatedResult = 'This identical tool call was already completed. Use its earlier result.';
                     this.postAgentToolActivity(toolCall.id, 'Skipped repeated tool call', toolCall.name, 'error', repeatedResult);
                     execution = {
@@ -1664,16 +1683,23 @@ class DevMateChatViewProvider {
                     forceFinalAnswer = true;
                 }
                 else {
-                    if (signature) {
-                        toolSignatures.add(signature);
-                    }
                     execution = await this.executeAgentToolCall(toolCall, fileChanges_1.MAX_TOTAL_CHANGE_CHARACTERS - mutationCharacters);
                     mutationCharacters += execution.mutationCharacters;
-                    if (isFileMutation) {
+                    if (isFileMutation && execution.mutationApplied) {
                         fileMutationCalls += 1;
+                        workspaceRevision += 1;
                     }
                     if (isCommand && execution.commandAttempted) {
                         commandCalls += 1;
+                    }
+                    if (signature && (!execution.step.isError || execution.commandAttempted)) {
+                        const previous = toolSignatures.get(signature);
+                        toolSignatures.set(signature, {
+                            revision: workspaceRevision,
+                            executions: previous?.revision === workspaceRevision
+                                ? previous.executions + 1
+                                : 1
+                        });
                     }
                 }
                 if (this.finishCancelledRequest(signal)) {

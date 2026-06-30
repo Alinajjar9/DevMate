@@ -37,6 +37,12 @@ test('retries only transient provider HTTP failures', () => {
   }), false);
   assert.equal(isRetryableProviderFailure({
     status: 'error',
+    statusCode: 502,
+    errorKind: 'http',
+    message: 'The model requested a tool after the tool limit was reached.'
+  }), false);
+  assert.equal(isRetryableProviderFailure({
+    status: 'error',
     statusCode: 401,
     errorKind: 'http',
     message: 'ResourceExhausted'

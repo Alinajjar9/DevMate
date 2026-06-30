@@ -27,6 +27,11 @@ export type AgentToolCall = {
   arguments: Record<string, unknown>;
 };
 
+export type AgentWorkspacePathInfo = {
+  name: string;
+  fsPath?: string;
+};
+
 export type ListFilesToolArguments = {
   path: string;
   maxResults: number;
@@ -155,6 +160,34 @@ export function parseAgentToolCall(call: AgentToolCall): ParsedAgentToolCall {
   throw new Error('The model requested an unsupported tool.');
 }
 
+export function normalizeAgentToolCallForWorkspace(
+  call: AgentToolCall,
+  workspace: AgentWorkspacePathInfo
+): AgentToolCall {
+  const argumentName = call.name === 'run_command'
+    ? 'cwd'
+    : ['list_files', 'read_file', 'search_code', 'create_file', 'edit_file'].includes(call.name)
+      ? 'path'
+      : undefined;
+  if (!argumentName || typeof call.arguments[argumentName] !== 'string') {
+    return call;
+  }
+  const allowRoot = call.name === 'list_files'
+    || call.name === 'search_code'
+    || call.name === 'run_command';
+  return {
+    ...call,
+    arguments: {
+      ...call.arguments,
+      [argumentName]: normalizeWorkspaceQualifiedPath(
+        call.arguments[argumentName] as string,
+        workspace,
+        allowRoot
+      )
+    }
+  };
+}
+
 export function agentToolCallSignature(call: AgentToolCall): string {
   const parsed = parseAgentToolCall(call);
   if (parsed.name === 'create_file') {
@@ -207,6 +240,58 @@ export function normalizeAgentToolPath(value: string, allowRoot = true): string 
     throw new Error('The tool path contains unsafe segments.');
   }
   return normalized;
+}
+
+function normalizeWorkspaceQualifiedPath(
+  value: string,
+  workspace: AgentWorkspacePathInfo,
+  allowRoot: boolean
+): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  if (trimmed === '.' || trimmed === './' || trimmed === '.\\') {
+    return allowRoot ? '' : trimmed;
+  }
+
+  let normalized = trimmed.replace(/\\/g, '/');
+  while (normalized.startsWith('./')) {
+    normalized = normalized.slice(2);
+  }
+
+  const rootPath = workspace.fsPath?.replace(/\\/g, '/').replace(/\/+$/, '');
+  if (rootPath && isAbsoluteLike(normalized)) {
+    const caseInsensitive = /^[A-Za-z]:\//.test(rootPath) || rootPath.startsWith('//');
+    const comparableRoot = caseInsensitive ? rootPath.toLocaleLowerCase() : rootPath;
+    const comparableValue = caseInsensitive ? normalized.toLocaleLowerCase() : normalized;
+    if (comparableValue === comparableRoot) {
+      return allowRoot ? '' : trimmed;
+    }
+    if (comparableValue.startsWith(`${comparableRoot}/`)) {
+      return normalized.slice(rootPath.length + 1);
+    }
+    return trimmed;
+  }
+
+  const rootName = workspace.name.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  if (!rootName) {
+    return normalized;
+  }
+  const caseInsensitive = process.platform === 'win32';
+  const comparableName = caseInsensitive ? rootName.toLocaleLowerCase() : rootName;
+  const comparableValue = caseInsensitive ? normalized.toLocaleLowerCase() : normalized;
+  if (comparableValue === comparableName) {
+    return allowRoot ? '' : normalized;
+  }
+  if (comparableValue.startsWith(`${comparableName}/`)) {
+    return normalized.slice(rootName.length + 1);
+  }
+  return normalized;
+}
+
+function isAbsoluteLike(value: string): boolean {
+  return value.startsWith('/') || /^[A-Za-z]:\//.test(value);
 }
 
 export function truncateAgentToolResult(value: string): string {

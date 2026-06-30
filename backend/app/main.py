@@ -227,7 +227,7 @@ AGENT_TOOL_DEFINITIONS = (
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Optional workspace-relative directory. Use an empty string for the project root.",
+                    "description": "Optional path relative to the open workspace. Do not include the workspace folder name. Use an empty string for the project root.",
                 },
                 "maxResults": {
                     "type": "integer",
@@ -244,7 +244,10 @@ AGENT_TOOL_DEFINITIONS = (
         parameters={
             "type": "object",
             "properties": {
-                "path": {"type": "string"},
+                "path": {
+                    "type": "string",
+                    "description": "File path relative to the open workspace; never an absolute path.",
+                },
                 "startLine": {"type": "integer", "minimum": 1},
                 "endLine": {"type": "integer", "minimum": 1},
             },
@@ -261,7 +264,7 @@ AGENT_TOOL_DEFINITIONS = (
                 "query": {"type": "string", "minLength": 2, "maxLength": 200},
                 "path": {
                     "type": "string",
-                    "description": "Optional workspace-relative file or directory to search within.",
+                    "description": "Optional file or directory relative to the open workspace. Do not include the workspace folder name.",
                 },
                 "maxResults": {
                     "type": "integer",
@@ -281,7 +284,10 @@ AGENT_TOOL_DEFINITIONS = (
         parameters={
             "type": "object",
             "properties": {
-                "path": {"type": "string"},
+                "path": {
+                    "type": "string",
+                    "description": "New file path relative to the open workspace; never an absolute path.",
+                },
                 "content": {"type": "string"},
             },
             "required": ["path", "content"],
@@ -296,7 +302,10 @@ AGENT_TOOL_DEFINITIONS = (
         parameters={
             "type": "object",
             "properties": {
-                "path": {"type": "string"},
+                "path": {
+                    "type": "string",
+                    "description": "Existing file path relative to the open workspace; never an absolute path.",
+                },
                 "replacements": {
                     "type": "array",
                     "minItems": 1,
@@ -335,7 +344,7 @@ AGENT_TOOL_DEFINITIONS = (
                 },
                 "cwd": {
                     "type": "string",
-                    "description": "Optional workspace-relative working directory.",
+                    "description": "Optional working directory relative to the open workspace. Use '.' for the workspace root and do not include the workspace folder name.",
                 },
                 "timeoutSeconds": {
                     "type": "integer",

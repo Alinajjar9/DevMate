@@ -4,11 +4,17 @@ const test = require('node:test');
 const {
   MAX_AGENT_TOOL_RESULT_CHARACTERS,
   agentToolCallSignature,
+  normalizeAgentToolCallForWorkspace,
   normalizeAgentToolPath,
   parseAgentToolCall,
   summarizedAgentToolArguments,
   truncateAgentToolResult
 } = require('../out/agentTools');
+
+const workspace = {
+  name: 'testing the ai project',
+  fsPath: 'C:\\Users\\ali\\Desktop\\testing the ai project'
+};
 
 test('canonicalizes semantically identical tool calls', () => {
   const first = agentToolCallSignature({
@@ -40,6 +46,47 @@ test('parses bounded ranged reads', () => {
     name: 'read_file',
     arguments: { path: 'src/app.ts', startLine: 1, endLine: 401 }
   }), /at most 400 lines/);
+});
+
+test('normalizes harmless workspace-qualified model paths', () => {
+  assert.equal(normalizeAgentToolCallForWorkspace({
+    id: 'absolute-read',
+    name: 'read_file',
+    arguments: { path: 'C:\\Users\\ali\\Desktop\\testing the ai project\\app.py' }
+  }, workspace).arguments.path, 'app.py');
+  assert.equal(normalizeAgentToolCallForWorkspace({
+    id: 'named-root',
+    name: 'list_files',
+    arguments: { path: 'testing the ai project' }
+  }, workspace).arguments.path, '');
+  assert.equal(normalizeAgentToolCallForWorkspace({
+    id: 'named-file',
+    name: 'edit_file',
+    arguments: { path: 'testing the ai project/test_app.py', replacements: [] }
+  }, workspace).arguments.path, 'test_app.py');
+  assert.equal(normalizeAgentToolCallForWorkspace({
+    id: 'dot-cwd',
+    name: 'run_command',
+    arguments: { executable: 'python', args: ['-m', 'unittest'], cwd: '.' }
+  }, workspace).arguments.cwd, '');
+  assert.equal(normalizeAgentToolCallForWorkspace({
+    id: 'named-cwd',
+    name: 'run_command',
+    arguments: { executable: 'python', args: ['-m', 'unittest'], cwd: 'testing the ai project' }
+  }, workspace).arguments.cwd, '');
+});
+
+test('keeps outside and traversing paths available for strict rejection', () => {
+  assert.equal(normalizeAgentToolCallForWorkspace({
+    id: 'outside',
+    name: 'read_file',
+    arguments: { path: 'C:\\Users\\ali\\Desktop\\outside.py' }
+  }, workspace).arguments.path, 'C:\\Users\\ali\\Desktop\\outside.py');
+  assert.equal(normalizeAgentToolCallForWorkspace({
+    id: 'traversal',
+    name: 'read_file',
+    arguments: { path: 'testing the ai project/../outside.py' }
+  }, workspace).arguments.path, '../outside.py');
 });
 
 test('parses mutation tools and summarizes large history arguments', () => {

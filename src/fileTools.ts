@@ -73,7 +73,10 @@ export function applyExactReplacements(
     const replacement = replacements[index];
     const occurrences = countOccurrences(updated, replacement.oldText, 2);
     if (occurrences === 0) {
-      throw new Error(`Replacement ${index + 1} did not match the current file.`);
+      throw new Error(
+        `Replacement ${index + 1} did not match the current file. `
+        + 'Use read_file around the relevant lines and copy oldText exactly, including broken syntax and whitespace.'
+      );
     }
     if (occurrences > 1) {
       throw new Error(`Replacement ${index + 1} matched more than once; provide a more specific oldText value.`);

@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = exports.MAX_AGENT_SEARCH_RESULTS = exports.MAX_AGENT_LIST_RESULTS = exports.MAX_AGENT_COMMAND_CALLS = exports.MAX_AGENT_FILE_MUTATIONS = exports.MAX_AGENT_TOOL_CALLS = void 0;
 exports.parseAgentToolCall = parseAgentToolCall;
+exports.normalizeAgentToolCallForWorkspace = normalizeAgentToolCallForWorkspace;
 exports.agentToolCallSignature = agentToolCallSignature;
 exports.summarizedAgentToolArguments = summarizedAgentToolArguments;
 exports.normalizeAgentToolPath = normalizeAgentToolPath;
@@ -82,6 +83,26 @@ function parseAgentToolCall(call) {
     }
     throw new Error('The model requested an unsupported tool.');
 }
+function normalizeAgentToolCallForWorkspace(call, workspace) {
+    const argumentName = call.name === 'run_command'
+        ? 'cwd'
+        : ['list_files', 'read_file', 'search_code', 'create_file', 'edit_file'].includes(call.name)
+            ? 'path'
+            : undefined;
+    if (!argumentName || typeof call.arguments[argumentName] !== 'string') {
+        return call;
+    }
+    const allowRoot = call.name === 'list_files'
+        || call.name === 'search_code'
+        || call.name === 'run_command';
+    return {
+        ...call,
+        arguments: {
+            ...call.arguments,
+            [argumentName]: normalizeWorkspaceQualifiedPath(call.arguments[argumentName], workspace, allowRoot)
+        }
+    };
+}
 function agentToolCallSignature(call) {
     const parsed = parseAgentToolCall(call);
     if (parsed.name === 'create_file') {
@@ -127,6 +148,49 @@ function normalizeAgentToolPath(value, allowRoot = true) {
         throw new Error('The tool path contains unsafe segments.');
     }
     return normalized;
+}
+function normalizeWorkspaceQualifiedPath(value, workspace, allowRoot) {
+    const trimmed = value.trim();
+    if (!trimmed) {
+        return trimmed;
+    }
+    if (trimmed === '.' || trimmed === './' || trimmed === '.\\') {
+        return allowRoot ? '' : trimmed;
+    }
+    let normalized = trimmed.replace(/\\/g, '/');
+    while (normalized.startsWith('./')) {
+        normalized = normalized.slice(2);
+    }
+    const rootPath = workspace.fsPath?.replace(/\\/g, '/').replace(/\/+$/, '');
+    if (rootPath && isAbsoluteLike(normalized)) {
+        const caseInsensitive = /^[A-Za-z]:\//.test(rootPath) || rootPath.startsWith('//');
+        const comparableRoot = caseInsensitive ? rootPath.toLocaleLowerCase() : rootPath;
+        const comparableValue = caseInsensitive ? normalized.toLocaleLowerCase() : normalized;
+        if (comparableValue === comparableRoot) {
+            return allowRoot ? '' : trimmed;
+        }
+        if (comparableValue.startsWith(`${comparableRoot}/`)) {
+            return normalized.slice(rootPath.length + 1);
+        }
+        return trimmed;
+    }
+    const rootName = workspace.name.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    if (!rootName) {
+        return normalized;
+    }
+    const caseInsensitive = process.platform === 'win32';
+    const comparableName = caseInsensitive ? rootName.toLocaleLowerCase() : rootName;
+    const comparableValue = caseInsensitive ? normalized.toLocaleLowerCase() : normalized;
+    if (comparableValue === comparableName) {
+        return allowRoot ? '' : normalized;
+    }
+    if (comparableValue.startsWith(`${comparableName}/`)) {
+        return normalized.slice(rootName.length + 1);
+    }
+    return normalized;
+}
+function isAbsoluteLike(value) {
+    return value.startsWith('/') || /^[A-Za-z]:\//.test(value);
 }
 function truncateAgentToolResult(value) {
     if (value.length <= exports.MAX_AGENT_TOOL_RESULT_CHARACTERS) {

@@ -70,8 +70,12 @@ def build_chat_messages(
         tool_instruction = (
             "You can use the tools enabled for this turn. Prefer targeted searches and reads, ask for file changes "
             "only when needed, run a relevant verification command after editing when one is available, and never "
-            "repeat an identical tool call. Never try to install a missing test dependency. If pytest is unavailable, "
-            "convert the test to Python's built-in unittest format and run python -m unittest <test-file> -v."
+            "repeat an identical tool call unnecessarily. Every tool path is relative to the already-open workspace "
+            "root: never include an absolute path or repeat the workspace folder name. Use an empty path or cwd '.' "
+            "for the workspace root. If an exact replacement fails, read a narrow range around the relevant lines and "
+            "copy the current text exactly before retrying. Never try to install a missing test dependency. If pytest "
+            "is unavailable, convert the test to Python's built-in unittest format and run "
+            "python -m unittest <test-file> -v."
         )
     else:
         tool_instruction = (

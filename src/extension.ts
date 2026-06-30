@@ -6,6 +6,7 @@ import {
   MAX_AGENT_COMMAND_CALLS,
   MAX_AGENT_FILE_MUTATIONS,
   agentToolCallSignature,
+  normalizeAgentToolCallForWorkspace,
   parseAgentToolCall,
   summarizedAgentToolArguments,
   truncateAgentToolResult
@@ -162,6 +163,7 @@ type AgentToolExecution = {
   step: AgentToolStep;
   usedFiles: string[];
   mutationCharacters: number;
+  mutationApplied?: boolean;
   commandAttempted?: boolean;
 };
 
@@ -1556,6 +1558,7 @@ class DevMateChatViewProvider implements
         },
         usedFiles: execution.usedFiles,
         mutationCharacters: execution.mutationCharacters,
+        mutationApplied: execution.mutationApplied,
         commandAttempted: execution.commandAttempted
       };
     } catch (error) {
@@ -1591,6 +1594,7 @@ class DevMateChatViewProvider implements
     resultSummary: string;
     usedFiles: string[];
     mutationCharacters: number;
+    mutationApplied?: boolean;
     commandAttempted?: boolean;
   }> {
     const folder = vscode.workspace.workspaceFolders?.[0];
@@ -1625,7 +1629,8 @@ class DevMateChatViewProvider implements
         result: outcome,
         resultSummary: `Created ${call.arguments.path}`,
         usedFiles: [uri.scheme === 'file' ? uri.fsPath : uri.toString()],
-        mutationCharacters: call.arguments.content.length
+        mutationCharacters: call.arguments.content.length,
+        mutationApplied: true
       };
     }
 
@@ -1664,7 +1669,8 @@ class DevMateChatViewProvider implements
         result: outcome,
         resultSummary: `Updated ${call.arguments.path}`,
         usedFiles: [uri.scheme === 'file' ? uri.fsPath : uri.toString()],
-        mutationCharacters: updatedContent.length
+        mutationCharacters: updatedContent.length,
+        mutationApplied: true
       };
     }
 
@@ -2170,10 +2176,11 @@ class DevMateChatViewProvider implements
 
     const toolHistory: AgentToolStep[] = [];
     const toolUsedFiles = new Set<string>();
-    const toolSignatures = new Set<string>();
+    const toolSignatures = new Map<string, { revision: number; executions: number }>();
     let fileMutationCalls = 0;
     let mutationCharacters = 0;
     let commandCalls = 0;
+    let workspaceRevision = 0;
     let forceFinalAnswer = false;
     let emptyResponseRecoveryAttempted = false;
     let finalData: AskResponse | undefined;
@@ -2257,10 +2264,17 @@ class DevMateChatViewProvider implements
       }
 
       let executedCalls = 0;
-      for (const toolCall of toolCalls) {
+      for (const rawToolCall of toolCalls) {
         if (toolHistory.length >= MAX_AGENT_TOOL_CALLS) {
           break;
         }
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        const toolCall = workspaceFolder
+          ? normalizeAgentToolCallForWorkspace(rawToolCall, {
+            name: workspaceFolder.name,
+            fsPath: workspaceFolder.uri.scheme === 'file' ? workspaceFolder.uri.fsPath : undefined
+          })
+          : rawToolCall;
         if (toolHistory.some((step) => step.callId === toolCall.id)) {
           this.postStatus('The model reused an invalid tool-call id.', 'error');
           return;
@@ -2275,6 +2289,11 @@ class DevMateChatViewProvider implements
         let execution: AgentToolExecution;
         const isFileMutation = toolCall.name === 'create_file' || toolCall.name === 'edit_file';
         const isCommand = toolCall.name === 'run_command';
+        const isReadOnly = toolCall.name === 'list_files'
+          || toolCall.name === 'read_file'
+          || toolCall.name === 'search_code';
+        const priorSignature = signature ? toolSignatures.get(signature) : undefined;
+        const repeatedAtCurrentRevision = priorSignature?.revision === workspaceRevision;
         if (isFileMutation && fileMutationCalls >= MAX_AGENT_FILE_MUTATIONS) {
           execution = this.rejectedToolExecution(
             toolCall,
@@ -2287,7 +2306,14 @@ class DevMateChatViewProvider implements
             'DevMate reached the verification-command limit for this request.'
           );
           forceFinalAnswer = true;
-        } else if (signature && toolSignatures.has(signature)) {
+        } else if (
+          signature
+          && priorSignature
+          && (
+            isFileMutation
+            || (repeatedAtCurrentRevision && (!isReadOnly || priorSignature.executions >= 2))
+          )
+        ) {
           const repeatedResult = 'This identical tool call was already completed. Use its earlier result.';
           this.postAgentToolActivity(
             toolCall.id,
@@ -2315,19 +2341,26 @@ class DevMateChatViewProvider implements
           };
           forceFinalAnswer = true;
         } else {
-          if (signature) {
-            toolSignatures.add(signature);
-          }
           execution = await this.executeAgentToolCall(
             toolCall,
             MAX_TOTAL_CHANGE_CHARACTERS - mutationCharacters
           );
           mutationCharacters += execution.mutationCharacters;
-          if (isFileMutation) {
+          if (isFileMutation && execution.mutationApplied) {
             fileMutationCalls += 1;
+            workspaceRevision += 1;
           }
           if (isCommand && execution.commandAttempted) {
             commandCalls += 1;
+          }
+          if (signature && (!execution.step.isError || execution.commandAttempted)) {
+            const previous = toolSignatures.get(signature);
+            toolSignatures.set(signature, {
+              revision: workspaceRevision,
+              executions: previous?.revision === workspaceRevision
+                ? previous.executions + 1
+                : 1
+            });
           }
         }
         if (this.finishCancelledRequest(signal)) {
