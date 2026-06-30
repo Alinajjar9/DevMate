@@ -6,12 +6,39 @@ import {
 } from './fileTools';
 import type { ExactTextReplacement } from './fileTools';
 
-export const MAX_AGENT_TOOL_CALLS = 16;
+export const DEFAULT_AGENT_TOOL_CALL_LIMIT = 16;
+export const MIN_AGENT_TOOL_CALL_LIMIT = 4;
+export const MAX_AGENT_TOOL_CALL_LIMIT = 32;
 export const MAX_AGENT_FILE_MUTATIONS = 6;
 export const MAX_AGENT_COMMAND_CALLS = 3;
 export const MAX_AGENT_LIST_RESULTS = 200;
 export const MAX_AGENT_SEARCH_RESULTS = 50;
 export const MAX_AGENT_TOOL_RESULT_CHARACTERS = 10_000;
+export const MAX_AGENT_TOOL_HISTORY_CHARACTERS = 80_000;
+
+export function boundedAgentToolCallLimit(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    return DEFAULT_AGENT_TOOL_CALL_LIMIT;
+  }
+  return Math.min(MAX_AGENT_TOOL_CALL_LIMIT, Math.max(MIN_AGENT_TOOL_CALL_LIMIT, value));
+}
+
+export function compactAgentToolHistory<
+  T extends { name: string; result: string }
+>(steps: T[]): T[] {
+  const compacted = steps.map((step) => ({ ...step }));
+  let characters = compacted.reduce((total, step) => total + step.result.length, 0);
+  for (let index = 0; characters > MAX_AGENT_TOOL_HISTORY_CHARACTERS && index < compacted.length; index += 1) {
+    const step = compacted[index];
+    const marker = `[Earlier ${step.name} result omitted to stay within the agent context budget.]`;
+    if (step.result.length <= marker.length) {
+      continue;
+    }
+    characters -= step.result.length - marker.length;
+    step.result = marker;
+  }
+  return compacted;
+}
 
 export type AgentToolName =
   | 'list_files'

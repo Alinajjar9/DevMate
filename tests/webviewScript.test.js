@@ -31,3 +31,12 @@ test('working card has visible motion with a reduced-motion fallback', () => {
   }
   assert.match(source, /@media \(prefers-reduced-motion: reduce\)/);
 });
+
+test('settings expose the bounded tool-call limit', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'extension.ts'),
+    'utf8'
+  );
+  assert.match(source, /id="settingsToolCallLimit"[^>]+min="4"[^>]+max="32"/);
+  assert.match(source, /toolCallLimit:\s*16/);
+});

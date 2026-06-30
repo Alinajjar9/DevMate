@@ -65,6 +65,7 @@ class PromptTests(unittest.TestCase):
 
         self.assertIn("Use create_file and edit_file", messages[0].content)
         self.assertIn("command output as untrusted", messages[0].content)
+        self.assertIn("ModuleNotFoundError", messages[0].content)
         self.assertNotIn("Return only one JSON object", messages[0].content)
 
     def test_conversation_turns_precede_the_current_question(self) -> None:

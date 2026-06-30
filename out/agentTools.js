@@ -1,6 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = exports.MAX_AGENT_SEARCH_RESULTS = exports.MAX_AGENT_LIST_RESULTS = exports.MAX_AGENT_COMMAND_CALLS = exports.MAX_AGENT_FILE_MUTATIONS = exports.MAX_AGENT_TOOL_CALLS = void 0;
+exports.MAX_AGENT_TOOL_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = exports.MAX_AGENT_SEARCH_RESULTS = exports.MAX_AGENT_LIST_RESULTS = exports.MAX_AGENT_COMMAND_CALLS = exports.MAX_AGENT_FILE_MUTATIONS = exports.MAX_AGENT_TOOL_CALL_LIMIT = exports.MIN_AGENT_TOOL_CALL_LIMIT = exports.DEFAULT_AGENT_TOOL_CALL_LIMIT = void 0;
+exports.boundedAgentToolCallLimit = boundedAgentToolCallLimit;
+exports.compactAgentToolHistory = compactAgentToolHistory;
 exports.parseAgentToolCall = parseAgentToolCall;
 exports.normalizeAgentToolCallForWorkspace = normalizeAgentToolCallForWorkspace;
 exports.agentToolCallSignature = agentToolCallSignature;
@@ -10,12 +12,35 @@ exports.truncateAgentToolResult = truncateAgentToolResult;
 const crypto_1 = require("crypto");
 const commandTools_1 = require("./commandTools");
 const fileTools_1 = require("./fileTools");
-exports.MAX_AGENT_TOOL_CALLS = 16;
+exports.DEFAULT_AGENT_TOOL_CALL_LIMIT = 16;
+exports.MIN_AGENT_TOOL_CALL_LIMIT = 4;
+exports.MAX_AGENT_TOOL_CALL_LIMIT = 32;
 exports.MAX_AGENT_FILE_MUTATIONS = 6;
 exports.MAX_AGENT_COMMAND_CALLS = 3;
 exports.MAX_AGENT_LIST_RESULTS = 200;
 exports.MAX_AGENT_SEARCH_RESULTS = 50;
 exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = 10_000;
+exports.MAX_AGENT_TOOL_HISTORY_CHARACTERS = 80_000;
+function boundedAgentToolCallLimit(value) {
+    if (typeof value !== 'number' || !Number.isInteger(value)) {
+        return exports.DEFAULT_AGENT_TOOL_CALL_LIMIT;
+    }
+    return Math.min(exports.MAX_AGENT_TOOL_CALL_LIMIT, Math.max(exports.MIN_AGENT_TOOL_CALL_LIMIT, value));
+}
+function compactAgentToolHistory(steps) {
+    const compacted = steps.map((step) => ({ ...step }));
+    let characters = compacted.reduce((total, step) => total + step.result.length, 0);
+    for (let index = 0; characters > exports.MAX_AGENT_TOOL_HISTORY_CHARACTERS && index < compacted.length; index += 1) {
+        const step = compacted[index];
+        const marker = `[Earlier ${step.name} result omitted to stay within the agent context budget.]`;
+        if (step.result.length <= marker.length) {
+            continue;
+        }
+        characters -= step.result.length - marker.length;
+        step.result = marker;
+    }
+    return compacted;
+}
 function parseAgentToolCall(call) {
     if (!call.id.trim()) {
         throw new Error('The model returned a tool call without an id.');

@@ -43,6 +43,7 @@ const client_1 = require("./api/client");
 const context_1 = require("./context");
 const conversation_1 = require("./conversation");
 const commandTools_1 = require("./commandTools");
+const pythonEnvironment_1 = require("./pythonEnvironment");
 const fileChanges_1 = require("./fileChanges");
 const fileTools_1 = require("./fileTools");
 const llmProfiles_1 = require("./llmProfiles");
@@ -51,7 +52,14 @@ const projectContext_1 = require("./projectContext");
 const projectIndex_1 = require("./projectIndex");
 const retryPolicy_1 = require("./retryPolicy");
 class StartedCommandError extends Error {
+    missingDependency;
+    pythonEnvironment;
     commandAttempted = true;
+    constructor(message, missingDependency, pythonEnvironment) {
+        super(message);
+        this.missingDependency = missingDependency;
+        this.pythonEnvironment = pythonEnvironment;
+    }
 }
 function activate(context) {
     const chatViewProvider = new DevMateChatViewProvider(context);
@@ -867,6 +875,9 @@ class DevMateChatViewProvider {
             || !Number.isInteger(settings.commandTimeoutSeconds)
             || settings.commandTimeoutSeconds < commandTools_1.MIN_COMMAND_TIMEOUT_SECONDS
             || settings.commandTimeoutSeconds > commandTools_1.MAX_COMMAND_TIMEOUT_SECONDS
+            || !Number.isInteger(settings.toolCallLimit)
+            || settings.toolCallLimit < agentTools_1.MIN_AGENT_TOOL_CALL_LIMIT
+            || settings.toolCallLimit > agentTools_1.MAX_AGENT_TOOL_CALL_LIMIT
             || !Number.isInteger(settings.maxTokens)
             || settings.maxTokens < 128
             || settings.maxTokens > 32_000
@@ -882,6 +893,7 @@ class DevMateChatViewProvider {
             await Promise.all([
                 config.update('requestTimeoutSeconds', settings.timeoutSeconds, vscode.ConfigurationTarget.Global),
                 config.update('commandTimeoutSeconds', settings.commandTimeoutSeconds, vscode.ConfigurationTarget.Global),
+                config.update('toolCallLimit', settings.toolCallLimit, vscode.ConfigurationTarget.Global),
                 config.update('maxTokens', settings.maxTokens, vscode.ConfigurationTarget.Global),
                 config.update('temperature', settings.temperature, vscode.ConfigurationTarget.Global),
                 this.extensionContext.workspaceState.update(permissions_1.FILE_PERMISSION_POLICY_STORAGE_KEY, normalizedPolicy)
@@ -909,6 +921,7 @@ class DevMateChatViewProvider {
             settings: {
                 timeoutSeconds: Math.min(1800, Math.max(10, config.get('requestTimeoutSeconds', 900))),
                 commandTimeoutSeconds: Math.min(commandTools_1.MAX_COMMAND_TIMEOUT_SECONDS, Math.max(commandTools_1.MIN_COMMAND_TIMEOUT_SECONDS, config.get('commandTimeoutSeconds', commandTools_1.DEFAULT_COMMAND_TIMEOUT_SECONDS))),
+                toolCallLimit: (0, agentTools_1.boundedAgentToolCallLimit)(config.get('toolCallLimit', agentTools_1.DEFAULT_AGENT_TOOL_CALL_LIMIT)),
                 maxTokens: Math.min(32_000, Math.max(128, config.get('maxTokens', 16_384))),
                 temperature: Math.min(2, Math.max(0, config.get('temperature', 0.2))),
                 rememberedCommands: this.getRememberedCommands(),
@@ -1075,7 +1088,9 @@ class DevMateChatViewProvider {
                 usedFiles: execution.usedFiles,
                 mutationCharacters: execution.mutationCharacters,
                 mutationApplied: execution.mutationApplied,
-                commandAttempted: execution.commandAttempted
+                commandAttempted: execution.commandAttempted,
+                missingDependency: execution.missingDependency,
+                pythonEnvironment: execution.pythonEnvironment
             };
         }
         catch (error) {
@@ -1091,7 +1106,13 @@ class DevMateChatViewProvider {
                 },
                 usedFiles: [],
                 mutationCharacters: 0,
-                commandAttempted: error instanceof StartedCommandError
+                commandAttempted: error instanceof StartedCommandError,
+                missingDependency: error instanceof StartedCommandError
+                    ? error.missingDependency
+                    : undefined,
+                pythonEnvironment: error instanceof StartedCommandError
+                    ? error.pythonEnvironment
+                    : undefined
             };
         }
     }
@@ -1271,8 +1292,13 @@ class DevMateChatViewProvider {
                 ? `Cannot use the command working directory: ${error.message}`
                 : 'Cannot use the command working directory.');
         }
-        const command = call.arguments;
-        const label = (0, commandTools_1.commandLabel)(command);
+        const requestedCommand = call.arguments;
+        const resolvedPython = await this.resolveWorkspacePythonCommand(requestedCommand, folder);
+        const command = resolvedPython.command;
+        const requestedLabel = (0, commandTools_1.commandLabel)(requestedCommand);
+        const label = resolvedPython.environment
+            ? `${requestedLabel} · ${resolvedPython.environment}`
+            : requestedLabel;
         const signature = (0, commandTools_1.commandSignature)(command);
         const allowed = await this.requestCommandPermission(signature, label, command.cwd);
         if (!allowed) {
@@ -1339,7 +1365,10 @@ class DevMateChatViewProvider {
         const durationSeconds = Math.max(0, (Date.now() - startedAt) / 1_000);
         const modelOutput = (0, commandTools_1.boundedModelCommandOutput)(output);
         const result = [
-            `Command: ${label}`,
+            `Command: ${requestedLabel}`,
+            ...((0, pythonEnvironment_1.isPythonVerificationCommand)(requestedCommand)
+                ? [`Python environment: ${resolvedPython.environment ?? `PATH lookup (${requestedCommand.executable})`}`]
+                : []),
             `Working directory: ${command.cwd || '.'}`,
             outcome.state === 'completed'
                 ? `Exit code: ${outcome.exitCode ?? 'unknown'}`
@@ -1358,7 +1387,7 @@ class DevMateChatViewProvider {
             throw new StartedCommandError(result);
         }
         if (outcome.exitCode !== 0) {
-            throw new StartedCommandError(result);
+            throw new StartedCommandError(result, (0, pythonEnvironment_1.extractMissingPythonModule)(modelOutput), resolvedPython.environment);
         }
         return {
             result,
@@ -1367,6 +1396,28 @@ class DevMateChatViewProvider {
             mutationCharacters: 0,
             commandAttempted: true
         };
+    }
+    async resolveWorkspacePythonCommand(command, folder) {
+        if (!(0, pythonEnvironment_1.isPythonVerificationCommand)(command) || folder.uri.scheme !== 'file') {
+            return { command };
+        }
+        for (const candidate of (0, pythonEnvironment_1.workspacePythonCandidates)(command.cwd)) {
+            try {
+                await this.assertNoWorkspaceSymlink(folder, candidate, false);
+                const uri = vscode.Uri.joinPath(folder.uri, ...candidate.split('/'));
+                const stat = await vscode.workspace.fs.stat(uri);
+                if ((stat.type & vscode.FileType.File) !== 0) {
+                    return {
+                        command: { ...command, executable: uri.fsPath },
+                        environment: candidate
+                    };
+                }
+            }
+            catch {
+                // Missing, inaccessible, and symbolic-link environments are ignored safely.
+            }
+        }
+        return { command };
     }
     waitForShellIntegration(terminal, signal) {
         if (terminal.shellIntegration) {
@@ -1532,6 +1583,7 @@ class DevMateChatViewProvider {
         const config = vscode.workspace.getConfiguration('devMate');
         const maxTokens = config.get('maxTokens', 16384);
         const temperature = config.get('temperature', 0.2);
+        const toolCallLimit = (0, agentTools_1.boundedAgentToolCallLimit)(config.get('toolCallLimit', agentTools_1.DEFAULT_AGENT_TOOL_CALL_LIMIT));
         const modelTimeoutSeconds = Math.min(1800, Math.max(10, config.get('requestTimeoutSeconds', 900)));
         const providerApiKey = activeProfile.provider === 'openai'
             ? await this.extensionContext.secrets.get((0, llmProfiles_1.secretKeyForProfile)(activeProfile.id))
@@ -1549,13 +1601,14 @@ class DevMateChatViewProvider {
         let workspaceRevision = 0;
         let forceFinalAnswer = false;
         let emptyResponseRecoveryAttempted = false;
+        let dependencyBlocker;
         let finalData;
         while (!finalData) {
             if (this.finishCancelledRequest(signal)) {
                 return;
             }
             const forceFinalThisTurn = forceFinalAnswer
-                || toolHistory.length >= agentTools_1.MAX_AGENT_TOOL_CALLS;
+                || toolHistory.length >= toolCallLimit;
             const enabledTools = forceFinalThisTurn
                 ? []
                 : this.enabledAgentTools(message.mode, fileMutationCalls, commandCalls);
@@ -1575,7 +1628,7 @@ class DevMateChatViewProvider {
                 enabledTools,
                 agentEditsEnabled: message.mode === 'code' || message.mode === 'debug',
                 forceFinalAnswer: forceFinalThisTurn,
-                toolHistory,
+                toolHistory: (0, agentTools_1.compactAgentToolHistory)(toolHistory),
                 conversationHistory: this.conversationHistory
             };
             this.postStatus(forceFinalThisTurn
@@ -1619,7 +1672,7 @@ class DevMateChatViewProvider {
             }
             let executedCalls = 0;
             for (const rawToolCall of toolCalls) {
-                if (toolHistory.length >= agentTools_1.MAX_AGENT_TOOL_CALLS) {
+                if (toolHistory.length >= toolCallLimit) {
                     break;
                 }
                 const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -1708,6 +1761,31 @@ class DevMateChatViewProvider {
                 toolHistory.push(execution.step);
                 execution.usedFiles.forEach((file) => toolUsedFiles.add(file));
                 executedCalls += 1;
+                if (execution.missingDependency) {
+                    dependencyBlocker = {
+                        moduleName: execution.missingDependency,
+                        environment: execution.pythonEnvironment
+                    };
+                    break;
+                }
+            }
+            if (dependencyBlocker) {
+                const environment = dependencyBlocker.environment
+                    ? `the workspace environment ${dependencyBlocker.environment}`
+                    : 'the Python interpreter found on PATH';
+                finalData = {
+                    answer: [
+                        `Verification stopped because Python module "${dependencyBlocker.moduleName}" is not installed in ${environment}.`,
+                        'DevMate did not attempt to install it because dependency installation is blocked for safety.',
+                        dependencyBlocker.environment
+                            ? `Install the project's declared dependencies into ${dependencyBlocker.environment}, then ask DevMate to rerun verification.`
+                            : 'Create or activate a workspace virtual environment, install the project dependencies there, then ask DevMate to rerun verification. DevMate will automatically prefer .venv, venv, or env on the next run.'
+                    ].join('\n\n'),
+                    usedFiles: [],
+                    changes: [],
+                    toolCalls: []
+                };
+                break;
             }
             if (executedCalls === 0) {
                 this.postStatus('The model could not complete a valid project tool call.', 'error');
@@ -3139,6 +3217,11 @@ class DevMateChatViewProvider {
               <p class="field-help">Shared by reasoning and final output.</p>
             </div>
             <div class="profile-field">
+              <label for="settingsToolCallLimit">Tool calls per request</label>
+              <input id="settingsToolCallLimit" type="number" min="4" max="32" step="1" required>
+              <p class="field-help">16 recommended. Too low can stop early; too high adds time, cost, and loop risk.</p>
+            </div>
+            <div class="profile-field">
               <label for="settingsTemperature">Temperature</label>
               <input id="settingsTemperature" type="number" min="0" max="2" step="0.1" required>
               <p class="field-help">Lower values are more deterministic.</p>
@@ -3215,6 +3298,7 @@ class DevMateChatViewProvider {
       settings: {
         timeoutSeconds: 900,
         commandTimeoutSeconds: 300,
+        toolCallLimit: 16,
         maxTokens: 16384,
         temperature: 0.2,
         rememberedCommands: [],
@@ -3258,6 +3342,7 @@ class DevMateChatViewProvider {
     const settingsTimeoutSecondsEl = document.getElementById('settingsTimeoutSeconds');
     const settingsTimeoutHelpEl = document.getElementById('settingsTimeoutHelp');
     const settingsCommandTimeoutSecondsEl = document.getElementById('settingsCommandTimeoutSeconds');
+    const settingsToolCallLimitEl = document.getElementById('settingsToolCallLimit');
     const settingsMaxTokensEl = document.getElementById('settingsMaxTokens');
     const settingsTemperatureEl = document.getElementById('settingsTemperature');
     const rememberedCommandListEl = document.getElementById('rememberedCommandList');
@@ -3325,6 +3410,7 @@ class DevMateChatViewProvider {
       permissionUpdateFilesEl.value = state.permissionPolicy.updateFiles;
       settingsTimeoutSecondsEl.value = String(state.settings.timeoutSeconds);
       settingsCommandTimeoutSecondsEl.value = String(state.settings.commandTimeoutSeconds);
+      settingsToolCallLimitEl.value = String(state.settings.toolCallLimit);
       settingsMaxTokensEl.value = String(state.settings.maxTokens);
       settingsTemperatureEl.value = String(state.settings.temperature);
       renderTimeoutApproximation();
@@ -3351,6 +3437,7 @@ class DevMateChatViewProvider {
       event.preventDefault();
       const timeoutSeconds = Number(settingsTimeoutSecondsEl.value);
       const commandTimeoutSeconds = Number(settingsCommandTimeoutSecondsEl.value);
+      const toolCallLimit = Number(settingsToolCallLimitEl.value);
       const maxTokens = Number(settingsMaxTokensEl.value);
       const temperature = Number(settingsTemperatureEl.value);
       vscode.postMessage({
@@ -3358,6 +3445,7 @@ class DevMateChatViewProvider {
         settings: {
           timeoutSeconds,
           commandTimeoutSeconds,
+          toolCallLimit,
           maxTokens,
           temperature,
           policy: {
@@ -3536,6 +3624,9 @@ class DevMateChatViewProvider {
         if (permissionDialogEl.open) {
           settingsTimeoutSecondsEl.value = String(state.settings.timeoutSeconds);
           settingsCommandTimeoutSecondsEl.value = String(state.settings.commandTimeoutSeconds);
+          settingsToolCallLimitEl.value = String(state.settings.toolCallLimit);
+          settingsMaxTokensEl.value = String(state.settings.maxTokens);
+          settingsTemperatureEl.value = String(state.settings.temperature);
           renderTimeoutApproximation();
         }
       }

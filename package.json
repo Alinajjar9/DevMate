@@ -82,6 +82,13 @@
           "minimum": 10,
           "maximum": 1800,
           "description": "Maximum runtime for each approved DevMate verification command."
+        },
+        "devMate.toolCallLimit": {
+          "type": "integer",
+          "default": 16,
+          "minimum": 4,
+          "maximum": 32,
+          "description": "Maximum project-tool calls in one DevMate request. Higher values can increase runtime, provider cost, and loop risk."
         }
       }
     }
@@ -89,7 +96,7 @@
   "scripts": {
     "compile": "tsc -p ./ --listEmittedFiles",
     "check": "tsc -p ./ --noEmit",
-    "test": "npm run compile && node --test tests/agentTools.test.js tests/apiClient.test.js tests/commandTools.test.js tests/context.test.js tests/conversation.test.js tests/fileChanges.test.js tests/fileTools.test.js tests/llmProfiles.test.js tests/permissions.test.js tests/projectContext.test.js tests/projectIndex.test.js tests/retryPolicy.test.js tests/webviewScript.test.js",
+    "test": "npm run compile && node --test tests/agentTools.test.js tests/apiClient.test.js tests/commandTools.test.js tests/context.test.js tests/conversation.test.js tests/fileChanges.test.js tests/fileTools.test.js tests/llmProfiles.test.js tests/permissions.test.js tests/projectContext.test.js tests/projectIndex.test.js tests/pythonEnvironment.test.js tests/retryPolicy.test.js tests/webviewScript.test.js",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile"
   },

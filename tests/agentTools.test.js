@@ -2,8 +2,14 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  DEFAULT_AGENT_TOOL_CALL_LIMIT,
+  MAX_AGENT_TOOL_CALL_LIMIT,
+  MIN_AGENT_TOOL_CALL_LIMIT,
+  MAX_AGENT_TOOL_HISTORY_CHARACTERS,
   MAX_AGENT_TOOL_RESULT_CHARACTERS,
   agentToolCallSignature,
+  boundedAgentToolCallLimit,
+  compactAgentToolHistory,
   normalizeAgentToolCallForWorkspace,
   normalizeAgentToolPath,
   parseAgentToolCall,
@@ -15,6 +21,26 @@ const workspace = {
   name: 'testing the ai project',
   fsPath: 'C:\\Users\\ali\\Desktop\\testing the ai project'
 };
+
+test('bounds configurable agent tool-call limits', () => {
+  assert.equal(boundedAgentToolCallLimit(undefined), DEFAULT_AGENT_TOOL_CALL_LIMIT);
+  assert.equal(boundedAgentToolCallLimit(1), MIN_AGENT_TOOL_CALL_LIMIT);
+  assert.equal(boundedAgentToolCallLimit(24), 24);
+  assert.equal(boundedAgentToolCallLimit(100), MAX_AGENT_TOOL_CALL_LIMIT);
+});
+
+test('compacts oldest tool results when a higher call limit fills context', () => {
+  const history = Array.from({ length: 10 }, (_, index) => ({
+    name: 'read_file',
+    result: String(index).repeat(10_000)
+  }));
+  const compacted = compactAgentToolHistory(history);
+  assert.ok(compacted.reduce((total, step) => total + step.result.length, 0)
+    <= MAX_AGENT_TOOL_HISTORY_CHARACTERS);
+  assert.match(compacted[0].result, /omitted/);
+  assert.equal(compacted.at(-1).result, history.at(-1).result);
+  assert.equal(history[0].result.length, 10_000);
+});
 
 test('canonicalizes semantically identical tool calls', () => {
   const first = agentToolCallSignature({

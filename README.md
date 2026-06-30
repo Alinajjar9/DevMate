@@ -35,7 +35,7 @@ Retrieval is deterministic and runs entirely in the extension host using BM25-st
 
 ## Agent tools
 
-DevMate can ask the extension host to inspect and improve the open project before answering. Read-only tools support `list_files`, ranged `read_file`, and plain-text `search_code`. In trusted workspaces, Code and Debug additionally receive `create_file`, exact-replacement `edit_file`, and approved `run_command` verification tools. Tool activity appears as compact cards in the conversation, and the model can continue for up to sixteen calls before it must finish its answer.
+DevMate can ask the extension host to inspect and improve the open project before answering. Read-only tools support `list_files`, ranged `read_file`, and plain-text `search_code`. In trusted workspaces, Code and Debug additionally receive `create_file`, exact-replacement `edit_file`, and approved `run_command` verification tools. Tool activity appears as compact cards in the conversation. The per-request tool limit defaults to 16 and is configurable from 4 through 32; older results are compacted first when a longer loop approaches the bounded context budget.
 
 Each request immediately creates a working card in the conversation. It displays the selected model, elapsed time, actual lifecycle phases such as context collection and tool use, and a Cancel button. Routine progress no longer occupies the top status strip; that area is reserved for warnings and errors. The working card is removed when the final assistant message arrives, while completed tool activity remains visible.
 
@@ -57,7 +57,7 @@ DevMate is contributed directly to VS Code's Secondary Side Bar in its own dedic
 
 ## DevMate settings
 
-Use the gear button in the top-right of the DevMate view to configure provider timeout, verification-command timeout, maximum output tokens, temperature, workspace-local create/update permissions, and remembered exact commands. Ideas, Code, and Debug use a compact segmented control on the left side of the top bar.
+Use the gear button in the top-right of the DevMate view to configure provider timeout, verification-command timeout, per-request tool-call limit, maximum output tokens, temperature, workspace-local create/update permissions, and remembered exact commands. Ideas, Code, and Debug use a compact segmented control on the left side of the top bar.
 
 ## Model profiles
 
@@ -88,6 +88,10 @@ If a provider emits a common legacy command shape, DevMate can safely split it i
 The first registry covers common test, lint, type-check, and build commands for JavaScript/TypeScript, Python, Rust, Go, .NET, Maven, and Gradle. Output streams into a bounded chat card, while **Open terminal** exposes the complete VS Code terminal. Commands default to a five-minute limit, can be configured from 10 through 1800 seconds, and are limited to three executions per request. Locally rejected requests do not consume that execution limit.
 
 The working directory is always workspace-relative; omitted values and `.`, `./`, or `.\\` all select the workspace root. If `pytest` is unavailable, the agent is instructed to convert compatible tests to the standard-library `unittest` format and run `python -m unittest <test-file> -v` instead of attempting package installation.
+
+For Python verification, DevMate automatically prefers `.venv`, `venv`, or `env` inside the requested working directory and then the workspace root. Symbolic-link environments are ignored. If verification reports `ModuleNotFoundError`, DevMate stops the agent loop immediately and explains the missing module and selected environment instead of repeatedly requesting blocked installation commands. Installing dependencies remains a manual action.
+
+The tool-call limit controls inspection, edit, and command requests made during one chat turn. A low value can force the model to summarize before it has inspected, edited, and verified the change. A high value gives difficult repairs more room, but can increase latency, provider usage, context size, permission prompts, and the damage caused by a confused model loop. The recommended default is 16; file-mutation and verification-command limits remain independently enforced.
 
 ## Requirements
 
@@ -127,6 +131,8 @@ The health endpoint is available at `http://127.0.0.1:8000/health`. The extensio
 DevMate waits up to fifteen minutes for each model-provider call by default, and the extension automatically adds a 30-second transport buffer. Change **DevMate: Request Timeout Seconds** (`devMate.requestTimeoutSeconds`) in VS Code Settings to any value from 10 through 1800. The value is sent with every request and controls both sides, so changing it does not require a backend restart. `DEVMATE_PROVIDER_TIMEOUT_SECONDS` remains the backend fallback for older clients or requests that omit the setting.
 
 Verification commands default to a five-minute maximum. Configure `devMate.commandTimeoutSeconds` from the in-chat Settings dialog or VS Code Settings. A model-requested shorter timeout is honored; it cannot exceed the configured maximum.
+
+Agent requests default to 16 tool calls. Configure `devMate.toolCallLimit` from 4 through 32 in the same dialog. Raising this value does not raise the separate six-mutation or three-command limits.
 
 Run the backend contract tests with:
 

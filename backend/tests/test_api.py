@@ -4,6 +4,7 @@ import unittest
 from fastapi.testclient import TestClient
 
 from backend.app.main import (
+    MAX_AGENT_TOOL_STEPS,
     MAX_ATTACHED_FILES,
     MAX_CONTEXT_CHARACTERS,
     MAX_PROJECT_CONTEXT_FILES,
@@ -397,6 +398,30 @@ class DevMateApiTests(unittest.TestCase):
         self.assertEqual(provider_request.messages[-2].tool_calls[0].id, "call-1")
         self.assertEqual(provider_request.messages[-1].role, "tool")
         self.assertIn("answer = 42", provider_request.messages[-1].content)
+
+    def test_ask_accepts_the_configurable_tool_history_ceiling(self) -> None:
+        payload = self._ask_payload(scope_type="project", items=[])
+        payload["forceFinalAnswer"] = True
+        payload["toolHistory"] = [
+            {
+                "callId": f"call-{index}",
+                "name": "list_files",
+                "arguments": {"path": ""},
+                "result": "No eligible files.",
+                "isError": False,
+            }
+            for index in range(MAX_AGENT_TOOL_STEPS)
+        ]
+
+        self.assertEqual(self.client.post("/ask", json=payload).status_code, 200)
+        payload["toolHistory"].append({
+            "callId": "one-too-many",
+            "name": "list_files",
+            "arguments": {"path": ""},
+            "result": "No eligible files.",
+            "isError": False,
+        })
+        self.assertEqual(self.client.post("/ask", json=payload).status_code, 422)
 
     def test_ask_exposes_only_requested_mode_tools(self) -> None:
         payload = self._ask_payload(scope_type="project", items=[], mode="debug")

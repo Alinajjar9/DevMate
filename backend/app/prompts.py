@@ -75,7 +75,8 @@ def build_chat_messages(
             "for the workspace root. If an exact replacement fails, read a narrow range around the relevant lines and "
             "copy the current text exactly before retrying. Never try to install a missing test dependency. If pytest "
             "is unavailable, convert the test to Python's built-in unittest format and run "
-            "python -m unittest <test-file> -v."
+            "python -m unittest <test-file> -v. If command output reports ModuleNotFoundError, do not request pip, "
+            "package-manager, shell, or installation commands; explain which module is missing and stop."
         )
     else:
         tool_instruction = (
