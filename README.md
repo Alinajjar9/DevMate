@@ -71,7 +71,7 @@ Provider API keys are sent to the DevMate backend only when its configured URL p
 
 ## Code-mode changes
 
-Code and Debug can now inspect, edit, verify, and repair in one bounded agent loop. New files use complete content, while existing files use sequential exact-text replacements. DevMate shows proposed changes in an in-chat permission card with **Deny**, **Allow once**, and **Always allow these** actions. Every file row includes **Review diff**, which opens VS Code's native diff editor before approval. Approved changes use a VS Code workspace edit, are saved to disk for verification, and participate in the editor's undo flow.
+Code and Debug can now inspect, edit, verify, and repair in one bounded agent loop. New files use complete content, while existing files use sequential exact-text replacements. Exact replacements tolerate the LF-normalized text returned to the model when the underlying file uses CRLF, while preserving the file's original line-ending style. DevMate shows proposed changes in an in-chat permission card with **Deny**, **Allow once**, and **Always allow these** actions. Every file row includes **Review diff**, which opens VS Code's native diff editor before approval. Approved changes use a VS Code workspace edit, are saved to disk for verification, and participate in the editor's undo flow.
 
 Targets with pre-existing unsaved changes are rejected instead of being overwritten or silently saved. The extension rechecks file contents after permission is granted and rejects stale proposals. Mutations are disabled entirely in untrusted workspaces. The earlier final-JSON change format remains accepted for compatibility, while new Code requests use agent editing tools and finish with normal text.
 
@@ -82,6 +82,8 @@ Only workspace-relative text files in the first open folder can be changed. Abso
 ## Verification commands
 
 `run_command` accepts an executable and argument array rather than a raw shell string. Each new exact command asks inside the conversation; **Always allow this command** remembers only that executable, arguments, and working directory for the current workspace. Remembered commands can be revoked from Settings. Verification requires Workspace Trust and VS Code terminal shell integration.
+
+If a provider emits a common legacy command shape, DevMate can safely split it into an executable and arguments before validation. The parsed command still passes through the same strict registry and is executed through VS Code's executable/argument API; it is never passed to a shell as raw text.
 
 The first registry covers common test, lint, type-check, and build commands for JavaScript/TypeScript, Python, Rust, Go, .NET, Maven, and Gradle. Output streams into a bounded chat card, while **Open terminal** exposes the complete VS Code terminal. Commands default to a five-minute limit, can be configured from 10 through 1800 seconds, and are limited to three executions per request. Locally rejected requests do not consume that execution limit.
 

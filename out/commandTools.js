@@ -21,11 +21,30 @@ const blockedWorkingDirectories = new Set([
     '.cache', '__pycache__', '.next', 'target', 'vendor'
 ]);
 function parseRunCommandArguments(value) {
-    if (typeof value.executable !== 'string' || !value.executable.trim()) {
+    let executableValue = value.executable;
+    let argumentsValue = value.args ?? value.arguments;
+    if ((typeof executableValue !== 'string' || !executableValue.trim()) && typeof value.command === 'string') {
+        const commandTokens = parseSimpleCommandText(value.command);
+        executableValue = commandTokens.shift();
+        if (argumentsValue === undefined) {
+            argumentsValue = commandTokens;
+        }
+        else if (commandTokens.length > 0) {
+            throw new Error('run_command cannot combine a full command string with separate arguments.');
+        }
+    }
+    if (typeof executableValue !== 'string' || !executableValue.trim()) {
         throw new Error('run_command requires an executable.');
     }
-    const executable = normalizeExecutable(value.executable);
-    const args = parseArguments(value.args);
+    const executable = normalizeExecutable(executableValue);
+    if (typeof argumentsValue === 'string') {
+        const parsedArguments = parseSimpleCommandText(argumentsValue);
+        if (sameCommandName(parsedArguments[0], executable)) {
+            parsedArguments.shift();
+        }
+        argumentsValue = parsedArguments;
+    }
+    const args = parseArguments(argumentsValue);
     const cwd = normalizeCommandCwd(typeof value.cwd === 'string' ? value.cwd : '');
     const timeoutSeconds = boundedTimeout(value.timeoutSeconds);
     validateVerificationCommand(executable, args);
@@ -170,7 +189,7 @@ function parseArguments(value) {
         return [];
     }
     if (!Array.isArray(value) || value.length > exports.MAX_COMMAND_ARGUMENTS) {
-        throw new Error(`run_command accepts at most ${exports.MAX_COMMAND_ARGUMENTS} string arguments.`);
+        throw new Error(`run_command args must be an array of at most ${exports.MAX_COMMAND_ARGUMENTS} strings.`);
     }
     let totalCharacters = 0;
     return value.map((argument) => {
@@ -183,6 +202,53 @@ function parseArguments(value) {
         }
         return argument;
     });
+}
+function parseSimpleCommandText(value) {
+    if (!value.trim() || value.length > 2_000 || /[\0\r\n]/.test(value)) {
+        throw new Error('The command text is empty or exceeds the safe size limit.');
+    }
+    const tokens = [];
+    let current = '';
+    let quote;
+    let tokenStarted = false;
+    for (const character of value.trim()) {
+        if (quote) {
+            if (character === quote) {
+                quote = undefined;
+            }
+            else {
+                current += character;
+            }
+            tokenStarted = true;
+            continue;
+        }
+        if (character === '"' || character === "'") {
+            quote = character;
+            tokenStarted = true;
+            continue;
+        }
+        if (/\s/.test(character)) {
+            if (tokenStarted) {
+                tokens.push(current);
+                current = '';
+                tokenStarted = false;
+            }
+            continue;
+        }
+        current += character;
+        tokenStarted = true;
+    }
+    if (quote) {
+        throw new Error('The command text contains an unterminated quote.');
+    }
+    if (tokenStarted) {
+        tokens.push(current);
+    }
+    return tokens;
+}
+function sameCommandName(candidate, executable) {
+    return typeof candidate === 'string'
+        && commandName(candidate) === commandName(executable);
 }
 function normalizeCommandCwd(value) {
     const trimmed = value.trim();

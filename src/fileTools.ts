@@ -71,17 +71,21 @@ export function applyExactReplacements(
   let updated = content;
   for (let index = 0; index < replacements.length; index += 1) {
     const replacement = replacements[index];
-    const occurrences = countOccurrences(updated, replacement.oldText, 2);
-    if (occurrences === 0) {
+    const match = findReplacementMatch(updated, replacement.oldText);
+    if (!match) {
       throw new Error(
         `Replacement ${index + 1} did not match the current file. `
         + 'Use read_file around the relevant lines and copy oldText exactly, including broken syntax and whitespace.'
       );
     }
-    if (occurrences > 1) {
+    if (match.occurrences > 1) {
       throw new Error(`Replacement ${index + 1} matched more than once; provide a more specific oldText value.`);
     }
-    updated = updated.replace(replacement.oldText, replacement.newText);
+    const targetEol = lineEndingFor(match.value) ?? lineEndingFor(updated);
+    const newText = targetEol
+      ? normalizeLineEndings(replacement.newText, targetEol)
+      : replacement.newText;
+    updated = updated.replace(match.value, newText);
     if (updated.length > MAX_FILE_CHANGE_CHARACTERS) {
       throw new Error('The edited file exceeds the per-file change limit.');
     }
@@ -90,6 +94,41 @@ export function applyExactReplacements(
     throw new Error('The requested replacements do not change the file.');
   }
   return updated;
+}
+
+function findReplacementMatch(
+  content: string,
+  oldText: string
+): { value: string; occurrences: number } | undefined {
+  const exactOccurrences = countOccurrences(content, oldText, 2);
+  if (exactOccurrences > 0) {
+    return { value: oldText, occurrences: exactOccurrences };
+  }
+  if (!oldText.includes('\n')) {
+    return undefined;
+  }
+
+  const normalized = oldText.replace(/\r\n/g, '\n');
+  const variants = [normalized, normalized.replace(/\n/g, '\r\n')]
+    .filter((value, index, values) => value !== oldText && values.indexOf(value) === index);
+  for (const variant of variants) {
+    const occurrences = countOccurrences(content, variant, 2);
+    if (occurrences > 0) {
+      return { value: variant, occurrences };
+    }
+  }
+  return undefined;
+}
+
+function lineEndingFor(value: string): '\r\n' | '\n' | undefined {
+  if (value.includes('\r\n')) {
+    return '\r\n';
+  }
+  return value.includes('\n') ? '\n' : undefined;
+}
+
+function normalizeLineEndings(value: string, lineEnding: '\r\n' | '\n'): string {
+  return value.replace(/\r\n|\n/g, '\n').replace(/\n/g, lineEnding);
 }
 
 function countOccurrences(content: string, value: string, limit: number): number {

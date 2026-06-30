@@ -30,6 +30,17 @@ test('applies sequential exact replacements', () => {
   assert.equal(updated, 'const value = 2;\nrender(value);');
 });
 
+test('matches model LF edits against CRLF files and preserves CRLF', () => {
+  const content = "first\r\ncontent_type='application/json\r\nlast\r\n";
+  const updated = applyExactReplacements(content, [{
+    oldText: "content_type='application/json\nlast",
+    newText: "content_type='application/json'\nlast"
+  }]);
+
+  assert.equal(updated, "first\r\ncontent_type='application/json'\r\nlast\r\n");
+  assert.equal(updated.replace(/\r\n/g, '').includes('\n'), false);
+});
+
 test('rejects missing, ambiguous, unsafe, and excessive replacements', () => {
   assert.throws(() => applyExactReplacements('one', [
     { oldText: 'two', newText: 'three' }

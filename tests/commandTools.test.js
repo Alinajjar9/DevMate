@@ -25,6 +25,25 @@ test('accepts bounded verification commands', () => {
   }
 });
 
+test('normalizes safe legacy command strings without invoking a shell', () => {
+  assert.deepEqual(parseRunCommandArguments({
+    command: 'python -m unittest test_app.py -v',
+    cwd: '.'
+  }), {
+    executable: 'python',
+    args: ['-m', 'unittest', 'test_app.py', '-v'],
+    cwd: '',
+    timeoutSeconds: 1800
+  });
+  assert.deepEqual(parseRunCommandArguments({
+    executable: 'python',
+    args: 'python -m unittest "test app.py" -v'
+  }).args, ['-m', 'unittest', 'test app.py', '-v']);
+  assert.throws(() => parseRunCommandArguments({
+    command: 'python -m unittest test_app.py && calc'
+  }), /shell operators/);
+});
+
 test('rejects shell, install, write, watch, git, and arbitrary commands', () => {
   const commands = [
     { executable: 'npm', args: ['install'] },
