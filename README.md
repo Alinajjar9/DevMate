@@ -12,7 +12,7 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 - Configurable backend URL and clear offline feedback
 - Real OpenAI-compatible Chat Completions requests
 - Iterative agent tools for project inspection, exact file edits, and approved verification commands
-- In-chat working state with real phases, elapsed time, selected model, and cancellation
+- Animated in-chat working state with real phases, elapsed time, selected model, and cancellation
 - Compact segmented mode controls and a top-right in-chat Settings dialog
 - Mode-aware prompts for Ideas, Code, and Debug
 - Enter-to-send composer with Shift+Enter for new lines

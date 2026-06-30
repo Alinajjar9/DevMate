@@ -15,3 +15,19 @@ test('embedded DevMate webview script has valid JavaScript syntax', () => {
   const script = source.slice(start + marker.length, end);
   assert.doesNotThrow(() => new Function(script));
 });
+
+test('working card has visible motion with a reduced-motion fallback', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'extension.ts'),
+    'utf8'
+  );
+  for (const animation of [
+    'working-card-sheen',
+    'working-edge-travel',
+    'working-indicator-ring',
+    'working-phase-sweep'
+  ]) {
+    assert.match(source, new RegExp('@keyframes\\s+' + animation));
+  }
+  assert.match(source, /@media \(prefers-reduced-motion: reduce\)/);
+});

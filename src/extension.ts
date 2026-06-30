@@ -2944,9 +2944,53 @@ class DevMateChatViewProvider implements
     }
 
     .working-card {
+      position: relative;
+      isolation: isolate;
       width: min(100%, 620px);
       max-width: min(100%, 620px);
       padding: 10px 11px;
+      overflow: hidden;
+    }
+
+    .working-card > * {
+      position: relative;
+      z-index: 1;
+    }
+
+    .working-card[data-state="working"] {
+      animation: working-card-breathe 2.4s ease-in-out infinite;
+    }
+
+    .working-card[data-state="working"]::before {
+      position: absolute;
+      z-index: 0;
+      inset: 0;
+      background: linear-gradient(
+        110deg,
+        transparent 18%,
+        color-mix(in srgb, var(--vscode-progressBar-background, var(--vscode-button-background)) 12%, transparent) 48%,
+        transparent 76%
+      );
+      content: '';
+      pointer-events: none;
+      transform: translateX(-120%);
+      animation: working-card-sheen 3.2s ease-in-out infinite;
+    }
+
+    .working-card[data-state="working"]::after {
+      position: absolute;
+      z-index: 2;
+      top: 0;
+      bottom: auto;
+      left: 0;
+      width: 3px;
+      height: 30%;
+      border-radius: 999px;
+      background: var(--vscode-progressBar-background, var(--vscode-button-background));
+      box-shadow: 0 0 8px var(--vscode-progressBar-background, var(--vscode-button-background));
+      content: '';
+      pointer-events: none;
+      animation: working-edge-travel 1.9s ease-in-out infinite;
     }
 
     .working-header {
@@ -2957,12 +3001,22 @@ class DevMateChatViewProvider implements
     }
 
     .working-indicator {
+      position: relative;
       width: 8px;
       height: 8px;
       flex: 0 0 auto;
       border-radius: 50%;
       background: var(--vscode-progressBar-background, var(--vscode-button-background));
-      animation: tool-pulse 1.1s ease-in-out infinite;
+      animation: working-indicator-core 1.15s ease-in-out infinite;
+    }
+
+    .working-indicator::after {
+      position: absolute;
+      inset: -5px;
+      border: 1px solid var(--vscode-progressBar-background, var(--vscode-button-background));
+      border-radius: 50%;
+      content: '';
+      animation: working-indicator-ring 1.15s ease-out infinite;
     }
 
     .working-card[data-state="cancelled"] .working-indicator,
@@ -2971,11 +3025,26 @@ class DevMateChatViewProvider implements
       background: var(--muted);
     }
 
+    .working-card[data-state="cancelled"] .working-indicator::after,
+    .working-card[data-state="error"] .working-indicator::after {
+      display: none;
+    }
+
     .working-heading {
       min-width: 0;
       color: var(--vscode-foreground);
       font-size: 12px;
       font-weight: 650;
+    }
+
+    .working-card[data-state="working"] .working-heading::after {
+      display: inline-block;
+      width: 0;
+      overflow: hidden;
+      vertical-align: bottom;
+      white-space: nowrap;
+      content: '...';
+      animation: working-ellipsis 1.4s steps(4, end) infinite;
     }
 
     .working-model {
@@ -3006,7 +3075,18 @@ class DevMateChatViewProvider implements
     }
 
     .working-phase[data-status="active"] {
+      margin: -2px -5px;
+      padding: 2px 5px;
+      border-radius: 4px;
       color: var(--vscode-foreground);
+      background: linear-gradient(
+        90deg,
+        transparent 0%,
+        color-mix(in srgb, var(--vscode-progressBar-background, var(--vscode-button-background)) 15%, transparent) 45%,
+        transparent 78%
+      );
+      background-size: 220% 100%;
+      animation: working-phase-sweep 1.8s linear infinite;
     }
 
     .working-phase[data-status="error"] {
@@ -3015,6 +3095,11 @@ class DevMateChatViewProvider implements
 
     .working-phase-icon {
       text-align: center;
+    }
+
+    .working-phase[data-status="active"] .working-phase-icon {
+      color: var(--vscode-progressBar-background, var(--vscode-button-background));
+      animation: working-phase-dot 0.9s ease-in-out infinite;
     }
 
     .working-footer {
@@ -3122,10 +3207,82 @@ class DevMateChatViewProvider implements
       50% { opacity: 1; }
     }
 
+    @keyframes working-card-breathe {
+      0%, 100% {
+        box-shadow: 0 0 0 0 transparent;
+      }
+      50% {
+        box-shadow:
+          0 0 0 1px color-mix(in srgb, var(--vscode-progressBar-background, var(--vscode-button-background)) 28%, transparent),
+          0 5px 18px color-mix(in srgb, var(--vscode-progressBar-background, var(--vscode-button-background)) 10%, transparent);
+      }
+    }
+
+    @keyframes working-card-sheen {
+      0%, 12% { transform: translateX(-120%); }
+      58%, 100% { transform: translateX(120%); }
+    }
+
+    @keyframes working-edge-travel {
+      0% { opacity: 0; transform: translateY(-110%); }
+      18% { opacity: 1; }
+      82% { opacity: 1; }
+      100% { opacity: 0; transform: translateY(440%); }
+    }
+
+    @keyframes working-indicator-core {
+      0%, 100% {
+        opacity: 0.72;
+        transform: scale(0.82);
+      }
+      50% {
+        opacity: 1;
+        transform: scale(1.18);
+      }
+    }
+
+    @keyframes working-indicator-ring {
+      0% { opacity: 0.75; transform: scale(0.45); }
+      78%, 100% { opacity: 0; transform: scale(1.55); }
+    }
+
+    @keyframes working-ellipsis {
+      from { width: 0; }
+      to { width: 1.15em; }
+    }
+
+    @keyframes working-phase-sweep {
+      from { background-position: 115% 0; }
+      to { background-position: -115% 0; }
+    }
+
+    @keyframes working-phase-dot {
+      0%, 100% { opacity: 0.65; transform: translateY(1px) scale(0.82); }
+      50% { opacity: 1; transform: translateY(-1px) scale(1.12); }
+    }
+
     @media (prefers-reduced-motion: reduce) {
+      .working-card[data-state="working"],
+      .working-card[data-state="working"] .working-heading::after,
+      .working-phase[data-status="active"],
+      .working-phase[data-status="active"] .working-phase-icon,
       .working-indicator,
+      .working-indicator::after,
       .tool-activity[data-status="running"] .tool-activity-icon {
         animation: none;
+      }
+
+      .working-card[data-state="working"]::before,
+      .working-card[data-state="working"]::after {
+        display: none;
+      }
+
+      .working-card[data-state="working"] .working-heading::after {
+        width: 1.15em;
+      }
+
+      .working-phase[data-status="active"] {
+        background: transparent;
       }
     }
 
