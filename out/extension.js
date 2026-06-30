@@ -919,7 +919,7 @@ class DevMateChatViewProvider {
             return;
         }
         const config = vscode.workspace.getConfiguration('devMate');
-        const maxTokens = config.get('maxTokens', 4000);
+        const maxTokens = config.get('maxTokens', 16384);
         const temperature = config.get('temperature', 0.2);
         const requestTimeoutSeconds = Math.min(1830, Math.max(30, config.get('requestTimeoutSeconds', 330)));
         const providerApiKey = activeProfile.provider === 'openai'
@@ -932,12 +932,16 @@ class DevMateChatViewProvider {
         const toolHistory = [];
         const toolUsedFiles = new Set();
         const toolSignatures = new Set();
+        let forceFinalAnswer = false;
+        let emptyResponseRecoveryAttempted = false;
         let finalData;
         while (!finalData) {
             if (this.finishCancelledRequest(signal)) {
                 return;
             }
-            const toolsEnabled = toolHistory.length < agentTools_1.MAX_AGENT_TOOL_CALLS;
+            const forceFinalThisTurn = forceFinalAnswer
+                || toolHistory.length >= agentTools_1.MAX_AGENT_TOOL_CALLS;
+            const toolsEnabled = !forceFinalThisTurn;
             const request = {
                 question,
                 mode: message.mode,
@@ -950,17 +954,29 @@ class DevMateChatViewProvider {
                     temperature
                 },
                 toolsEnabled,
+                forceFinalAnswer: forceFinalThisTurn,
                 toolHistory
             };
-            this.postStatus(toolsEnabled && toolHistory.length > 0
-                ? 'Continuing with project context'
-                : 'Generating answer');
+            this.postStatus(forceFinalThisTurn
+                ? 'Requesting concise final answer'
+                : toolsEnabled && toolHistory.length > 0
+                    ? 'Continuing with project context'
+                    : 'Generating answer');
             const result = await (0, client_1.ask)(getBackendUrl(), request, providerApiKey, requestTimeoutSeconds * 1_000, signal);
             if (this.finishCancelledRequest(signal)) {
                 return;
             }
             if (result.status === 'error' || !result.data) {
-                this.postStatus(result.message ?? 'Ask request failed.', 'error');
+                const errorMessage = result.message ?? 'Ask request failed.';
+                if (!forceFinalThisTurn
+                    && !emptyResponseRecoveryAttempted
+                    && isRecoverableEmptyModelResponse(errorMessage)) {
+                    emptyResponseRecoveryAttempted = true;
+                    forceFinalAnswer = true;
+                    this.postStatus('Model returned no final answer — retrying without tools');
+                    continue;
+                }
+                this.postStatus(errorMessage, 'error');
                 return;
             }
             const toolCalls = result.data.toolCalls ?? [];
@@ -981,9 +997,15 @@ class DevMateChatViewProvider {
                     this.postStatus('The model reused an invalid tool-call id.', 'error');
                     return;
                 }
-                const signature = `${toolCall.name}:${JSON.stringify(toolCall.arguments)}`;
+                let signature;
+                try {
+                    signature = (0, agentTools_1.agentToolCallSignature)(toolCall);
+                }
+                catch {
+                    // The executor reports the validated tool error back to the model.
+                }
                 let execution;
-                if (toolSignatures.has(signature)) {
+                if (signature && toolSignatures.has(signature)) {
                     const repeatedResult = 'This identical tool call was already completed. Use its earlier result.';
                     this.postAgentToolActivity(toolCall.id, 'Skipped repeated tool call', toolCall.name, 'error', repeatedResult);
                     execution = {
@@ -996,9 +1018,12 @@ class DevMateChatViewProvider {
                         },
                         usedFiles: []
                     };
+                    forceFinalAnswer = true;
                 }
                 else {
-                    toolSignatures.add(signature);
+                    if (signature) {
+                        toolSignatures.add(signature);
+                    }
                     execution = await this.executeAgentToolCall(toolCall);
                 }
                 if (this.finishCancelledRequest(signal)) {
@@ -3001,6 +3026,12 @@ function describeAgentToolCall(call) {
         title: 'Searching code',
         detail: `"${call.arguments.query}"${call.arguments.path ? ` in ${call.arguments.path}` : ''}`
     };
+}
+function isRecoverableEmptyModelResponse(message) {
+    const normalized = message.toLocaleLowerCase();
+    return normalized.includes('response budget for reasoning')
+        || normalized.includes('empty final answer')
+        || normalized.includes('empty or invalid answer');
 }
 function formatAskResponse(answer, usedFiles) {
     if (usedFiles.length === 0) {

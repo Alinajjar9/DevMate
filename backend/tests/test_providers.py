@@ -114,8 +114,9 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(payload["tools"][0]["function"]["name"], "read_file")
             self.assertEqual(
                 payload["chat_template_kwargs"],
-                {"force_nonempty_content": True},
+                {"enable_thinking": True, "force_nonempty_content": True},
             )
+            self.assertEqual(payload["reasoning_budget"], 600)
             return httpx.Response(
                 200,
                 json={
@@ -156,6 +157,57 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(completion.content)
         self.assertEqual(completion.tool_calls[0].name, "read_file")
         self.assertEqual(completion.tool_calls[0].arguments, '{"path":"src/app.ts"}')
+
+    async def test_disables_nemotron_reasoning_for_a_forced_final_answer(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            self.assertEqual(
+                payload["chat_template_kwargs"],
+                {"enable_thinking": False, "force_nonempty_content": True},
+            )
+            self.assertNotIn("reasoning_budget", payload)
+            self.assertNotIn("tools", payload)
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "Concise final answer"}}]},
+            )
+
+        provider = OpenAICompatibleProvider(transport=httpx.MockTransport(handler))
+
+        completion = await provider.complete(
+            self._request(
+                model="nvidia/nemotron-3-ultra-550b-a55b",
+                force_final_answer=True,
+            )
+        )
+
+        self.assertEqual(completion.content, "Concise final answer")
+
+    async def test_preserves_reasoning_only_completion_metadata(self) -> None:
+        provider = OpenAICompatibleProvider(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200,
+                    json={
+                        "choices": [
+                            {
+                                "finish_reason": "length",
+                                "message": {
+                                    "content": None,
+                                    "reasoning_content": "Internal reasoning only",
+                                },
+                            }
+                        ]
+                    },
+                )
+            )
+        )
+
+        completion = await provider.complete(self._request())
+
+        self.assertIsNone(completion.content)
+        self.assertEqual(completion.finish_reason, "length")
+        self.assertEqual(completion.reasoning_content, "Internal reasoning only")
 
     async def test_serializes_assistant_tool_calls_and_tool_results(self) -> None:
         async def handler(request: httpx.Request) -> httpx.Response:
@@ -247,6 +299,7 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
         model: str = "nvidia/example-model",
         tools: tuple[ChatToolDefinition, ...] = (),
         messages: tuple[ChatMessage, ...] | None = None,
+        force_final_answer: bool = False,
     ) -> ChatCompletionRequest:
         return ChatCompletionRequest(
             provider="openai",
@@ -260,6 +313,7 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
             max_tokens=1200,
             temperature=0.2,
             tools=tools,
+            force_final_answer=force_final_answer,
         )
 
 

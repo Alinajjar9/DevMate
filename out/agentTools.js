@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = exports.MAX_AGENT_SEARCH_RESULTS = exports.MAX_AGENT_LIST_RESULTS = exports.MAX_AGENT_TOOL_CALLS = void 0;
 exports.parseAgentToolCall = parseAgentToolCall;
+exports.agentToolCallSignature = agentToolCallSignature;
 exports.normalizeAgentToolPath = normalizeAgentToolPath;
 exports.truncateAgentToolResult = truncateAgentToolResult;
 exports.MAX_AGENT_TOOL_CALLS = 8;
@@ -49,6 +50,10 @@ function parseAgentToolCall(call) {
         };
     }
     throw new Error('The model requested an unsupported tool.');
+}
+function agentToolCallSignature(call) {
+    const parsed = parseAgentToolCall(call);
+    return `${parsed.name}:${JSON.stringify(parsed.arguments)}`;
 }
 function normalizeAgentToolPath(value, allowRoot = true) {
     const trimmed = value.trim();

@@ -88,6 +88,11 @@ export function parseAgentToolCall(call: AgentToolCall): ParsedAgentToolCall {
   throw new Error('The model requested an unsupported tool.');
 }
 
+export function agentToolCallSignature(call: AgentToolCall): string {
+  const parsed = parseAgentToolCall(call);
+  return `${parsed.name}:${JSON.stringify(parsed.arguments)}`;
+}
+
 export function normalizeAgentToolPath(value: string, allowRoot = true): string {
   const trimmed = value.trim();
   if (!trimmed && allowRoot) {

@@ -3,10 +3,26 @@ const test = require('node:test');
 
 const {
   MAX_AGENT_TOOL_RESULT_CHARACTERS,
+  agentToolCallSignature,
   normalizeAgentToolPath,
   parseAgentToolCall,
   truncateAgentToolResult
 } = require('../out/agentTools');
+
+test('canonicalizes semantically identical tool calls', () => {
+  const first = agentToolCallSignature({
+    id: 'call-1',
+    name: 'read_file',
+    arguments: { path: 'src\\app.ts' }
+  });
+  const second = agentToolCallSignature({
+    id: 'call-2',
+    name: 'read_file',
+    arguments: { ignored: true, path: 'src/app.ts' }
+  });
+
+  assert.equal(first, second);
+});
 
 test('parses bounded read-only tool calls', () => {
   assert.deepEqual(parseAgentToolCall({

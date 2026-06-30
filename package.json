@@ -57,10 +57,10 @@
         },
         "devMate.maxTokens": {
           "type": "number",
-          "default": 4000,
+          "default": 16384,
           "minimum": 128,
           "maximum": 32000,
-          "description": "Maximum response tokens for LLM answers and complete Code-mode file contents."
+          "description": "Maximum response tokens shared by model reasoning, answers, and complete Code-mode file contents."
         },
         "devMate.temperature": {
           "type": "number",

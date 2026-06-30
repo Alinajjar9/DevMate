@@ -45,6 +45,7 @@ export type AskRequest = {
   scope: AskScope;
   settings: LlmSettings;
   toolsEnabled?: boolean;
+  forceFinalAnswer?: boolean;
   toolHistory?: AgentToolStep[];
 };
 

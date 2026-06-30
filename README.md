@@ -33,6 +33,8 @@ Each request immediately creates a working card in the conversation. It displays
 
 Read-only tools run instantly because they cannot modify the project. They remain workspace-bound and use the same exclusions as automatic project context, so dependency/build folders, binary files, lock files, environment files, and credential/key files are unavailable. The backend receives bounded tool results but never receives direct filesystem access.
 
+Tool calls are normalized before loop detection, so formatting differences cannot make DevMate reread the same file indefinitely. If a model repeats a completed tool call or returns reasoning without a final answer, DevMate performs one tools-off final turn. Nemotron 3 requests reserve half of the response budget for reasoning and disable thinking during this recovery turn. The default `devMate.maxTokens` is 16,384 so reasoning models and multi-file Code responses have room to finish.
+
 Terminal execution and model-requested deletion are still blocked. File creation and updates continue through the Code-mode permission flow described below.
 
 ## DevMate view placement

@@ -52,13 +52,22 @@ def build_chat_messages(
     context_items: Sequence[ContextItem],
     tool_steps: Sequence[ToolStep] = (),
     tools_enabled: bool = False,
+    force_final_answer: bool = False,
 ) -> tuple[ChatMessage, ...]:
-    tool_instruction = (
-        "You can inspect the workspace with read-only tools. Use them when the supplied context is insufficient, "
-        "prefer targeted searches and reads, and do not repeat an identical tool call."
-        if tools_enabled
-        else "No more tools are available on this turn. Finish the answer using the context and tool results already supplied."
-    )
+    if force_final_answer:
+        tool_instruction = (
+            "A prior turn did not produce a usable final response. No tools are available now. "
+            "Use the supplied context and tool results to return the concise final answer immediately."
+        )
+    elif tools_enabled:
+        tool_instruction = (
+            "You can inspect the workspace with read-only tools. Use them when the supplied context is insufficient, "
+            "prefer targeted searches and reads, and do not repeat an identical tool call."
+        )
+    else:
+        tool_instruction = (
+            "No more tools are available on this turn. Finish the answer using the context and tool results already supplied."
+        )
     system_message = " ".join(
         [
             "You are DevMate, a concise assistant helping a developer understand and improve a project.",

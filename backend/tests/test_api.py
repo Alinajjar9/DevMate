@@ -362,6 +362,7 @@ class DevMateApiTests(unittest.TestCase):
     def test_ask_replays_tool_history_and_can_disable_more_tools(self) -> None:
         payload = self._ask_payload(scope_type="project", items=[])
         payload["toolsEnabled"] = False
+        payload["forceFinalAnswer"] = True
         payload["toolHistory"] = [
             {
                 "callId": "call-1",
@@ -377,10 +378,35 @@ class DevMateApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         provider_request = self.provider.requests[-1]
         self.assertEqual(provider_request.tools, ())
+        self.assertTrue(provider_request.force_final_answer)
+        self.assertIn("prior turn did not produce", provider_request.messages[0].content)
         self.assertEqual(provider_request.messages[-2].role, "assistant")
         self.assertEqual(provider_request.messages[-2].tool_calls[0].id, "call-1")
         self.assertEqual(provider_request.messages[-1].role, "tool")
         self.assertIn("answer = 42", provider_request.messages[-1].content)
+
+    def test_ask_explains_reasoning_only_responses(self) -> None:
+        self.provider.answer = ChatCompletion(
+            content=None,
+            finish_reason="length",
+            reasoning_content="Internal reasoning only",
+        )
+
+        response = self.client.post(
+            "/ask",
+            json=self._ask_payload(scope_type="project", items=[]),
+        )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(
+            response.json(),
+            {
+                "detail": (
+                    "The model used its response budget for reasoning without producing "
+                    "a final answer. Increase devMate.maxTokens or try again."
+                )
+            },
+        )
 
     def test_ask_rejects_model_requested_unsupported_tools(self) -> None:
         self.provider.answer = ChatCompletion(

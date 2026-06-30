@@ -13,6 +13,7 @@ DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
 DEFAULT_PROVIDER_TIMEOUT_SECONDS = 300.0
 MIN_PROVIDER_TIMEOUT_SECONDS = 10.0
 MAX_PROVIDER_TIMEOUT_SECONDS = 1_800.0
+MAX_REASONING_DIAGNOSTIC_CHARACTERS = 1_000
 
 
 def parse_provider_timeout_seconds(value: str | None) -> float:
@@ -60,6 +61,8 @@ class ChatMessage:
 class ChatCompletion:
     content: str | None
     tool_calls: tuple[ChatToolCall, ...] = ()
+    finish_reason: str | None = None
+    reasoning_content: str | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +75,7 @@ class ChatCompletionRequest:
     max_tokens: int
     temperature: float
     tools: tuple[ChatToolDefinition, ...] = ()
+    force_final_answer: bool = False
 
 
 class ChatProvider(Protocol):
@@ -125,10 +129,15 @@ class OpenAICompatibleProvider:
                 for tool in request.tools
             ]
             payload["tool_choice"] = "auto"
-            if request.model.casefold().startswith("nvidia/nemotron-3-"):
-                payload["chat_template_kwargs"] = {
-                    "force_nonempty_content": True,
-                }
+        if request.model.casefold().startswith("nvidia/nemotron-3-"):
+            payload["chat_template_kwargs"] = {
+                "enable_thinking": not request.force_final_answer,
+                "force_nonempty_content": True,
+            }
+            if not request.force_final_answer:
+                payload["reasoning_budget"] = _nemotron_reasoning_budget(
+                    request.max_tokens
+                )
         if request.provider == "openai" and request.base_url is None:
             payload["max_completion_tokens"] = request.max_tokens
         else:
@@ -198,6 +207,10 @@ def _serialize_message(message: ChatMessage) -> dict[str, object]:
     if message.tool_call_id:
         serialized["tool_call_id"] = message.tool_call_id
     return serialized
+
+
+def _nemotron_reasoning_budget(max_tokens: int) -> int:
+    return max(64, min(8_192, max_tokens // 2))
 
 
 def create_chat_completions_url(
@@ -295,6 +308,18 @@ def _read_completion(payload: object) -> ChatCompletion | None:
         return None
     content_value = message.get("content")
     content = content_value.strip() if isinstance(content_value, str) else None
+    finish_reason_value = first_choice.get("finish_reason")
+    finish_reason = (
+        finish_reason_value.strip()[:120]
+        if isinstance(finish_reason_value, str) and finish_reason_value.strip()
+        else None
+    )
+    reasoning_value = message.get("reasoning_content")
+    reasoning_content = (
+        reasoning_value.strip()[:MAX_REASONING_DIAGNOSTIC_CHARACTERS]
+        if isinstance(reasoning_value, str) and reasoning_value.strip()
+        else None
+    )
     raw_tool_calls = message.get("tool_calls", [])
     if not isinstance(raw_tool_calls, list) or len(raw_tool_calls) > 3:
         return None
@@ -327,6 +352,11 @@ def _read_completion(payload: object) -> ChatCompletion | None:
             )
         )
 
-    if not content and not tool_calls:
+    if not content and not tool_calls and not reasoning_content and not finish_reason:
         return None
-    return ChatCompletion(content=content or None, tool_calls=tuple(tool_calls))
+    return ChatCompletion(
+        content=content or None,
+        tool_calls=tuple(tool_calls),
+        finish_reason=finish_reason,
+        reasoning_content=reasoning_content,
+    )

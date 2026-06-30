@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import {
   MAX_AGENT_TOOL_CALLS,
+  agentToolCallSignature,
   parseAgentToolCall,
   truncateAgentToolResult
 } from './agentTools';
@@ -1261,7 +1262,7 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
 
     const config = vscode.workspace.getConfiguration('devMate');
-    const maxTokens = config.get<number>('maxTokens', 4000);
+    const maxTokens = config.get<number>('maxTokens', 16384);
     const temperature = config.get<number>('temperature', 0.2);
     const requestTimeoutSeconds = Math.min(
       1830,
@@ -1279,13 +1280,17 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const toolHistory: AgentToolStep[] = [];
     const toolUsedFiles = new Set<string>();
     const toolSignatures = new Set<string>();
+    let forceFinalAnswer = false;
+    let emptyResponseRecoveryAttempted = false;
     let finalData: AskResponse | undefined;
 
     while (!finalData) {
       if (this.finishCancelledRequest(signal)) {
         return;
       }
-      const toolsEnabled = toolHistory.length < MAX_AGENT_TOOL_CALLS;
+      const forceFinalThisTurn = forceFinalAnswer
+        || toolHistory.length >= MAX_AGENT_TOOL_CALLS;
+      const toolsEnabled = !forceFinalThisTurn;
       const request: AskRequest = {
         question,
         mode: message.mode,
@@ -1298,11 +1303,14 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           temperature
         },
         toolsEnabled,
+        forceFinalAnswer: forceFinalThisTurn,
         toolHistory
       };
-      this.postStatus(toolsEnabled && toolHistory.length > 0
-        ? 'Continuing with project context'
-        : 'Generating answer');
+      this.postStatus(forceFinalThisTurn
+        ? 'Requesting concise final answer'
+        : toolsEnabled && toolHistory.length > 0
+          ? 'Continuing with project context'
+          : 'Generating answer');
 
       const result = await ask(
         getBackendUrl(),
@@ -1315,7 +1323,18 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         return;
       }
       if (result.status === 'error' || !result.data) {
-        this.postStatus(result.message ?? 'Ask request failed.', 'error');
+        const errorMessage = result.message ?? 'Ask request failed.';
+        if (
+          !forceFinalThisTurn
+          && !emptyResponseRecoveryAttempted
+          && isRecoverableEmptyModelResponse(errorMessage)
+        ) {
+          emptyResponseRecoveryAttempted = true;
+          forceFinalAnswer = true;
+          this.postStatus('Model returned no final answer — retrying without tools');
+          continue;
+        }
+        this.postStatus(errorMessage, 'error');
         return;
       }
 
@@ -1339,9 +1358,14 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           return;
         }
 
-        const signature = `${toolCall.name}:${JSON.stringify(toolCall.arguments)}`;
+        let signature: string | undefined;
+        try {
+          signature = agentToolCallSignature(toolCall);
+        } catch {
+          // The executor reports the validated tool error back to the model.
+        }
         let execution: AgentToolExecution;
-        if (toolSignatures.has(signature)) {
+        if (signature && toolSignatures.has(signature)) {
           const repeatedResult = 'This identical tool call was already completed. Use its earlier result.';
           this.postAgentToolActivity(
             toolCall.id,
@@ -1360,8 +1384,11 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             },
             usedFiles: []
           };
+          forceFinalAnswer = true;
         } else {
-          toolSignatures.add(signature);
+          if (signature) {
+            toolSignatures.add(signature);
+          }
           execution = await this.executeAgentToolCall(toolCall);
         }
         if (this.finishCancelledRequest(signal)) {
@@ -3410,6 +3437,13 @@ function describeAgentToolCall(call: ParsedAgentToolCall): { title: string; deta
     title: 'Searching code',
     detail: `"${call.arguments.query}"${call.arguments.path ? ` in ${call.arguments.path}` : ''}`
   };
+}
+
+function isRecoverableEmptyModelResponse(message: string): boolean {
+  const normalized = message.toLocaleLowerCase();
+  return normalized.includes('response budget for reasoning')
+    || normalized.includes('empty final answer')
+    || normalized.includes('empty or invalid answer');
 }
 
 function formatAskResponse(answer: string, usedFiles: string[]): string {

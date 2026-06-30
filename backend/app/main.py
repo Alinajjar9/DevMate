@@ -130,6 +130,7 @@ class AskRequest(BaseModel):
     scope: AskScope
     settings: LlmSettings
     toolsEnabled: bool = True
+    forceFinalAnswer: bool = False
     toolHistory: list[AgentToolStep] = Field(
         default_factory=list,
         max_length=MAX_AGENT_TOOL_STEPS,
@@ -261,13 +262,15 @@ async def ask(
 ) -> AskResult:
     used_files = _used_files(request.scope)
     api_key = provider_api_key.strip() if provider_api_key else None
+    tools_enabled = request.toolsEnabled and not request.forceFinalAnswer
     messages = build_chat_messages(
         mode=request.mode,
         scope_type=request.scope.type,
         question=request.question,
         context_items=request.scope.items,
         tool_steps=request.toolHistory,
-        tools_enabled=request.toolsEnabled,
+        tools_enabled=tools_enabled,
+        force_final_answer=request.forceFinalAnswer,
     )
     try:
         completion_value = await chat_provider.complete(
@@ -279,7 +282,8 @@ async def ask(
                 messages=messages,
                 max_tokens=request.settings.maxTokens,
                 temperature=request.settings.temperature,
-                tools=AGENT_TOOL_DEFINITIONS if request.toolsEnabled else (),
+                tools=AGENT_TOOL_DEFINITIONS if tools_enabled else (),
+                force_final_answer=request.forceFinalAnswer,
             )
         )
     except ProviderError as error:
@@ -289,7 +293,7 @@ async def ask(
         content=completion_value
     )
     if completion.tool_calls:
-        if not request.toolsEnabled:
+        if not tools_enabled:
             raise HTTPException(status_code=502, detail="The model requested a tool after the tool limit was reached.")
         tool_calls = _parse_agent_tool_calls(completion.tool_calls)
         history_call_ids = {step.callId for step in request.toolHistory}
@@ -306,7 +310,18 @@ async def ask(
 
     answer = completion.content
     if not answer:
-        raise HTTPException(status_code=502, detail="The model provider returned an empty answer.")
+        if completion.reasoning_content or completion.finish_reason in {"length", "max_tokens"}:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "The model used its response budget for reasoning without producing "
+                    "a final answer. Increase devMate.maxTokens or try again."
+                ),
+            )
+        raise HTTPException(
+            status_code=502,
+            detail="The model provider returned an empty final answer.",
+        )
 
     changes: list[FileChange] = []
     if request.mode == "code":
