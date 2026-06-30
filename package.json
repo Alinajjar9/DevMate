@@ -82,7 +82,7 @@
   "scripts": {
     "compile": "tsc -p ./ --listEmittedFiles",
     "check": "tsc -p ./ --noEmit",
-    "test": "npm run compile && node --test tests/agentTools.test.js tests/apiClient.test.js tests/context.test.js tests/fileChanges.test.js tests/llmProfiles.test.js tests/permissions.test.js tests/projectContext.test.js tests/retryPolicy.test.js",
+    "test": "npm run compile && node --test tests/agentTools.test.js tests/apiClient.test.js tests/context.test.js tests/fileChanges.test.js tests/llmProfiles.test.js tests/permissions.test.js tests/projectContext.test.js tests/projectIndex.test.js tests/retryPolicy.test.js",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile"
   },

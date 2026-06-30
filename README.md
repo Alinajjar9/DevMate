@@ -5,7 +5,7 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 ## Current Features
 
 - Bottom-right Status Bar launcher that opens DevMate as a sidebar Webview View
-- Modes: Ideas, Code, Debug
+- Modes: Code (default), Ideas, Debug
 - Scope tabs: Project, File, Selection
 - Shows where DevMate will focus
 - Local FastAPI backend with `/health` and `/ask`
@@ -19,12 +19,18 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 - Distinct You and DevMate message bubbles
 - In-chat approval cards and separate create/update instant-permission controls for Code mode
 - Bounded Selection and active File context with language and truncation metadata
-- Bounded Project context with safe file discovery and deterministic relevance ranking
+- Persistent workspace-local Project index with bounded chunk retrieval and deterministic fallback ranking
 - Workspace-only multi-file attachments with a compact expandable selected-file list
 - Compact model selector with reusable OpenAI and Ollama profiles
 - API keys stored in VS Code SecretStorage instead of ordinary extension settings
 
-RAG and library-documentation retrieval are not connected yet.
+Local lexical RAG is connected for Project scope. Semantic embeddings and library-documentation retrieval are not connected yet.
+
+## Local project retrieval
+
+The first Project-scope request creates a private index in VS Code's workspace storage. DevMate splits up to 500 eligible text files into overlapping, line-aware chunks and retrieves the strongest matching excerpt from each relevant file. Later requests reuse unchanged entries and automatically refresh files whose saved size or modification time changed.
+
+Retrieval is deterministic and runs entirely in the extension host using BM25-style lexical scoring; it does not send the project to a separate embedding provider. Explicit attachments remain first-class context and are excluded from automatic retrieval to avoid sending the same file twice. If the stored index is unavailable, incompatible, or has no useful match, DevMate falls back to the earlier path-and-keyword project ranking.
 
 ## Agent tools
 
@@ -76,8 +82,10 @@ DevMate requires Visual Studio Code 1.96.2+, Node.js 20+, npm 9+, and Python 3.1
 - **File** sends the active editor's current in-memory content, including unsaved changes.
 - Each context item is limited to the first 20,000 characters. DevMate displays when content was truncated.
 - The webview receives only scope metadata; source content stays in the extension-host-to-backend request path.
-- **Project** considers at most 200 text files up to 200 KB each, ranks them using question keywords, paths, and content, and sends at most five files.
+- **Project** incrementally indexes up to 500 eligible text files. It stores at most the first 40,000 characters per file as overlapping 3,200-character chunks and sends at most five relevant excerpts.
 - Project context is limited to 8,000 characters per file and 40,000 characters in total.
+- The index is stored in VS Code's private workspace storage rather than inside the repository. Saved file changes are detected on the next Project request.
+- If indexed retrieval has no useful match, Project scope falls back to the original 200-file deterministic path-and-keyword ranking.
 - Dependency, build, cache, binary, lock, environment, credential, and private-key files are excluded from automatic discovery.
 - **Attach files** lists only eligible files from the folder opened in VS Code; it does not open a system-wide filesystem browser.
 - Up to five attached files can be added or removed and combined with Project, File, or Selection scope. Each attachment is capped at 8,000 characters within the shared 40,000-character budget.

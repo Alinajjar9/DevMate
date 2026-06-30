@@ -54,6 +54,15 @@ import {
 } from './projectContext';
 import type { ProjectFileCandidate } from './projectContext';
 import {
+  createEmptyProjectIndex,
+  createIndexedProjectFile,
+  MAX_PROJECT_INDEX_FILES,
+  parseStoredProjectIndex,
+  PROJECT_INDEX_FILE_NAME,
+  retrieveProjectChunks
+} from './projectIndex';
+import type { ProjectIndex, RetrievedProjectChunk } from './projectIndex';
+import {
   isRetryableProviderFailure,
   providerRetryDelay,
   PROVIDER_RETRY_DELAYS_MS
@@ -182,6 +191,7 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private readonly extensionUri: vscode.Uri;
   private pendingPermission?: PendingPermissionRequest;
   private activeRequest?: AbortController;
+  private projectIndexCache?: ProjectIndex;
 
   constructor(private readonly extensionContext: vscode.ExtensionContext) {
     this.extensionUri = extensionContext.extensionUri;
@@ -440,6 +450,47 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       return attachmentItems;
     }
 
+    const remainingFiles = MAX_PROJECT_FILES - attachmentItems.length;
+    const remainingCharacters = MAX_PROJECT_CONTEXT_CHARACTERS - includedAttachmentCharacters;
+    const attachedPaths = new Set(attachmentItems.map((item) => item.filePath));
+
+    try {
+      this.postStatus('Refreshing project index');
+      const refresh = await this.refreshProjectIndex(folder);
+      this.postStatus(refresh.changedFiles > 0 || refresh.removedFiles > 0
+        ? `Indexed ${formatFileCount(refresh.index.files.length)}`
+        : 'Searching project index');
+      const chunks = retrieveProjectChunks(refresh.index, question, {
+        maxChunks: remainingFiles,
+        maxCharacters: Math.max(0, remainingCharacters - remainingFiles * 64),
+        excludedFilePaths: attachedPaths
+      });
+      const retrievedItems = this.createRetrievedProjectItems(chunks, remainingCharacters);
+      if (retrievedItems.length > 0) {
+        this.postStatus(`Retrieved ${formatExcerptCount(retrievedItems.length)}`);
+        return [...attachmentItems, ...retrievedItems];
+      }
+      this.postStatus('Using project context fallback');
+    } catch {
+      this.postStatus('Project index unavailable — using fallback');
+    }
+
+    return this.collectRankedProjectItems(
+      folder,
+      question,
+      attachmentItems,
+      remainingFiles,
+      remainingCharacters
+    );
+  }
+
+  private async collectRankedProjectItems(
+    folder: vscode.WorkspaceFolder,
+    question: string,
+    attachmentItems: AskContextItem[],
+    remainingFiles: number,
+    remainingCharacters: number
+  ): Promise<AskScope['items']> {
     let uris: vscode.Uri[];
     try {
       uris = await vscode.workspace.findFiles(
@@ -470,11 +521,158 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       (candidate) => !attachedPaths.has(candidate.filePath)
     );
     const discoveredItems = selectProjectContext(discoveryCandidates, question, {
-      maxFiles: MAX_PROJECT_FILES - attachmentItems.length,
-      maxCharacters: MAX_PROJECT_CONTEXT_CHARACTERS - includedAttachmentCharacters
+      maxFiles: remainingFiles,
+      maxCharacters: remainingCharacters
     });
 
     return [...attachmentItems, ...discoveredItems];
+  }
+
+  private createRetrievedProjectItems(
+    chunks: RetrievedProjectChunk[],
+    maxCharacters: number
+  ): AskContextItem[] {
+    const items: AskContextItem[] = [];
+    let remainingCharacters = Math.max(0, maxCharacters);
+    for (const chunk of chunks) {
+      if (items.length >= MAX_PROJECT_FILES || remainingCharacters <= 0) {
+        break;
+      }
+      const lineLabel = chunk.startLine === chunk.endLine
+        ? `line ${chunk.startLine}`
+        : `lines ${chunk.startLine}-${chunk.endLine}`;
+      const content = `[Local index excerpt: ${lineLabel}]\n${chunk.content}`;
+      const item = createBoundedContextItem(
+        'file',
+        chunk.filePath,
+        chunk.languageId,
+        content,
+        Math.min(MAX_PROJECT_FILE_CHARACTERS, remainingCharacters)
+      );
+      item.totalCharacters = Math.max(item.includedCharacters, chunk.totalCharacters);
+      item.truncated = item.includedCharacters < item.totalCharacters;
+      items.push(item);
+      remainingCharacters -= item.includedCharacters;
+    }
+    return items;
+  }
+
+  private async refreshProjectIndex(folder: vscode.WorkspaceFolder): Promise<{
+    index: ProjectIndex;
+    changedFiles: number;
+    removedFiles: number;
+  }> {
+    const workspacePath = folder.uri.scheme === 'file'
+      ? folder.uri.fsPath
+      : folder.uri.toString();
+    const existingIndex = await this.loadProjectIndex(workspacePath);
+    const existingFiles = new Map(
+      existingIndex.files.map((file) => [normalizeRelativeWorkspacePath(file.relativePath), file])
+    );
+    const uris = (await vscode.workspace.findFiles(
+      new vscode.RelativePattern(folder, '**/*'),
+      PROJECT_EXCLUDE_GLOB,
+      MAX_PROJECT_INDEX_FILES
+    )).filter((uri) => !shouldSkipProjectFile(vscode.workspace.asRelativePath(uri, false)))
+      .sort((left, right) => vscode.workspace.asRelativePath(left, false).localeCompare(
+        vscode.workspace.asRelativePath(right, false)
+      ));
+
+    const indexedFiles: ProjectIndex['files'] = [];
+    let changedFiles = 0;
+    const batchSize = 20;
+    for (let offset = 0; offset < uris.length; offset += batchSize) {
+      const batchFiles = await Promise.all(uris.slice(offset, offset + batchSize).map(async (uri) => {
+        const relativePath = normalizeRelativeWorkspacePath(
+          vscode.workspace.asRelativePath(uri, false)
+        );
+        try {
+          const stat = await vscode.workspace.fs.stat(uri);
+          if ((stat.type & vscode.FileType.File) === 0 || stat.size > MAX_PROJECT_FILE_BYTES) {
+            return undefined;
+          }
+          const existing = existingFiles.get(relativePath);
+          if (existing && existing.size === stat.size && existing.modifiedAt === stat.mtime) {
+            return existing;
+          }
+          const candidate = await this.readProjectCandidate(uri);
+          if (!candidate) {
+            return undefined;
+          }
+          changedFiles += 1;
+          return createIndexedProjectFile(candidate, stat.size, stat.mtime);
+        } catch {
+          return undefined;
+        }
+      }));
+      for (const file of batchFiles) {
+        if (file) {
+          indexedFiles.push(file);
+        }
+      }
+    }
+
+    const indexedPaths = new Set(indexedFiles.map((file) => file.relativePath));
+    const removedFiles = existingIndex.files.filter(
+      (file) => !indexedPaths.has(normalizeRelativeWorkspacePath(file.relativePath))
+    ).length;
+    const index: ProjectIndex = {
+      ...createEmptyProjectIndex(workspacePath),
+      files: indexedFiles
+    };
+    this.projectIndexCache = index;
+    if (changedFiles > 0 || removedFiles > 0 || existingIndex.files.length === 0) {
+      try {
+        await this.persistProjectIndex(index);
+      } catch {
+        // Retrieval can continue from memory when private workspace storage is unavailable.
+      }
+    }
+    return { index, changedFiles, removedFiles };
+  }
+
+  private async loadProjectIndex(workspacePath: string): Promise<ProjectIndex> {
+    if (this.projectIndexCache?.workspacePath === workspacePath) {
+      return this.projectIndexCache;
+    }
+    const emptyIndex = createEmptyProjectIndex(workspacePath);
+    const storageUri = this.projectIndexStorageUri();
+    if (!storageUri) {
+      this.projectIndexCache = emptyIndex;
+      return emptyIndex;
+    }
+
+    try {
+      const bytes = await vscode.workspace.fs.readFile(storageUri);
+      const parsed = parseStoredProjectIndex(
+        JSON.parse(new TextDecoder('utf-8').decode(bytes)) as unknown,
+        workspacePath
+      );
+      this.projectIndexCache = parsed ?? emptyIndex;
+    } catch {
+      this.projectIndexCache = emptyIndex;
+    }
+    return this.projectIndexCache;
+  }
+
+  private async persistProjectIndex(index: ProjectIndex): Promise<void> {
+    const storageUri = this.projectIndexStorageUri();
+    const storageDirectory = this.extensionContext.storageUri;
+    if (!storageUri || !storageDirectory) {
+      return;
+    }
+    await vscode.workspace.fs.createDirectory(storageDirectory);
+    await vscode.workspace.fs.writeFile(
+      storageUri,
+      new TextEncoder().encode(JSON.stringify(index))
+    );
+  }
+
+  private projectIndexStorageUri(): vscode.Uri | undefined {
+    const storageDirectory = this.extensionContext.storageUri;
+    return storageDirectory
+      ? vscode.Uri.joinPath(storageDirectory, PROJECT_INDEX_FILE_NAME)
+      : undefined;
   }
 
   private async collectAttachmentItems(
@@ -2572,8 +2770,8 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   <main class="app">
     <header class="toolbar">
       <div class="mode-tabs" role="group" aria-label="Assistant mode">
-        <button class="mode-button" type="button" data-mode="ideas" aria-pressed="true">Ideas</button>
-        <button class="mode-button" type="button" data-mode="code" aria-pressed="false">Code</button>
+        <button class="mode-button" type="button" data-mode="ideas" aria-pressed="false">Ideas</button>
+        <button class="mode-button" type="button" data-mode="code" aria-pressed="true">Code</button>
         <button class="mode-button" type="button" data-mode="debug" aria-pressed="false">Debug</button>
       </div>
       <button
@@ -2781,7 +2979,7 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const state = {
-      mode: 'ideas',
+      mode: 'code',
       scope: {
         kind: 'project',
         label: 'Project',
@@ -3748,4 +3946,8 @@ function formatContextSize(includedCharacters: number, totalCharacters: number, 
 
 function formatFileCount(count: number): string {
   return count === 1 ? '1 file' : `${count} files`;
+}
+
+function formatExcerptCount(count: number): string {
+  return count === 1 ? '1 relevant project excerpt' : `${count} relevant project excerpts`;
 }
