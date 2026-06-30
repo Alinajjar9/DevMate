@@ -35,7 +35,7 @@ Retrieval is deterministic and runs entirely in the extension host using BM25-st
 
 ## Agent tools
 
-DevMate can ask the extension host to inspect and improve the open project before answering. Read-only tools support `list_files`, ranged `read_file`, and plain-text `search_code`. In trusted workspaces, Code and Debug additionally receive `create_file`, exact-replacement `edit_file`, and approved `run_command` verification tools. Tool activity appears as compact cards in the conversation. The per-request tool limit defaults to 16 and is configurable from 4 through 32; older results are compacted first when a longer loop approaches the bounded context budget.
+DevMate can ask the extension host to inspect and improve the open project before answering. Read-only tools support `list_files`, ranged `read_file`, and plain-text `search_code`. In trusted workspaces, Code and Debug additionally receive `create_file`, exact-replacement `edit_file`, approved `run_command` verification, and manifest-based `install_dependencies` tools. Tool activity appears as compact cards in the conversation. The per-request tool limit defaults to 16 and is configurable from 4 through 32; older results are compacted first when a longer loop approaches the bounded context budget.
 
 Each request immediately creates a working card in the conversation. It displays the selected model, elapsed time, actual lifecycle phases such as context collection and tool use, and a Cancel button. Routine progress no longer occupies the top status strip; that area is reserved for warnings and errors. The working card is removed when the final assistant message arrives, while completed tool activity remains visible.
 
@@ -49,7 +49,7 @@ If a model repeats another completed tool call or returns reasoning without a fi
 
 Completed user/assistant turns are retained in bounded memory for the current Extension Host session, so follow-ups such as “okay, do it” keep the immediately preceding task context. The newest six turns are kept within a 20,000-character limit. This history is not yet persisted after VS Code or the Extension Host restarts.
 
-Model-requested deletion, rename, move, dependency installation, arbitrary shells, Git commands, servers, generators, and writable formatters remain blocked.
+Model-requested deletion, rename, move, arbitrary dependency commands, arbitrary shells, Git commands, servers, generators, and writable formatters remain blocked.
 
 ## DevMate view placement
 
@@ -89,9 +89,11 @@ The first registry covers common test, lint, type-check, and build commands for 
 
 The working directory is always workspace-relative; omitted values and `.`, `./`, or `.\\` all select the workspace root. If `pytest` is unavailable, the agent is instructed to convert compatible tests to the standard-library `unittest` format and run `python -m unittest <test-file> -v` instead of attempting package installation.
 
-For Python verification, DevMate automatically prefers `.venv`, `venv`, or `env` inside the requested working directory and then the workspace root. Symbolic-link environments are ignored. If verification reports `ModuleNotFoundError`, DevMate stops the agent loop immediately and explains the missing module and selected environment instead of repeatedly requesting blocked installation commands. Installing dependencies remains a manual action.
+For Python verification, DevMate automatically prefers `.venv`, `venv`, or `env` inside the requested working directory and then the workspace root. Symbolic-link environments are ignored. If verification reports `ModuleNotFoundError`, Code or Debug can inspect or create a requirements manifest, request installation permission, install into the project environment, and then rerun verification.
 
-The tool-call limit controls inspection, edit, and command requests made during one chat turn. A low value can force the model to summarize before it has inspected, edited, and verified the change. A high value gives difficult repairs more room, but can increase latency, provider usage, context size, permission prompts, and the damage caused by a confused model loop. The recommended default is 16; file-mutation and verification-command limits remain independently enforced.
+`install_dependencies` is deliberately narrower than a terminal command. It accepts only a workspace-relative `requirements.txt` or `requirements-*.txt` containing up to 100 simple registry requirements within 64 KB. URLs, local paths, editable installs, nested manifests, index options, environment markers, blocked directories, dirty files, symbolic links, and stale approvals are rejected. Installation always asks once in chat and can never be remembered. If no supported environment exists, DevMate creates `.venv`; package output streams into the tool card and remains cancellable with the configured command timeout. Packages may execute build or installation code, so the approval card states that risk explicitly.
+
+The tool-call limit controls inspection, edit, install, and command requests made during one chat turn. A low value can force the model to summarize before it has inspected, edited, and verified the change. A high value gives difficult repairs more room, but can increase latency, provider usage, context size, permission prompts, and the damage caused by a confused model loop. The recommended default is 16; file-mutation, dependency-installation, and verification-command limits remain independently enforced.
 
 ## Requirements
 
@@ -132,7 +134,7 @@ DevMate waits up to fifteen minutes for each model-provider call by default, and
 
 Verification commands default to a five-minute maximum. Configure `devMate.commandTimeoutSeconds` from the in-chat Settings dialog or VS Code Settings. A model-requested shorter timeout is honored; it cannot exceed the configured maximum.
 
-Agent requests default to 16 tool calls. Configure `devMate.toolCallLimit` from 4 through 32 in the same dialog. Raising this value does not raise the separate six-mutation or three-command limits.
+Agent requests default to 16 tool calls. Configure `devMate.toolCallLimit` from 4 through 32 in the same dialog. Raising this value does not raise the separate six-mutation, one-installation, or three-command limits.
 
 Run the backend contract tests with:
 

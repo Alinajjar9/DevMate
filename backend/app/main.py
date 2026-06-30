@@ -37,6 +37,7 @@ AgentToolName = Literal[
     "search_code",
     "create_file",
     "edit_file",
+    "install_dependencies",
     "run_command",
 ]
 READ_ONLY_AGENT_TOOLS: tuple[AgentToolName, ...] = (
@@ -47,6 +48,7 @@ READ_ONLY_AGENT_TOOLS: tuple[AgentToolName, ...] = (
 MUTATING_AGENT_TOOLS: tuple[AgentToolName, ...] = (
     "create_file",
     "edit_file",
+    "install_dependencies",
     "run_command",
 )
 
@@ -322,6 +324,30 @@ AGENT_TOOL_DEFINITIONS = (
                 },
             },
             "required": ["path", "replacements"],
+            "additionalProperties": False,
+        },
+    ),
+    ChatToolDefinition(
+        name="install_dependencies",
+        description=(
+            "Install Python dependencies from one validated requirements*.txt manifest into a project-local virtual "
+            "environment. Use only after verification reports a missing dependency. This always requires explicit "
+            "user approval; never use run_command for pip or package installation."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "manifestPath": {
+                    "type": "string",
+                    "description": "Path to requirements.txt or requirements-*.txt relative to the open workspace.",
+                },
+                "timeoutSeconds": {
+                    "type": "integer",
+                    "minimum": 10,
+                    "maximum": 1800,
+                },
+            },
+            "required": ["manifestPath"],
             "additionalProperties": False,
         },
     ),

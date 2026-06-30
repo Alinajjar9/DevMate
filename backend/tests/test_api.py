@@ -373,6 +373,33 @@ class DevMateApiTests(unittest.TestCase):
         )
         self.assertEqual(len(self.provider.requests[-1].tools), 3)
 
+    def test_ask_returns_manifest_dependency_install_tool_calls(self) -> None:
+        self.provider.answer = ChatCompletion(
+            content=None,
+            tool_calls=(
+                ChatToolCall(
+                    id="install-1",
+                    name="install_dependencies",
+                    arguments='{"manifestPath":"requirements.txt","timeoutSeconds":600}',
+                ),
+            ),
+        )
+        payload = self._ask_payload(scope_type="project", items=[], mode="code")
+        payload["enabledTools"] = ["install_dependencies"]
+        payload["agentEditsEnabled"] = True
+
+        response = self.client.post("/ask", json=payload)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["toolCalls"], [{
+            "id": "install-1",
+            "name": "install_dependencies",
+            "arguments": {
+                "manifestPath": "requirements.txt",
+                "timeoutSeconds": 600,
+            },
+        }])
+
     def test_ask_replays_tool_history_and_can_disable_more_tools(self) -> None:
         payload = self._ask_payload(scope_type="project", items=[])
         payload["toolsEnabled"] = False
@@ -425,7 +452,9 @@ class DevMateApiTests(unittest.TestCase):
 
     def test_ask_exposes_only_requested_mode_tools(self) -> None:
         payload = self._ask_payload(scope_type="project", items=[], mode="debug")
-        payload["enabledTools"] = ["read_file", "edit_file", "run_command"]
+        payload["enabledTools"] = [
+            "read_file", "edit_file", "install_dependencies", "run_command"
+        ]
         payload["agentEditsEnabled"] = True
 
         response = self.client.post("/ask", json=payload)
@@ -433,12 +462,14 @@ class DevMateApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             [tool.name for tool in self.provider.requests[-1].tools],
-            ["read_file", "edit_file", "run_command"],
+            ["read_file", "edit_file", "install_dependencies", "run_command"],
         )
         self.assertIn("apply the smallest focused fix", self.provider.requests[-1].messages[0].content)
 
         ideas_payload = self._ask_payload(scope_type="project", items=[], mode="ideas")
-        ideas_payload["enabledTools"] = ["read_file", "edit_file", "run_command"]
+        ideas_payload["enabledTools"] = [
+            "read_file", "edit_file", "install_dependencies", "run_command"
+        ]
         response = self.client.post("/ask", json=ideas_payload)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(

@@ -152,6 +152,18 @@ test('parses verification command calls through the safe registry', () => {
   });
 });
 
+test('parses manifest-based dependency installation calls', () => {
+  assert.deepEqual(parseAgentToolCall({
+    id: 'dependencies',
+    name: 'install_dependencies',
+    arguments: { manifestPath: 'backend/requirements.txt', timeoutSeconds: 900 }
+  }).arguments, {
+    manifestPath: 'backend/requirements.txt',
+    cwd: 'backend',
+    timeoutSeconds: 900
+  });
+});
+
 test('parses bounded read-only tool calls', () => {
   assert.deepEqual(parseAgentToolCall({
     id: 'call-1',

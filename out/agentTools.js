@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MAX_AGENT_TOOL_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = exports.MAX_AGENT_SEARCH_RESULTS = exports.MAX_AGENT_LIST_RESULTS = exports.MAX_AGENT_COMMAND_CALLS = exports.MAX_AGENT_FILE_MUTATIONS = exports.MAX_AGENT_TOOL_CALL_LIMIT = exports.MIN_AGENT_TOOL_CALL_LIMIT = exports.DEFAULT_AGENT_TOOL_CALL_LIMIT = void 0;
+exports.MAX_AGENT_TOOL_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = exports.MAX_AGENT_SEARCH_RESULTS = exports.MAX_AGENT_LIST_RESULTS = exports.MAX_AGENT_DEPENDENCY_INSTALLS = exports.MAX_AGENT_COMMAND_CALLS = exports.MAX_AGENT_FILE_MUTATIONS = exports.MAX_AGENT_TOOL_CALL_LIMIT = exports.MIN_AGENT_TOOL_CALL_LIMIT = exports.DEFAULT_AGENT_TOOL_CALL_LIMIT = void 0;
 exports.boundedAgentToolCallLimit = boundedAgentToolCallLimit;
 exports.compactAgentToolHistory = compactAgentToolHistory;
 exports.parseAgentToolCall = parseAgentToolCall;
@@ -11,12 +11,14 @@ exports.normalizeAgentToolPath = normalizeAgentToolPath;
 exports.truncateAgentToolResult = truncateAgentToolResult;
 const crypto_1 = require("crypto");
 const commandTools_1 = require("./commandTools");
+const dependencyTools_1 = require("./dependencyTools");
 const fileTools_1 = require("./fileTools");
 exports.DEFAULT_AGENT_TOOL_CALL_LIMIT = 16;
 exports.MIN_AGENT_TOOL_CALL_LIMIT = 4;
 exports.MAX_AGENT_TOOL_CALL_LIMIT = 32;
 exports.MAX_AGENT_FILE_MUTATIONS = 6;
 exports.MAX_AGENT_COMMAND_CALLS = 3;
+exports.MAX_AGENT_DEPENDENCY_INSTALLS = 1;
 exports.MAX_AGENT_LIST_RESULTS = 200;
 exports.MAX_AGENT_SEARCH_RESULTS = 50;
 exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = 10_000;
@@ -99,6 +101,13 @@ function parseAgentToolCall(call) {
             arguments: (0, fileTools_1.parseEditFileArguments)(call.arguments)
         };
     }
+    if (call.name === 'install_dependencies') {
+        return {
+            id: call.id,
+            name: call.name,
+            arguments: (0, dependencyTools_1.parseInstallDependenciesArguments)(call.arguments)
+        };
+    }
     if (call.name === 'run_command') {
         return {
             id: call.id,
@@ -111,9 +120,11 @@ function parseAgentToolCall(call) {
 function normalizeAgentToolCallForWorkspace(call, workspace) {
     const argumentName = call.name === 'run_command'
         ? 'cwd'
-        : ['list_files', 'read_file', 'search_code', 'create_file', 'edit_file'].includes(call.name)
-            ? 'path'
-            : undefined;
+        : call.name === 'install_dependencies'
+            ? 'manifestPath'
+            : ['list_files', 'read_file', 'search_code', 'create_file', 'edit_file'].includes(call.name)
+                ? 'path'
+                : undefined;
     if (!argumentName || typeof call.arguments[argumentName] !== 'string') {
         return call;
     }

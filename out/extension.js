@@ -43,6 +43,7 @@ const client_1 = require("./api/client");
 const context_1 = require("./context");
 const conversation_1 = require("./conversation");
 const commandTools_1 = require("./commandTools");
+const dependencyTools_1 = require("./dependencyTools");
 const pythonEnvironment_1 = require("./pythonEnvironment");
 const fileChanges_1 = require("./fileChanges");
 const fileTools_1 = require("./fileTools");
@@ -60,6 +61,9 @@ class StartedCommandError extends Error {
         this.missingDependency = missingDependency;
         this.pythonEnvironment = pythonEnvironment;
     }
+}
+class StartedDependencyInstallError extends Error {
+    installAttempted = true;
 }
 function activate(context) {
     const chatViewProvider = new DevMateChatViewProvider(context);
@@ -990,8 +994,9 @@ class DevMateChatViewProvider {
         }
         await vscode.commands.executeCommand('vscode.diff', diff.originalUri, diff.proposedUri, `DevMate: ${diff.path}`, { preview: true });
     }
-    requestCommandPermission(signature, label, cwd) {
-        if (this.getRememberedCommands().some((command) => command.signature === signature)) {
+    requestCommandPermission(signature, label, cwd, options = {}) {
+        const rememberable = options.rememberable !== false;
+        if (rememberable && this.getRememberedCommands().some((command) => command.signature === signature)) {
             return Promise.resolve(true);
         }
         this.pendingCommandPermission?.resolve(false);
@@ -1001,13 +1006,17 @@ class DevMateChatViewProvider {
                 id: requestId,
                 signature,
                 label: `${label} · ${cwd || 'workspace root'}`,
+                rememberable,
                 resolve
             };
             this.postMessage({
                 command: 'commandPermissionRequest',
                 requestId,
                 label,
-                cwd: cwd || 'Workspace root'
+                cwd: cwd || 'Workspace root',
+                rememberable,
+                title: options.title,
+                warning: options.warning
             });
         });
     }
@@ -1017,7 +1026,7 @@ class DevMateChatViewProvider {
             return;
         }
         this.pendingCommandPermission = undefined;
-        if (decision === 'allowAlways') {
+        if (decision === 'allowAlways' && pending.rememberable) {
             const updated = (0, permissions_1.rememberCommand)(this.getRememberedCommands(), {
                 signature: pending.signature,
                 label: pending.label
@@ -1025,7 +1034,7 @@ class DevMateChatViewProvider {
             await this.extensionContext.workspaceState.update(permissions_1.REMEMBERED_COMMANDS_STORAGE_KEY, updated);
             this.postSettingsState();
         }
-        pending.resolve(decision !== 'deny');
+        pending.resolve(decision === 'allowOnce' || (decision === 'allowAlways' && pending.rememberable));
     }
     async readProjectCandidate(uri) {
         const relativePath = vscode.workspace.asRelativePath(uri, false);
@@ -1076,7 +1085,8 @@ class DevMateChatViewProvider {
         this.postAgentToolActivity(call.id, activity.title, activity.detail, 'running');
         try {
             const execution = await this.runAgentTool(parsedCall, remainingMutationCharacters);
-            this.postAgentToolActivity(call.id, activity.title, activity.detail, 'completed', execution.resultSummary, parsedCall.name === 'run_command' && this.commandTerminals.has(parsedCall.id));
+            this.postAgentToolActivity(call.id, activity.title, activity.detail, 'completed', execution.resultSummary, (parsedCall.name === 'run_command' || parsedCall.name === 'install_dependencies')
+                && this.commandTerminals.has(parsedCall.id));
             return {
                 step: {
                     callId: parsedCall.id,
@@ -1090,12 +1100,15 @@ class DevMateChatViewProvider {
                 mutationApplied: execution.mutationApplied,
                 commandAttempted: execution.commandAttempted,
                 missingDependency: execution.missingDependency,
-                pythonEnvironment: execution.pythonEnvironment
+                pythonEnvironment: execution.pythonEnvironment,
+                installAttempted: execution.installAttempted,
+                environmentChanged: execution.environmentChanged
             };
         }
         catch (error) {
             const result = error instanceof Error ? error.message : 'The tool could not be completed.';
-            this.postAgentToolActivity(call.id, activity.title, activity.detail, 'error', result, parsedCall.name === 'run_command' && this.commandTerminals.has(parsedCall.id));
+            this.postAgentToolActivity(call.id, activity.title, activity.detail, 'error', result, (parsedCall.name === 'run_command' || parsedCall.name === 'install_dependencies')
+                && this.commandTerminals.has(parsedCall.id));
             return {
                 step: {
                     callId: parsedCall.id,
@@ -1112,7 +1125,8 @@ class DevMateChatViewProvider {
                     : undefined,
                 pythonEnvironment: error instanceof StartedCommandError
                     ? error.pythonEnvironment
-                    : undefined
+                    : undefined,
+                installAttempted: error instanceof StartedDependencyInstallError
             };
         }
     }
@@ -1225,6 +1239,9 @@ class DevMateChatViewProvider {
                 usedFiles: [candidate.filePath],
                 mutationCharacters: 0
             };
+        }
+        if (call.name === 'install_dependencies') {
+            return this.runDependencyInstallation(call, folder);
         }
         if (call.name === 'run_command') {
             return this.runVerificationCommand(call, folder);
@@ -1397,6 +1414,217 @@ class DevMateChatViewProvider {
             commandAttempted: true
         };
     }
+    async runDependencyInstallation(call, folder) {
+        if (!vscode.workspace.isTrusted) {
+            throw new Error('Trust this workspace before allowing DevMate to install dependencies.');
+        }
+        if (folder.uri.scheme !== 'file') {
+            throw new Error('Python dependency installation currently requires a local filesystem workspace.');
+        }
+        const initialManifest = await this.readDependencyManifest(folder, call.arguments.manifestPath);
+        const cwdUri = call.arguments.cwd
+            ? vscode.Uri.joinPath(folder.uri, ...call.arguments.cwd.split('/'))
+            : folder.uri;
+        const probeCommand = {
+            executable: process.platform === 'win32' ? 'py' : 'python3',
+            args: [],
+            cwd: call.arguments.cwd,
+            timeoutSeconds: call.arguments.timeoutSeconds
+        };
+        const existingPython = await this.resolveWorkspacePythonCommand(probeCommand, folder);
+        const targetEnvironment = [call.arguments.cwd, '.venv'].filter(Boolean).join('/');
+        const willCreateEnvironment = !existingPython.environment;
+        if (willCreateEnvironment) {
+            const targetUri = vscode.Uri.joinPath(folder.uri, ...targetEnvironment.split('/'));
+            try {
+                await vscode.workspace.fs.stat(targetUri);
+                throw new Error(`${targetEnvironment} already exists but does not contain a supported Python interpreter. `
+                    + 'Repair or remove it manually before installing dependencies.');
+            }
+            catch (error) {
+                if (!(error instanceof vscode.FileSystemError && error.code === 'FileNotFound')) {
+                    throw error;
+                }
+            }
+        }
+        const environmentLabel = existingPython.environment ?? targetEnvironment;
+        const requirementSummary = initialManifest.requirements.length === 1
+            ? initialManifest.requirements[0]
+            : `${initialManifest.requirements.length} requirements`;
+        const allowed = await this.requestCommandPermission((0, crypto_1.randomUUID)(), `${willCreateEnvironment ? `Create ${targetEnvironment} and install` : 'Install'} ${requirementSummary} from ${call.arguments.manifestPath}`, call.arguments.cwd, {
+            rememberable: false,
+            title: 'Permission required to install Python dependencies',
+            warning: 'This downloads packages and may execute package build or installation code. Installation is restricted to the validated manifest and project-local virtual environment.'
+        });
+        if (!allowed) {
+            throw new Error('Permission to install dependencies was denied.');
+        }
+        if (!vscode.workspace.isTrusted) {
+            throw new Error('Workspace Trust changed while installation permission was pending; nothing was installed.');
+        }
+        const currentManifest = await this.readDependencyManifest(folder, call.arguments.manifestPath);
+        if (currentManifest.content !== initialManifest.content) {
+            throw new Error('The dependency manifest changed during approval; review the updated file and try again.');
+        }
+        let approvedPython = existingPython;
+        if (willCreateEnvironment) {
+            const targetUri = vscode.Uri.joinPath(folder.uri, ...targetEnvironment.split('/'));
+            try {
+                await vscode.workspace.fs.stat(targetUri);
+                throw new Error(`${targetEnvironment} appeared during approval; inspect it before trying again.`);
+            }
+            catch (error) {
+                if (!(error instanceof vscode.FileSystemError && error.code === 'FileNotFound')) {
+                    throw error;
+                }
+            }
+        }
+        else {
+            approvedPython = await this.resolveWorkspacePythonCommand(probeCommand, folder);
+            if (approvedPython.environment !== existingPython.environment) {
+                throw new Error('The selected Python environment changed during approval; inspect it and try again.');
+            }
+        }
+        const signal = this.activeRequest?.signal ?? new AbortController().signal;
+        if (signal.aborted) {
+            throw new Error('The dependency installation was cancelled.');
+        }
+        const configuredTimeout = vscode.workspace.getConfiguration('devMate').get('commandTimeoutSeconds', commandTools_1.DEFAULT_COMMAND_TIMEOUT_SECONDS);
+        const timeoutSeconds = Math.min(call.arguments.timeoutSeconds, commandTools_1.MAX_COMMAND_TIMEOUT_SECONDS, Math.max(commandTools_1.MIN_COMMAND_TIMEOUT_SECONDS, configuredTimeout));
+        const terminal = vscode.window.createTerminal({
+            name: `DevMate: install ${path.posix.basename(call.arguments.manifestPath)}`,
+            cwd: cwdUri,
+            isTransient: true
+        });
+        this.commandTerminals.set(call.id, terminal);
+        const shellIntegration = await this.waitForShellIntegration(terminal, signal);
+        if (!shellIntegration) {
+            terminal.dispose();
+            this.commandTerminals.delete(call.id);
+            throw new Error('VS Code terminal shell integration was unavailable after 5 seconds; dependencies were not installed.');
+        }
+        const startedAt = Date.now();
+        const deadline = startedAt + timeoutSeconds * 1_000;
+        let combinedOutput = '';
+        const runStep = async (executable, args, label) => {
+            const remainingMilliseconds = Math.max(1, deadline - Date.now());
+            combinedOutput = (0, commandTools_1.sanitizeCommandOutput)(`${combinedOutput}${combinedOutput ? '\n' : ''}> ${label}\n`);
+            const step = await this.executeTerminalStep(terminal, shellIntegration, executable, args, remainingMilliseconds, signal, (output) => {
+                combinedOutput = (0, commandTools_1.sanitizeCommandOutput)(combinedOutput + output);
+                this.postAgentToolActivity(call.id, 'Installing Python dependencies', `${call.arguments.manifestPath} → ${environmentLabel}`, 'running', combinedOutput, true);
+            });
+            if (step.state === 'cancelled') {
+                this.commandTerminals.delete(call.id);
+                throw new StartedDependencyInstallError('The dependency installation was cancelled.');
+            }
+            if (step.state === 'timeout') {
+                this.commandTerminals.delete(call.id);
+                throw new StartedDependencyInstallError(`Dependency installation timed out after ${timeoutSeconds} seconds.\n\n${(0, commandTools_1.boundedModelCommandOutput)(combinedOutput)}`);
+            }
+            if (step.exitCode !== 0) {
+                throw new StartedDependencyInstallError([
+                    `${label} failed with exit code ${step.exitCode ?? 'unknown'}.`,
+                    (0, commandTools_1.boundedModelCommandOutput)(combinedOutput)
+                ].join('\n\n'));
+            }
+        };
+        let pythonExecutable = approvedPython.command.executable;
+        if (willCreateEnvironment) {
+            const launcher = process.platform === 'win32' ? 'py' : 'python3';
+            await runStep(launcher, ['-m', 'venv', '.venv'], `${launcher} -m venv .venv`);
+            const createdCandidate = (0, pythonEnvironment_1.workspacePythonCandidates)(call.arguments.cwd)[0];
+            await this.assertNoWorkspaceSymlink(folder, createdCandidate, false);
+            const createdUri = vscode.Uri.joinPath(folder.uri, ...createdCandidate.split('/'));
+            const createdStat = await vscode.workspace.fs.stat(createdUri);
+            if ((createdStat.type & vscode.FileType.File) === 0) {
+                throw new StartedDependencyInstallError('The virtual environment was created without a usable Python interpreter.');
+            }
+            pythonExecutable = createdUri.fsPath;
+        }
+        const manifestName = path.posix.basename(call.arguments.manifestPath);
+        await runStep(pythonExecutable, ['-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '-r', manifestName], `${environmentLabel} -m pip install -r ${manifestName}`);
+        const durationSeconds = Math.max(0, (Date.now() - startedAt) / 1_000);
+        const result = [
+            `Manifest: ${call.arguments.manifestPath}`,
+            `Python environment: ${environmentLabel}`,
+            `Installed requirements: ${initialManifest.requirements.join(', ')}`,
+            `Duration: ${durationSeconds.toFixed(1)} seconds`,
+            (0, commandTools_1.boundedModelCommandOutput)(combinedOutput)
+        ].join('\n');
+        return {
+            result,
+            resultSummary: `Installed ${initialManifest.requirements.length} ${initialManifest.requirements.length === 1 ? 'requirement' : 'requirements'} into ${environmentLabel}`,
+            usedFiles: [initialManifest.uri.fsPath],
+            mutationCharacters: 0,
+            installAttempted: true,
+            environmentChanged: true
+        };
+    }
+    async readDependencyManifest(folder, manifestPath) {
+        await this.assertNoWorkspaceSymlink(folder, manifestPath, false);
+        const uri = vscode.Uri.joinPath(folder.uri, ...manifestPath.split('/'));
+        const openDocument = vscode.workspace.textDocuments.find((document) => document.uri.toString() === uri.toString());
+        if (openDocument?.isDirty) {
+            throw new Error(`Save or discard your unsaved changes in ${manifestPath} before installing dependencies.`);
+        }
+        const stat = await vscode.workspace.fs.stat(uri);
+        if ((stat.type & vscode.FileType.File) === 0 || stat.size > dependencyTools_1.MAX_DEPENDENCY_MANIFEST_BYTES) {
+            throw new Error('The dependency manifest is not a supported text file or exceeds 64 KB.');
+        }
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        if ((0, projectContext_1.containsBinaryData)(bytes)) {
+            throw new Error('The dependency manifest contains binary data.');
+        }
+        let content;
+        try {
+            content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        }
+        catch {
+            throw new Error('The dependency manifest must be valid UTF-8 text.');
+        }
+        return {
+            uri,
+            content,
+            requirements: (0, dependencyTools_1.validatePythonRequirementsManifest)(content)
+        };
+    }
+    async executeTerminalStep(terminal, shellIntegration, executable, args, timeoutMilliseconds, signal, onOutput) {
+        const execution = shellIntegration.executeCommand(executable, args);
+        const outputReader = (async () => {
+            for await (const data of execution.read()) {
+                onOutput(data);
+            }
+        })();
+        const outcome = await new Promise((resolve) => {
+            let settled = false;
+            const finish = (value) => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                clearTimeout(timeout);
+                signal.removeEventListener('abort', cancel);
+                endDisposable.dispose();
+                resolve(value);
+            };
+            const endDisposable = vscode.window.onDidEndTerminalShellExecution((event) => {
+                if (event.execution === execution) {
+                    finish({ state: 'completed', exitCode: event.exitCode });
+                }
+            });
+            const cancel = () => {
+                terminal.dispose();
+                finish({ state: 'cancelled' });
+            };
+            const timeout = setTimeout(() => {
+                terminal.dispose();
+                finish({ state: 'timeout' });
+            }, timeoutMilliseconds);
+            signal.addEventListener('abort', cancel, { once: true });
+        });
+        await Promise.race([outputReader, wait(250)]);
+        return outcome;
+    }
     async resolveWorkspacePythonCommand(command, folder) {
         if (!(0, pythonEnvironment_1.isPythonVerificationCommand)(command) || folder.uri.scheme !== 'file') {
             return { command };
@@ -1483,13 +1711,16 @@ class DevMateChatViewProvider {
             activity: { id, title, detail, status, result, canOpenTerminal }
         });
     }
-    enabledAgentTools(mode, fileMutationCalls, commandCalls) {
+    enabledAgentTools(mode, fileMutationCalls, commandCalls, dependencyInstallCalls) {
         const tools = ['list_files', 'read_file', 'search_code'];
         if (mode === 'ideas' || !vscode.workspace.isTrusted) {
             return tools;
         }
         if (fileMutationCalls < agentTools_1.MAX_AGENT_FILE_MUTATIONS) {
             tools.push('create_file', 'edit_file');
+        }
+        if (dependencyInstallCalls < agentTools_1.MAX_AGENT_DEPENDENCY_INSTALLS) {
+            tools.push('install_dependencies');
         }
         if (commandCalls < agentTools_1.MAX_AGENT_COMMAND_CALLS) {
             tools.push('run_command');
@@ -1598,10 +1829,10 @@ class DevMateChatViewProvider {
         let fileMutationCalls = 0;
         let mutationCharacters = 0;
         let commandCalls = 0;
+        let dependencyInstallCalls = 0;
         let workspaceRevision = 0;
         let forceFinalAnswer = false;
         let emptyResponseRecoveryAttempted = false;
-        let dependencyBlocker;
         let finalData;
         while (!finalData) {
             if (this.finishCancelledRequest(signal)) {
@@ -1611,7 +1842,7 @@ class DevMateChatViewProvider {
                 || toolHistory.length >= toolCallLimit;
             const enabledTools = forceFinalThisTurn
                 ? []
-                : this.enabledAgentTools(message.mode, fileMutationCalls, commandCalls);
+                : this.enabledAgentTools(message.mode, fileMutationCalls, commandCalls, dependencyInstallCalls);
             const toolsEnabled = enabledTools.length > 0;
             const request = {
                 question,
@@ -1696,6 +1927,7 @@ class DevMateChatViewProvider {
                 let execution;
                 const isFileMutation = toolCall.name === 'create_file' || toolCall.name === 'edit_file';
                 const isCommand = toolCall.name === 'run_command';
+                const isDependencyInstall = toolCall.name === 'install_dependencies';
                 const isReadOnly = toolCall.name === 'list_files'
                     || toolCall.name === 'read_file'
                     || toolCall.name === 'search_code';
@@ -1709,9 +1941,15 @@ class DevMateChatViewProvider {
                     execution = this.rejectedToolExecution(toolCall, 'DevMate reached the verification-command limit for this request.');
                     forceFinalAnswer = true;
                 }
+                else if (isDependencyInstall
+                    && dependencyInstallCalls >= agentTools_1.MAX_AGENT_DEPENDENCY_INSTALLS) {
+                    execution = this.rejectedToolExecution(toolCall, 'DevMate reached the dependency-installation limit for this request.');
+                    forceFinalAnswer = true;
+                }
                 else if (signature
                     && priorSignature
                     && (isFileMutation
+                        || isDependencyInstall
                         || (repeatedAtCurrentRevision && (!isReadOnly || priorSignature.executions >= 2)))) {
                     const repeatedResult = 'This identical tool call was already completed. Use its earlier result.';
                     this.postAgentToolActivity(toolCall.id, 'Skipped repeated tool call', toolCall.name, 'error', repeatedResult);
@@ -1745,7 +1983,19 @@ class DevMateChatViewProvider {
                     if (isCommand && execution.commandAttempted) {
                         commandCalls += 1;
                     }
-                    if (signature && (!execution.step.isError || execution.commandAttempted)) {
+                    if (isDependencyInstall && execution.installAttempted) {
+                        dependencyInstallCalls += 1;
+                    }
+                    if (execution.environmentChanged) {
+                        workspaceRevision += 1;
+                    }
+                    if (isDependencyInstall
+                        && execution.step.isError
+                        && /permission to install dependencies was denied/i.test(execution.step.result)) {
+                        forceFinalAnswer = true;
+                    }
+                    if (signature
+                        && (!execution.step.isError || execution.commandAttempted || execution.installAttempted)) {
                         const previous = toolSignatures.get(signature);
                         toolSignatures.set(signature, {
                             revision: workspaceRevision,
@@ -1761,31 +2011,6 @@ class DevMateChatViewProvider {
                 toolHistory.push(execution.step);
                 execution.usedFiles.forEach((file) => toolUsedFiles.add(file));
                 executedCalls += 1;
-                if (execution.missingDependency) {
-                    dependencyBlocker = {
-                        moduleName: execution.missingDependency,
-                        environment: execution.pythonEnvironment
-                    };
-                    break;
-                }
-            }
-            if (dependencyBlocker) {
-                const environment = dependencyBlocker.environment
-                    ? `the workspace environment ${dependencyBlocker.environment}`
-                    : 'the Python interpreter found on PATH';
-                finalData = {
-                    answer: [
-                        `Verification stopped because Python module "${dependencyBlocker.moduleName}" is not installed in ${environment}.`,
-                        'DevMate did not attempt to install it because dependency installation is blocked for safety.',
-                        dependencyBlocker.environment
-                            ? `Install the project's declared dependencies into ${dependencyBlocker.environment}, then ask DevMate to rerun verification.`
-                            : 'Create or activate a workspace virtual environment, install the project dependencies there, then ask DevMate to rerun verification. DevMate will automatically prefer .venv, venv, or env on the next run.'
-                    ].join('\n\n'),
-                    usedFiles: [],
-                    changes: [],
-                    toolCalls: []
-                };
-                break;
             }
             if (executedCalls === 0) {
                 this.postStatus('The model could not complete a valid project tool call.', 'error');
@@ -3265,6 +3490,13 @@ class DevMateChatViewProvider {
               </span>
               <span id="workspaceTrustBadge" class="permission-blocked-badge" hidden>Workspace untrusted</span>
             </div>
+            <div class="permission-setting-row">
+              <span class="permission-setting-copy">
+                <strong>Python dependency installation</strong>
+                <span>Validated requirements manifests always require one-time approval and install only into a project virtual environment.</span>
+              </span>
+              <span class="permission-blocked-badge">Always ask</span>
+            </div>
             <ul id="rememberedCommandList" class="remembered-command-list"></ul>
             <button id="clearRememberedCommands" class="action-button secondary" type="button">Clear remembered commands</button>
           </div>
@@ -3641,7 +3873,9 @@ class DevMateChatViewProvider {
       }
 
       if (message.command === 'commandPermissionRequest') {
-        updateWorkingTurn('Waiting for command permission');
+        updateWorkingTurn(message.rememberable === false
+          ? 'Waiting for dependency permission'
+          : 'Waiting for command permission');
         appendCommandPermissionRequest(message);
       }
 
@@ -4048,7 +4282,7 @@ class DevMateChatViewProvider {
 
       const title = document.createElement('h3');
       title.className = 'permission-title';
-      title.textContent = 'Permission required to run a command';
+      title.textContent = message.title || 'Permission required to run a command';
       card.appendChild(title);
 
       const command = document.createElement('code');
@@ -4063,7 +4297,8 @@ class DevMateChatViewProvider {
 
       const warning = document.createElement('p');
       warning.className = 'permission-summary';
-      warning.textContent = 'Verification commands can execute code from this trusted workspace.';
+      warning.textContent = message.warning
+        || 'Verification commands can execute code from this trusted workspace.';
       card.appendChild(warning);
 
       const actions = document.createElement('div');
@@ -4095,7 +4330,9 @@ class DevMateChatViewProvider {
         actions.appendChild(button);
       };
       addDecisionButton('Deny', 'deny');
-      addDecisionButton('Always allow this command', 'allowAlways');
+      if (message.rememberable !== false) {
+        addDecisionButton('Always allow this command', 'allowAlways');
+      }
       addDecisionButton('Allow once', 'allowOnce', true);
       card.appendChild(actions);
       card.appendChild(resolution);
@@ -4371,6 +4608,12 @@ function describeAgentToolCall(call) {
         return {
             title: 'Editing file',
             detail: call.arguments.path
+        };
+    }
+    if (call.name === 'install_dependencies') {
+        return {
+            title: 'Installing Python dependencies',
+            detail: call.arguments.manifestPath
         };
     }
     if (call.name === 'run_command') {

@@ -73,10 +73,12 @@ def build_chat_messages(
             "repeat an identical tool call unnecessarily. Every tool path is relative to the already-open workspace "
             "root: never include an absolute path or repeat the workspace folder name. Use an empty path or cwd '.' "
             "for the workspace root. If an exact replacement fails, read a narrow range around the relevant lines and "
-            "copy the current text exactly before retrying. Never try to install a missing test dependency. If pytest "
+            "copy the current text exactly before retrying. Never use run_command, a shell, or a package manager directly "
+            "to install dependencies. If pytest "
             "is unavailable, convert the test to Python's built-in unittest format and run "
-            "python -m unittest <test-file> -v. If command output reports ModuleNotFoundError, do not request pip, "
-            "package-manager, shell, or installation commands; explain which module is missing and stop."
+            "python -m unittest <test-file> -v. If verification reports ModuleNotFoundError, inspect or create a simple "
+            "requirements*.txt manifest and use install_dependencies. After a successful installation, rerun the same "
+            "verification command. If installation is denied or fails, explain the blocker and stop."
         )
     else:
         tool_instruction = (

@@ -40,3 +40,13 @@ test('settings expose the bounded tool-call limit', () => {
   assert.match(source, /id="settingsToolCallLimit"[^>]+min="4"[^>]+max="32"/);
   assert.match(source, /toolCallLimit:\s*16/);
 });
+
+test('dependency installation permission cannot be remembered', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'extension.ts'),
+    'utf8'
+  );
+  assert.match(source, /Permission required to install Python dependencies/);
+  assert.match(source, /rememberable:\s*false/);
+  assert.match(source, /if \(message\.rememberable !== false\)/);
+});

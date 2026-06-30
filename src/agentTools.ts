@@ -1,5 +1,7 @@
 import { createHash } from 'crypto';
 import { parseRunCommandArguments } from './commandTools';
+import { parseInstallDependenciesArguments } from './dependencyTools';
+import type { InstallDependenciesToolArguments } from './dependencyTools';
 import {
   parseCreateFileArguments,
   parseEditFileArguments
@@ -11,6 +13,7 @@ export const MIN_AGENT_TOOL_CALL_LIMIT = 4;
 export const MAX_AGENT_TOOL_CALL_LIMIT = 32;
 export const MAX_AGENT_FILE_MUTATIONS = 6;
 export const MAX_AGENT_COMMAND_CALLS = 3;
+export const MAX_AGENT_DEPENDENCY_INSTALLS = 1;
 export const MAX_AGENT_LIST_RESULTS = 200;
 export const MAX_AGENT_SEARCH_RESULTS = 50;
 export const MAX_AGENT_TOOL_RESULT_CHARACTERS = 10_000;
@@ -46,6 +49,7 @@ export type AgentToolName =
   | 'search_code'
   | 'create_file'
   | 'edit_file'
+  | 'install_dependencies'
   | 'run_command';
 
 export type AgentToolCall = {
@@ -99,6 +103,7 @@ export type ParsedAgentToolCall =
   | { id: string; name: 'search_code'; arguments: SearchCodeToolArguments }
   | { id: string; name: 'create_file'; arguments: CreateFileToolArguments }
   | { id: string; name: 'edit_file'; arguments: EditFileToolArguments }
+  | { id: string; name: 'install_dependencies'; arguments: InstallDependenciesToolArguments }
   | { id: string; name: 'run_command'; arguments: RunCommandToolArguments };
 
 export function parseAgentToolCall(call: AgentToolCall): ParsedAgentToolCall {
@@ -176,6 +181,14 @@ export function parseAgentToolCall(call: AgentToolCall): ParsedAgentToolCall {
     };
   }
 
+  if (call.name === 'install_dependencies') {
+    return {
+      id: call.id,
+      name: call.name,
+      arguments: parseInstallDependenciesArguments(call.arguments)
+    };
+  }
+
   if (call.name === 'run_command') {
     return {
       id: call.id,
@@ -193,6 +206,8 @@ export function normalizeAgentToolCallForWorkspace(
 ): AgentToolCall {
   const argumentName = call.name === 'run_command'
     ? 'cwd'
+    : call.name === 'install_dependencies'
+      ? 'manifestPath'
     : ['list_files', 'read_file', 'search_code', 'create_file', 'edit_file'].includes(call.name)
       ? 'path'
       : undefined;
