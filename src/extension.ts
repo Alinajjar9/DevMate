@@ -11,6 +11,7 @@ import type { AgentToolCall, ParsedAgentToolCall } from './agentTools';
 import { ask, health } from './api/client';
 import type {
   AgentToolStep,
+  ApiResult,
   AskContextItem,
   AskRequest,
   AskResponse,
@@ -53,6 +54,11 @@ import {
   shouldSkipProjectFile
 } from './projectContext';
 import type { ProjectFileCandidate } from './projectContext';
+import {
+  isRetryableProviderFailure,
+  providerRetryDelay,
+  PROVIDER_RETRY_DELAYS_MS
+} from './retryPolicy';
 
 type ScopeKind = 'project' | 'activeFile' | 'selection';
 
@@ -1220,6 +1226,48 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
   }
 
+  private async askWithProviderRetries(
+    backendUrl: string,
+    request: AskRequest,
+    providerApiKey: string | undefined,
+    timeoutMilliseconds: number,
+    signal: AbortSignal
+  ): Promise<{ result: ApiResult<AskResponse>; retriesExhausted: boolean }> {
+    let retryNumber = 0;
+    while (true) {
+      const result = await ask(
+        backendUrl,
+        request,
+        providerApiKey,
+        timeoutMilliseconds,
+        signal
+      );
+      if (!isRetryableProviderFailure(result)) {
+        return { result, retriesExhausted: false };
+      }
+
+      retryNumber += 1;
+      const delay = providerRetryDelay(retryNumber);
+      if (delay === undefined) {
+        return { result, retriesExhausted: true };
+      }
+      this.postStatus(
+        `Provider busy — retrying ${retryNumber}/${PROVIDER_RETRY_DELAYS_MS.length} in ${delay / 1_000}s`
+      );
+      const delayCompleted = await waitForRetryDelay(delay, signal);
+      if (!delayCompleted) {
+        return {
+          result: {
+            status: 'error',
+            message: 'Request cancelled.',
+            errorKind: 'cancelled'
+          },
+          retriesExhausted: false
+        };
+      }
+    }
+  }
+
   private async answerQuestion(
     message: Extract<WebviewMessage, { command: 'ask' }>,
     signal: AbortSignal
@@ -1264,9 +1312,9 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const config = vscode.workspace.getConfiguration('devMate');
     const maxTokens = config.get<number>('maxTokens', 16384);
     const temperature = config.get<number>('temperature', 0.2);
-    const requestTimeoutSeconds = Math.min(
-      1830,
-      Math.max(30, config.get<number>('requestTimeoutSeconds', 330))
+    const modelTimeoutSeconds = Math.min(
+      1800,
+      Math.max(10, config.get<number>('requestTimeoutSeconds', 900))
     );
 
     const providerApiKey = activeProfile.provider === 'openai'
@@ -1300,7 +1348,8 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           model: activeProfile.model,
           baseUrl: activeProfile.baseUrl,
           maxTokens,
-          temperature
+          temperature,
+          timeoutSeconds: modelTimeoutSeconds
         },
         toolsEnabled,
         forceFinalAnswer: forceFinalThisTurn,
@@ -1312,13 +1361,14 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           ? 'Continuing with project context'
           : 'Generating answer');
 
-      const result = await ask(
+      const providerAttempt = await this.askWithProviderRetries(
         getBackendUrl(),
         request,
         providerApiKey,
-        requestTimeoutSeconds * 1_000,
+        (modelTimeoutSeconds + 30) * 1_000,
         signal
       );
+      const result = providerAttempt.result;
       if (this.finishCancelledRequest(signal)) {
         return;
       }
@@ -1333,6 +1383,13 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           forceFinalAnswer = true;
           this.postStatus('Model returned no final answer — retrying without tools');
           continue;
+        }
+        if (providerAttempt.retriesExhausted) {
+          this.postMessage({
+            command: 'requestFailed',
+            message: errorMessage,
+            retryable: true
+          });
         }
         this.postStatus(errorMessage, 'error');
         return;
@@ -1991,7 +2048,8 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       font-variant-numeric: tabular-nums;
     }
 
-    .working-cancel {
+    .working-cancel,
+    .working-retry {
       height: 24px;
       padding: 0 9px;
       border-radius: 4px;
@@ -2000,7 +2058,13 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       font-size: 10px;
     }
 
-    .working-cancel[hidden] {
+    .working-retry {
+      color: var(--vscode-button-foreground);
+      background: var(--vscode-button-background);
+    }
+
+    .working-cancel[hidden],
+    .working-retry[hidden] {
       display: none;
     }
 
@@ -2599,6 +2663,7 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       },
       workingStartedAt: 0,
       workingTimer: undefined,
+      lastRequest: undefined,
       askPending: false
     };
 
@@ -2665,12 +2730,13 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       state.askPending = true;
       startWorkingTurn();
       renderAskAvailability();
-      vscode.postMessage({
+      state.lastRequest = {
         command: 'ask',
         mode: state.mode,
         question,
         scope: state.scope
-      });
+      };
+      vscode.postMessage(state.lastRequest);
     });
 
     questionEl.addEventListener('keydown', (event) => {
@@ -2834,6 +2900,13 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         setStatus('Ready');
       }
 
+      if (message.command === 'requestFailed') {
+        stopWorkingTurn('error', message.message, Boolean(message.retryable));
+        cancelPendingPermissionCards();
+        state.askPending = false;
+        renderAskAvailability();
+      }
+
       if (message.command === 'attachmentsUpdated') {
         const hadAttachments = state.attachments.length > 0;
         state.attachments = message.attachments;
@@ -2972,6 +3045,23 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         vscode.postMessage({ command: 'cancelRequest' });
       });
       footer.appendChild(cancel);
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'working-retry';
+      retry.textContent = 'Retry now';
+      retry.hidden = true;
+      retry.addEventListener('click', () => {
+        if (retry.disabled || !state.lastRequest || state.askPending) {
+          return;
+        }
+        retry.disabled = true;
+        state.askPending = true;
+        setStatus('Ready');
+        startWorkingTurn();
+        renderAskAvailability();
+        vscode.postMessage(state.lastRequest);
+      });
+      footer.appendChild(retry);
       card.appendChild(footer);
       messagesEl.appendChild(card);
 
@@ -3026,7 +3116,7 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       updateWorkingTurn('Cancelling request');
     }
 
-    function stopWorkingTurn(stateName, detail) {
+    function stopWorkingTurn(stateName, detail, retryable = false) {
       const card = document.getElementById('workingTurn');
       if (!card) {
         return;
@@ -3056,6 +3146,7 @@ class DevMateChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         card.querySelector('.working-phases').appendChild(phase);
       }
       card.querySelector('.working-cancel').hidden = true;
+      card.querySelector('.working-retry').hidden = !retryable;
       updateWorkingElapsed();
       card.removeAttribute('id');
       messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -3393,6 +3484,22 @@ function createNonce(): string {
 
 function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function waitForRetryDelay(milliseconds: number, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) {
+    return Promise.resolve(false);
+  }
+  return new Promise((resolve) => {
+    const finish = (completed: boolean) => {
+      clearTimeout(timeout);
+      signal.removeEventListener('abort', cancel);
+      resolve(completed);
+    };
+    const cancel = () => finish(false);
+    const timeout = setTimeout(() => finish(true), milliseconds);
+    signal.addEventListener('abort', cancel, { once: true });
+  });
 }
 
 function getBackendUrl(): string {

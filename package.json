@@ -71,10 +71,10 @@
         },
         "devMate.requestTimeoutSeconds": {
           "type": "integer",
-          "default": 330,
-          "minimum": 30,
-          "maximum": 1830,
-          "description": "How long the extension waits for the DevMate backend to return an LLM answer. Keep this above the backend provider timeout."
+          "default": 900,
+          "minimum": 10,
+          "maximum": 1800,
+          "description": "How long DevMate allows each model-provider call to run. The extension automatically adds a 30-second transport buffer."
         }
       }
     }
@@ -82,7 +82,7 @@
   "scripts": {
     "compile": "tsc -p ./ --listEmittedFiles",
     "check": "tsc -p ./ --noEmit",
-    "test": "npm run compile && node --test tests/agentTools.test.js tests/apiClient.test.js tests/context.test.js tests/fileChanges.test.js tests/llmProfiles.test.js tests/permissions.test.js tests/projectContext.test.js",
+    "test": "npm run compile && node --test tests/agentTools.test.js tests/apiClient.test.js tests/context.test.js tests/fileChanges.test.js tests/llmProfiles.test.js tests/permissions.test.js tests/projectContext.test.js tests/retryPolicy.test.js",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile"
   },

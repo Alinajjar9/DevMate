@@ -45,6 +45,7 @@ const fileChanges_1 = require("./fileChanges");
 const llmProfiles_1 = require("./llmProfiles");
 const permissions_1 = require("./permissions");
 const projectContext_1 = require("./projectContext");
+const retryPolicy_1 = require("./retryPolicy");
 function activate(context) {
     const chatViewProvider = new DevMateChatViewProvider(context);
     const viewRegistration = vscode.window.registerWebviewViewProvider(DevMateChatViewProvider.viewId, chatViewProvider, {
@@ -887,6 +888,32 @@ class DevMateChatViewProvider {
             this.postStatus(result.message ?? 'Backend unavailable.', 'warning');
         }
     }
+    async askWithProviderRetries(backendUrl, request, providerApiKey, timeoutMilliseconds, signal) {
+        let retryNumber = 0;
+        while (true) {
+            const result = await (0, client_1.ask)(backendUrl, request, providerApiKey, timeoutMilliseconds, signal);
+            if (!(0, retryPolicy_1.isRetryableProviderFailure)(result)) {
+                return { result, retriesExhausted: false };
+            }
+            retryNumber += 1;
+            const delay = (0, retryPolicy_1.providerRetryDelay)(retryNumber);
+            if (delay === undefined) {
+                return { result, retriesExhausted: true };
+            }
+            this.postStatus(`Provider busy — retrying ${retryNumber}/${retryPolicy_1.PROVIDER_RETRY_DELAYS_MS.length} in ${delay / 1_000}s`);
+            const delayCompleted = await waitForRetryDelay(delay, signal);
+            if (!delayCompleted) {
+                return {
+                    result: {
+                        status: 'error',
+                        message: 'Request cancelled.',
+                        errorKind: 'cancelled'
+                    },
+                    retriesExhausted: false
+                };
+            }
+        }
+    }
     async answerQuestion(message, signal) {
         const question = message.question.trim();
         if (!question) {
@@ -921,7 +948,7 @@ class DevMateChatViewProvider {
         const config = vscode.workspace.getConfiguration('devMate');
         const maxTokens = config.get('maxTokens', 16384);
         const temperature = config.get('temperature', 0.2);
-        const requestTimeoutSeconds = Math.min(1830, Math.max(30, config.get('requestTimeoutSeconds', 330)));
+        const modelTimeoutSeconds = Math.min(1800, Math.max(10, config.get('requestTimeoutSeconds', 900)));
         const providerApiKey = activeProfile.provider === 'openai'
             ? await this.extensionContext.secrets.get((0, llmProfiles_1.secretKeyForProfile)(activeProfile.id))
             : undefined;
@@ -951,7 +978,8 @@ class DevMateChatViewProvider {
                     model: activeProfile.model,
                     baseUrl: activeProfile.baseUrl,
                     maxTokens,
-                    temperature
+                    temperature,
+                    timeoutSeconds: modelTimeoutSeconds
                 },
                 toolsEnabled,
                 forceFinalAnswer: forceFinalThisTurn,
@@ -962,7 +990,8 @@ class DevMateChatViewProvider {
                 : toolsEnabled && toolHistory.length > 0
                     ? 'Continuing with project context'
                     : 'Generating answer');
-            const result = await (0, client_1.ask)(getBackendUrl(), request, providerApiKey, requestTimeoutSeconds * 1_000, signal);
+            const providerAttempt = await this.askWithProviderRetries(getBackendUrl(), request, providerApiKey, (modelTimeoutSeconds + 30) * 1_000, signal);
+            const result = providerAttempt.result;
             if (this.finishCancelledRequest(signal)) {
                 return;
             }
@@ -975,6 +1004,13 @@ class DevMateChatViewProvider {
                     forceFinalAnswer = true;
                     this.postStatus('Model returned no final answer — retrying without tools');
                     continue;
+                }
+                if (providerAttempt.retriesExhausted) {
+                    this.postMessage({
+                        command: 'requestFailed',
+                        message: errorMessage,
+                        retryable: true
+                    });
                 }
                 this.postStatus(errorMessage, 'error');
                 return;
@@ -1590,7 +1626,8 @@ class DevMateChatViewProvider {
       font-variant-numeric: tabular-nums;
     }
 
-    .working-cancel {
+    .working-cancel,
+    .working-retry {
       height: 24px;
       padding: 0 9px;
       border-radius: 4px;
@@ -1599,7 +1636,13 @@ class DevMateChatViewProvider {
       font-size: 10px;
     }
 
-    .working-cancel[hidden] {
+    .working-retry {
+      color: var(--vscode-button-foreground);
+      background: var(--vscode-button-background);
+    }
+
+    .working-cancel[hidden],
+    .working-retry[hidden] {
       display: none;
     }
 
@@ -2198,6 +2241,7 @@ class DevMateChatViewProvider {
       },
       workingStartedAt: 0,
       workingTimer: undefined,
+      lastRequest: undefined,
       askPending: false
     };
 
@@ -2264,12 +2308,13 @@ class DevMateChatViewProvider {
       state.askPending = true;
       startWorkingTurn();
       renderAskAvailability();
-      vscode.postMessage({
+      state.lastRequest = {
         command: 'ask',
         mode: state.mode,
         question,
         scope: state.scope
-      });
+      };
+      vscode.postMessage(state.lastRequest);
     });
 
     questionEl.addEventListener('keydown', (event) => {
@@ -2433,6 +2478,13 @@ class DevMateChatViewProvider {
         setStatus('Ready');
       }
 
+      if (message.command === 'requestFailed') {
+        stopWorkingTurn('error', message.message, Boolean(message.retryable));
+        cancelPendingPermissionCards();
+        state.askPending = false;
+        renderAskAvailability();
+      }
+
       if (message.command === 'attachmentsUpdated') {
         const hadAttachments = state.attachments.length > 0;
         state.attachments = message.attachments;
@@ -2571,6 +2623,23 @@ class DevMateChatViewProvider {
         vscode.postMessage({ command: 'cancelRequest' });
       });
       footer.appendChild(cancel);
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'working-retry';
+      retry.textContent = 'Retry now';
+      retry.hidden = true;
+      retry.addEventListener('click', () => {
+        if (retry.disabled || !state.lastRequest || state.askPending) {
+          return;
+        }
+        retry.disabled = true;
+        state.askPending = true;
+        setStatus('Ready');
+        startWorkingTurn();
+        renderAskAvailability();
+        vscode.postMessage(state.lastRequest);
+      });
+      footer.appendChild(retry);
       card.appendChild(footer);
       messagesEl.appendChild(card);
 
@@ -2625,7 +2694,7 @@ class DevMateChatViewProvider {
       updateWorkingTurn('Cancelling request');
     }
 
-    function stopWorkingTurn(stateName, detail) {
+    function stopWorkingTurn(stateName, detail, retryable = false) {
       const card = document.getElementById('workingTurn');
       if (!card) {
         return;
@@ -2655,6 +2724,7 @@ class DevMateChatViewProvider {
         card.querySelector('.working-phases').appendChild(phase);
       }
       card.querySelector('.working-cancel').hidden = true;
+      card.querySelector('.working-retry').hidden = !retryable;
       updateWorkingElapsed();
       card.removeAttribute('id');
       messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -2990,6 +3060,21 @@ function createNonce() {
 }
 function wait(milliseconds) {
     return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+function waitForRetryDelay(milliseconds, signal) {
+    if (signal.aborted) {
+        return Promise.resolve(false);
+    }
+    return new Promise((resolve) => {
+        const finish = (completed) => {
+            clearTimeout(timeout);
+            signal.removeEventListener('abort', cancel);
+            resolve(completed);
+        };
+        const cancel = () => finish(false);
+        const timeout = setTimeout(() => finish(true), milliseconds);
+        signal.addEventListener('abort', cancel, { once: true });
+    });
 }
 function getBackendUrl() {
     return vscode.workspace

@@ -7,8 +7,8 @@ const {
   isLoopbackBackendUrl
 } = require('../out/api/client');
 
-test('keeps the extension timeout above the five-minute provider limit', () => {
-  assert.equal(DEFAULT_ASK_TIMEOUT_MS, 330_000);
+test('keeps the extension timeout above the fifteen-minute provider limit', () => {
+  assert.equal(DEFAULT_ASK_TIMEOUT_MS, 930_000);
 });
 
 test('recognizes only loopback backend URLs for provider-key handoff', () => {
@@ -90,6 +90,8 @@ test('surfaces FastAPI provider error details', async () => {
 
     assert.equal(result.status, 'error');
     assert.equal(result.message, 'The model provider rejected the API key.');
+    assert.equal(result.statusCode, 401);
+    assert.equal(result.errorKind, 'http');
   } finally {
     global.fetch = originalFetch;
   }
@@ -120,6 +122,7 @@ test('cancels an active backend request through an external signal', async () =>
 
     assert.equal(result.status, 'error');
     assert.equal(result.message, 'Request cancelled.');
+    assert.equal(result.errorKind, 'cancelled');
   } finally {
     global.fetch = originalFetch;
   }
@@ -135,7 +138,8 @@ function askRequest() {
       model: 'nvidia/example-model',
       baseUrl: 'https://integrate.api.nvidia.com/v1',
       maxTokens: 1200,
-      temperature: 0.2
+      temperature: 0.2,
+      timeoutSeconds: 900
     }
   };
 }

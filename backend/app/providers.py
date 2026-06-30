@@ -10,7 +10,7 @@ ProviderName = Literal["openai", "ollama"]
 MessageRole = Literal["system", "user", "assistant", "tool"]
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
-DEFAULT_PROVIDER_TIMEOUT_SECONDS = 300.0
+DEFAULT_PROVIDER_TIMEOUT_SECONDS = 900.0
 MIN_PROVIDER_TIMEOUT_SECONDS = 10.0
 MAX_PROVIDER_TIMEOUT_SECONDS = 1_800.0
 MAX_REASONING_DIAGNOSTIC_CHARACTERS = 1_000
@@ -74,6 +74,7 @@ class ChatCompletionRequest:
     messages: tuple[ChatMessage, ...]
     max_tokens: int
     temperature: float
+    timeout_seconds: float | None = None
     tools: tuple[ChatToolDefinition, ...] = ()
     force_final_answer: bool = False
 
@@ -147,7 +148,7 @@ class OpenAICompatibleProvider:
         try:
             async with httpx.AsyncClient(
                 transport=self._transport,
-                timeout=self._timeout_seconds,
+                timeout=request.timeout_seconds or self._timeout_seconds,
                 follow_redirects=False,
             ) as client:
                 response = await client.post(endpoint, headers=headers, json=payload)

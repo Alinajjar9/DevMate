@@ -41,6 +41,7 @@ class LlmSettings(BaseModel):
     baseUrl: str | None = Field(default=None, max_length=2_048)
     maxTokens: int = Field(ge=128, le=32_000)
     temperature: float = Field(ge=0, le=2)
+    timeoutSeconds: float = Field(default=900, ge=10, le=1_800)
 
 
 class AskContextItem(BaseModel):
@@ -282,6 +283,7 @@ async def ask(
                 messages=messages,
                 max_tokens=request.settings.maxTokens,
                 temperature=request.settings.temperature,
+                timeout_seconds=request.settings.timeoutSeconds,
                 tools=AGENT_TOOL_DEFINITIONS if tools_enabled else (),
                 force_final_answer=request.forceFinalAnswer,
             )

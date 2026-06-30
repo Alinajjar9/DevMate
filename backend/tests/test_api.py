@@ -86,9 +86,22 @@ class DevMateApiTests(unittest.TestCase):
         self.assertEqual(payload["data"]["answer"], "Mock provider answer")
         provider_request = self.provider.requests[-1]
         self.assertEqual(provider_request.api_key, "test-provider-key")
+        self.assertEqual(provider_request.timeout_seconds, 900)
         self.assertIn("Question:\nWhat does this code do?", provider_request.messages[1].content)
         self.assertIn("Source: selection", provider_request.messages[1].content)
         self.assertIn("return 42;", provider_request.messages[1].content)
+
+    def test_ask_passes_a_bounded_provider_timeout(self) -> None:
+        payload = self._ask_payload(scope_type="project", items=[])
+        payload["settings"]["timeoutSeconds"] = 1_200
+
+        response = self.client.post("/ask", json=payload)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.provider.requests[-1].timeout_seconds, 1_200)
+
+        payload["settings"]["timeoutSeconds"] = 1_801
+        self.assertEqual(self.client.post("/ask", json=payload).status_code, 422)
 
     def test_selection_scope_accepts_workspace_attachment(self) -> None:
         items = [

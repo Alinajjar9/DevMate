@@ -3,11 +3,20 @@ export type ScopeType = 'project' | 'file' | 'selection';
 export type ContextSource = 'file' | 'selection' | 'attachment';
 export type ApiStatus = 'ok' | 'error';
 export type BackendState = 'online' | 'offline' | 'mock';
+export type ApiErrorKind =
+  | 'cancelled'
+  | 'configuration'
+  | 'http'
+  | 'invalid-response'
+  | 'network'
+  | 'timeout';
 
 export type ApiResult<T> = {
   status: ApiStatus;
   data?: T;
   message?: string;
+  statusCode?: number;
+  errorKind?: ApiErrorKind;
 };
 
 export type HealthResponse = {
@@ -21,6 +30,7 @@ export type LlmSettings = {
   baseUrl?: string;
   maxTokens: number;
   temperature: number;
+  timeoutSeconds: number;
 };
 
 export type AskContextItem = {

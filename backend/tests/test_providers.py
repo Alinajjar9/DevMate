@@ -18,8 +18,8 @@ from backend.app.providers import (
 
 
 class ProviderUrlTests(unittest.TestCase):
-    def test_provider_timeout_defaults_to_five_minutes(self) -> None:
-        self.assertEqual(DEFAULT_PROVIDER_TIMEOUT_SECONDS, 300.0)
+    def test_provider_timeout_defaults_to_fifteen_minutes(self) -> None:
+        self.assertEqual(DEFAULT_PROVIDER_TIMEOUT_SECONDS, 900.0)
         self.assertEqual(
             parse_provider_timeout_seconds(None),
             DEFAULT_PROVIDER_TIMEOUT_SECONDS,
@@ -106,6 +106,25 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
             await provider.complete(request),
             ChatCompletion(content="OpenAI answer"),
         )
+
+    async def test_uses_the_request_specific_provider_timeout(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.extensions["timeout"]["read"], 1_200)
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "Slow answer"}}]},
+            )
+
+        provider = OpenAICompatibleProvider(
+            transport=httpx.MockTransport(handler),
+            timeout_seconds=30,
+        )
+
+        completion = await provider.complete(
+            self._request(timeout_seconds=1_200)
+        )
+
+        self.assertEqual(completion.content, "Slow answer")
 
     async def test_sends_tools_and_reads_function_calls(self) -> None:
         async def handler(request: httpx.Request) -> httpx.Response:
@@ -300,6 +319,7 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
         tools: tuple[ChatToolDefinition, ...] = (),
         messages: tuple[ChatMessage, ...] | None = None,
         force_final_answer: bool = False,
+        timeout_seconds: float | None = None,
     ) -> ChatCompletionRequest:
         return ChatCompletionRequest(
             provider="openai",
@@ -312,6 +332,7 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
             ),
             max_tokens=1200,
             temperature=0.2,
+            timeout_seconds=timeout_seconds,
             tools=tools,
             force_final_answer=force_final_answer,
         )

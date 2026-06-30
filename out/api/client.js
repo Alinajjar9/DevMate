@@ -5,7 +5,7 @@ exports.health = health;
 exports.ask = ask;
 exports.isLoopbackBackendUrl = isLoopbackBackendUrl;
 const HEALTH_TIMEOUT_MS = 2_000;
-exports.DEFAULT_ASK_TIMEOUT_MS = 330_000;
+exports.DEFAULT_ASK_TIMEOUT_MS = 930_000;
 const PROVIDER_KEY_HEADER = 'X-DevMate-Provider-Key';
 async function health(backendUrl) {
     return request(backendUrl, '/health', { method: 'GET' }, HEALTH_TIMEOUT_MS);
@@ -14,7 +14,8 @@ async function ask(backendUrl, askRequest, providerApiKey, timeoutMilliseconds =
     if (providerApiKey && !isLoopbackBackendUrl(backendUrl)) {
         return {
             status: 'error',
-            message: 'DevMate only sends provider API keys to a backend running on this computer.'
+            message: 'DevMate only sends provider API keys to a backend running on this computer.',
+            errorKind: 'configuration'
         };
     }
     return request(backendUrl, '/ask', {
@@ -31,7 +32,8 @@ async function request(backendUrl, path, init, timeoutMilliseconds, externalSign
     if (!endpoint) {
         return {
             status: 'error',
-            message: `Invalid DevMate backend URL: ${backendUrl}`
+            message: `Invalid DevMate backend URL: ${backendUrl}`,
+            errorKind: 'configuration'
         };
     }
     const controller = new AbortController();
@@ -60,13 +62,16 @@ async function request(backendUrl, path, init, timeoutMilliseconds, externalSign
         if (!response.ok) {
             return {
                 status: 'error',
-                message: getHttpErrorMessage(response.status, payload)
+                message: getHttpErrorMessage(response.status, payload),
+                statusCode: response.status,
+                errorKind: 'http'
             };
         }
         if (!isApiResult(payload)) {
             return {
                 status: 'error',
-                message: 'The DevMate backend returned an invalid response.'
+                message: 'The DevMate backend returned an invalid response.',
+                errorKind: 'invalid-response'
             };
         }
         return payload;
@@ -77,12 +82,14 @@ async function request(backendUrl, path, init, timeoutMilliseconds, externalSign
                 status: 'error',
                 message: timedOut
                     ? `The DevMate backend request timed out after ${timeoutMilliseconds / 1_000} seconds.`
-                    : 'Request cancelled.'
+                    : 'Request cancelled.',
+                errorKind: timedOut ? 'timeout' : 'cancelled'
             };
         }
         return {
             status: 'error',
-            message: `Cannot reach the DevMate backend at ${backendUrl}. Start the local backend and try again.`
+            message: `Cannot reach the DevMate backend at ${backendUrl}. Start the local backend and try again.`,
+            errorKind: 'network'
         };
     }
     finally {

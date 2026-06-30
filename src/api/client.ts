@@ -1,7 +1,7 @@
 import type { ApiResult, AskRequest, AskResponse, HealthResponse } from './types';
 
 const HEALTH_TIMEOUT_MS = 2_000;
-export const DEFAULT_ASK_TIMEOUT_MS = 330_000;
+export const DEFAULT_ASK_TIMEOUT_MS = 930_000;
 const PROVIDER_KEY_HEADER = 'X-DevMate-Provider-Key';
 
 export async function health(backendUrl: string): Promise<ApiResult<HealthResponse>> {
@@ -18,7 +18,8 @@ export async function ask(
   if (providerApiKey && !isLoopbackBackendUrl(backendUrl)) {
     return {
       status: 'error',
-      message: 'DevMate only sends provider API keys to a backend running on this computer.'
+      message: 'DevMate only sends provider API keys to a backend running on this computer.',
+      errorKind: 'configuration'
     };
   }
 
@@ -49,7 +50,8 @@ async function request<T>(
   if (!endpoint) {
     return {
       status: 'error',
-      message: `Invalid DevMate backend URL: ${backendUrl}`
+      message: `Invalid DevMate backend URL: ${backendUrl}`,
+      errorKind: 'configuration'
     };
   }
 
@@ -80,14 +82,17 @@ async function request<T>(
     if (!response.ok) {
       return {
         status: 'error',
-        message: getHttpErrorMessage(response.status, payload)
+        message: getHttpErrorMessage(response.status, payload),
+        statusCode: response.status,
+        errorKind: 'http'
       };
     }
 
     if (!isApiResult<T>(payload)) {
       return {
         status: 'error',
-        message: 'The DevMate backend returned an invalid response.'
+        message: 'The DevMate backend returned an invalid response.',
+        errorKind: 'invalid-response'
       };
     }
 
@@ -98,13 +103,15 @@ async function request<T>(
         status: 'error',
         message: timedOut
           ? `The DevMate backend request timed out after ${timeoutMilliseconds / 1_000} seconds.`
-          : 'Request cancelled.'
+          : 'Request cancelled.',
+        errorKind: timedOut ? 'timeout' : 'cancelled'
       };
     }
 
     return {
       status: 'error',
-      message: `Cannot reach the DevMate backend at ${backendUrl}. Start the local backend and try again.`
+      message: `Cannot reach the DevMate backend at ${backendUrl}. Start the local backend and try again.`,
+      errorKind: 'network'
     };
   } finally {
     clearTimeout(timeout);

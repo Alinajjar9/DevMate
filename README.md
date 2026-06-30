@@ -31,6 +31,8 @@ DevMate can now ask the extension host to inspect the open project before answer
 
 Each request immediately creates a working card in the conversation. It displays the selected model, elapsed time, actual lifecycle phases such as context collection and tool use, and a Cancel button. Routine progress no longer occupies the top status strip; that area is reserved for warnings and errors. The working card is removed when the final assistant message arrives, while completed tool activity remains visible.
 
+Temporary provider failures (`ResourceExhausted`, HTTP 429, 502, 503, or 504) are retried up to three times after 2, 5, and 10 seconds. The countdown appears as a real phase in the working card and can be cancelled. Authentication, invalid-model, malformed-response, and reasoning-budget errors are never retried. If every transient attempt fails, the stopped card offers **Retry now** without duplicating the user's message.
+
 Read-only tools run instantly because they cannot modify the project. They remain workspace-bound and use the same exclusions as automatic project context, so dependency/build folders, binary files, lock files, environment files, and credential/key files are unavailable. The backend receives bounded tool results but never receives direct filesystem access.
 
 Tool calls are normalized before loop detection, so formatting differences cannot make DevMate reread the same file indefinitely. If a model repeats a completed tool call or returns reasoning without a final answer, DevMate performs one tools-off final turn. Nemotron 3 requests reserve half of the response budget for reasoning and disable thinking during this recovery turn. The default `devMate.maxTokens` is 16,384 so reasoning models and multi-file Code responses have room to finish.
@@ -92,7 +94,7 @@ Start the local service:
 
 The health endpoint is available at `http://127.0.0.1:8000/health`. The extension uses this address by default; change `devMate.backendUrl` in VS Code settings if the backend runs elsewhere.
 
-DevMate waits up to five minutes for a model provider response by default, and the extension waits another 30 seconds for the backend to finish returning it. To change the backend limit, set `DEVMATE_PROVIDER_TIMEOUT_SECONDS` to a value from 10 through 1800 before starting Uvicorn, then restart the backend. If you raise it above five minutes, also set `devMate.requestTimeoutSeconds` in VS Code to at least 30 seconds more than the backend limit.
+DevMate waits up to fifteen minutes for each model-provider call by default, and the extension automatically adds a 30-second transport buffer. Change **DevMate: Request Timeout Seconds** (`devMate.requestTimeoutSeconds`) in VS Code Settings to any value from 10 through 1800. The value is sent with every request and controls both sides, so changing it does not require a backend restart. `DEVMATE_PROVIDER_TIMEOUT_SECONDS` remains the backend fallback for older clients or requests that omit the setting.
 
 Run the backend contract tests with:
 
