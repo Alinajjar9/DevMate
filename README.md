@@ -9,7 +9,7 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 - Scope tabs: Project, File, Selection
 - Shows where DevMate will focus
 - Local FastAPI backend with `/health` and `/ask`
-- Configurable backend URL and clear offline feedback
+- Managed local-backend startup, health monitoring, logs, restart controls, and configurable external backend URLs
 - Real OpenAI-compatible Chat Completions requests
 - Iterative agent tools for project inspection, exact file edits, and approved verification commands
 - Animated in-chat working state with real phases, elapsed time, selected model, and cancellation
@@ -117,20 +117,26 @@ DevMate requires Visual Studio Code 1.96.2+, Node.js 20+, npm 9+, and Python 3.1
 
 ## Run the backend
 
-The backend requires Python 3.10 or newer. Create an isolated Python environment and install its dependencies:
+The backend requires Python 3.10 or newer. For development, create an isolated Python environment and install its dependencies:
 
 ```powershell
 py -m venv .venv
 .venv\Scripts\python -m pip install -r backend\requirements-dev.txt
 ```
 
-Start the local service:
+DevMate now starts and monitors the local service automatically when `devMate.backendUrl` is a plain HTTP loopback address with an explicit port. It prefers `devMate.backendPythonPath`, then `.venv` or `venv` beside the extension, and finally Python on `PATH`. Managed launches deliberately omit `--reload`, so slow provider requests are not disconnected by a development source reload. DevMate never installs backend Python dependencies silently.
+
+The toolbar backend dot shows checking, starting, online, restarting, or offline state. Click it to open the **DevMate Backend** output channel. Settings also provides **Restart backend** and **Open backend logs**. A server already listening at the configured address is adopted as external and is never terminated by DevMate; if it later disappears, managed startup takes over. Crash recovery is limited to three attempts in one minute.
+
+To run the service manually without automatic management:
 
 ```powershell
-.venv\Scripts\python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --reload
+.venv\Scripts\python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
 ```
 
-The health endpoint is available at `http://127.0.0.1:8000/health`. The extension uses this address by default; change `devMate.backendUrl` in VS Code settings if the backend runs elsewhere.
+Use `--reload` only while actively editing backend Python and when no long model request is running. The health endpoint is available at `http://127.0.0.1:8000/health`. The extension uses this address by default; change `devMate.backendUrl` if the backend runs elsewhere, disable management with `devMate.manageLocalBackend`, or select another interpreter with `devMate.backendPythonPath`.
+
+If the backend connection drops during a request, DevMate attempts local recovery and stops the interrupted request with **Retry now**. It does not replay automatically because the disconnected request may already have produced a file mutation.
 
 DevMate waits up to fifteen minutes for each model-provider call by default, and the extension automatically adds a 30-second transport buffer. Change **DevMate: Request Timeout Seconds** (`devMate.requestTimeoutSeconds`) in VS Code Settings to any value from 10 through 1800. The value is sent with every request and controls both sides, so changing it does not require a backend restart. `DEVMATE_PROVIDER_TIMEOUT_SECONDS` remains the backend fallback for older clients or requests that omit the setting.
 
@@ -171,7 +177,7 @@ Run the backend contract tests with:
 6. Press `F5`.
 7. In the new VS Code window, click `DevMate` in the bottom-right Status Bar.
 
-Keep the backend terminal running while testing the extension. If it is stopped, DevMate shows a backend-unavailable message instead of a placeholder answer.
+When testing an externally started backend, keep its terminal running. Otherwise allow DevMate to manage the process and inspect its output through **DevMate Backend**.
 
 Use the second window that opens after `F5`. That is the Extension Development Host.
 

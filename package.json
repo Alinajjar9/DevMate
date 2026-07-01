@@ -55,6 +55,16 @@
           "default": "http://127.0.0.1:8000",
           "description": "Base URL of the local DevMate backend service."
         },
+        "devMate.manageLocalBackend": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically start and monitor the bundled backend when backendUrl is a local HTTP address."
+        },
+        "devMate.backendPythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional Python executable used for the managed local backend. DevMate otherwise prefers its project virtual environment and then Python on PATH."
+        },
         "devMate.maxTokens": {
           "type": "number",
           "default": 16384,
@@ -96,7 +106,7 @@
   "scripts": {
     "compile": "tsc -p ./ --listEmittedFiles",
     "check": "tsc -p ./ --noEmit",
-    "test": "npm run compile && node --test tests/agentTools.test.js tests/apiClient.test.js tests/commandTools.test.js tests/context.test.js tests/conversation.test.js tests/dependencyTools.test.js tests/fileChanges.test.js tests/fileTools.test.js tests/llmProfiles.test.js tests/permissions.test.js tests/projectContext.test.js tests/projectIndex.test.js tests/pythonEnvironment.test.js tests/retryPolicy.test.js tests/webviewScript.test.js",
+    "test": "npm run compile && node --test tests/agentTools.test.js tests/apiClient.test.js tests/backendManager.test.js tests/commandTools.test.js tests/context.test.js tests/conversation.test.js tests/dependencyTools.test.js tests/fileChanges.test.js tests/fileTools.test.js tests/llmProfiles.test.js tests/permissions.test.js tests/projectContext.test.js tests/projectIndex.test.js tests/pythonEnvironment.test.js tests/retryPolicy.test.js tests/webviewScript.test.js",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile"
   },

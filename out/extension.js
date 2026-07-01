@@ -36,10 +36,12 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.activate = activate;
 exports.deactivate = deactivate;
 const crypto_1 = require("crypto");
+const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const agentTools_1 = require("./agentTools");
 const client_1 = require("./api/client");
+const backendManager_1 = require("./backendManager");
 const context_1 = require("./context");
 const conversation_1 = require("./conversation");
 const commandTools_1 = require("./commandTools");
@@ -66,7 +68,19 @@ class StartedDependencyInstallError extends Error {
     installAttempted = true;
 }
 function activate(context) {
-    const chatViewProvider = new DevMateChatViewProvider(context);
+    const backendOutput = vscode.window.createOutputChannel('DevMate Backend');
+    let chatViewProvider;
+    const backendManager = new backendManager_1.LocalBackendManager({
+        extensionPath: context.extensionUri.fsPath,
+        getBackendUrl,
+        isManagementEnabled: () => vscode.workspace.getConfiguration('devMate').get('manageLocalBackend', true),
+        getConfiguredPythonPath: () => vscode.workspace.getConfiguration('devMate').get('backendPythonPath', ''),
+        healthCheck: async (backendUrl) => (await (0, client_1.health)(backendUrl)).status === 'ok',
+        fileExists: (filePath) => fs.existsSync(filePath),
+        onStatus: (status) => chatViewProvider?.notifyBackendStatusChanged(status),
+        onOutput: (value) => backendOutput.append(value)
+    });
+    chatViewProvider = new DevMateChatViewProvider(context, backendManager, backendOutput);
     const viewRegistration = vscode.window.registerWebviewViewProvider(DevMateChatViewProvider.viewId, chatViewProvider, {
         webviewOptions: {
             retainContextWhenHidden: true
@@ -82,20 +96,30 @@ function activate(context) {
     });
     const diffContentRegistration = vscode.workspace.registerTextDocumentContentProvider(DevMateChatViewProvider.diffScheme, chatViewProvider);
     const workspaceTrustRegistration = vscode.workspace.onDidGrantWorkspaceTrust(() => {
-        chatViewProvider.notifyWorkspaceTrustChanged();
+        chatViewProvider?.notifyWorkspaceTrustChanged();
+    });
+    const backendConfigurationRegistration = vscode.workspace.onDidChangeConfiguration((event) => {
+        if (event.affectsConfiguration('devMate.backendUrl')
+            || event.affectsConfiguration('devMate.manageLocalBackend')
+            || event.affectsConfiguration('devMate.backendPythonPath')) {
+            void backendManager.reconfigure();
+        }
     });
     const statusBarItem = vscode.window.createStatusBarItem('devMate.statusBar', vscode.StatusBarAlignment.Right, 1000);
     statusBarItem.text = '$(comment-discussion) DevMate';
     statusBarItem.tooltip = 'Open DevMate';
     statusBarItem.command = 'devMate.openChat';
     statusBarItem.show();
-    context.subscriptions.push(chatViewProvider, viewRegistration, diffContentRegistration, workspaceTrustRegistration, openChatCommand, statusBarItem);
+    context.subscriptions.push(chatViewProvider, backendManager, backendOutput, viewRegistration, diffContentRegistration, workspaceTrustRegistration, backendConfigurationRegistration, openChatCommand, statusBarItem);
+    void backendManager.start();
 }
 function deactivate() {
     // VS Code disposes registered views and subscriptions.
 }
 class DevMateChatViewProvider {
     extensionContext;
+    backendManager;
+    backendOutput;
     static viewId = 'devmate.dedicatedAssistantView';
     static containerId = 'devmate-dedicated-chat';
     static diffScheme = 'devmate-diff';
@@ -110,8 +134,10 @@ class DevMateChatViewProvider {
     diffDocuments = new Map();
     commandTerminals = new Map();
     conversationHistory = [];
-    constructor(extensionContext) {
+    constructor(extensionContext, backendManager, backendOutput) {
         this.extensionContext = extensionContext;
+        this.backendManager = backendManager;
+        this.backendOutput = backendOutput;
         this.extensionUri = extensionContext.extensionUri;
     }
     resolveWebviewView(webviewView) {
@@ -128,13 +154,16 @@ class DevMateChatViewProvider {
             this.view = undefined;
             this.disposeViewDisposables();
         }));
-        void this.checkBackendHealth();
+        this.postBackendStatus();
     }
     provideTextDocumentContent(uri) {
         return this.diffDocuments.get(uri.toString()) ?? '';
     }
     notifyWorkspaceTrustChanged() {
         this.postSettingsState();
+    }
+    notifyBackendStatusChanged(_status) {
+        this.postBackendStatus();
     }
     async show() {
         await vscode.commands.executeCommand(`workbench.view.extension.${DevMateChatViewProvider.containerId}`);
@@ -218,6 +247,17 @@ class DevMateChatViewProvider {
                 await this.extensionContext.workspaceState.update(permissions_1.REMEMBERED_COMMANDS_STORAGE_KEY, []);
                 this.postSettingsState();
                 return;
+            case 'restartBackend':
+                if (this.activeRequest) {
+                    this.postStatus('Wait for the active request to finish before restarting the backend.', 'warning');
+                    return;
+                }
+                await this.backendManager.restart();
+                this.postBackendStatus();
+                return;
+            case 'openBackendLogs':
+                this.backendOutput.show(true);
+                return;
             case 'commandPermissionDecision':
                 await this.handleCommandPermissionDecision(message.requestId, message.decision);
                 return;
@@ -232,6 +272,7 @@ class DevMateChatViewProvider {
                 await this.postLlmProfileState();
                 this.postPermissionPolicyState();
                 this.postSettingsState();
+                this.postBackendStatus();
                 return;
             default:
                 this.postStatus('Unsupported command received.', 'error');
@@ -944,6 +985,14 @@ class DevMateChatViewProvider {
                 rememberedCommands: this.getRememberedCommands(),
                 workspaceTrusted: vscode.workspace.isTrusted
             }
+        });
+    }
+    postBackendStatus() {
+        const status = this.backendManager.status;
+        this.postMessage({
+            command: 'backendStatusUpdated',
+            status,
+            label: (0, backendManager_1.backendStatusLabel)(status)
         });
     }
     async handlePermissionDecision(requestId, decision) {
@@ -1943,12 +1992,6 @@ class DevMateChatViewProvider {
             mutationCharacters: 0
         };
     }
-    async checkBackendHealth() {
-        const result = await (0, client_1.health)(getBackendUrl());
-        if (result.status === 'error') {
-            this.postStatus(result.message ?? 'Backend unavailable.', 'warning');
-        }
-    }
     async askWithProviderRetries(backendUrl, request, providerApiKey, timeoutMilliseconds, signal) {
         let retryNumber = 0;
         while (true) {
@@ -1985,6 +2028,11 @@ class DevMateChatViewProvider {
         if (!activeProfile) {
             this.postRequestFailure('Add a model profile before asking.', { level: 'warning' });
             await this.showLlmProfileForm();
+            return;
+        }
+        this.postStatus('Checking local backend');
+        if (!await this.backendManager.start()) {
+            this.postRequestFailure(this.backendManager.status.detail, { level: 'warning' });
             return;
         }
         this.postStatus('Collecting context');
@@ -2079,8 +2127,13 @@ class DevMateChatViewProvider {
                     this.postStatus('Model returned no final answer — retrying without tools');
                     continue;
                 }
+                const backendDropped = result.errorKind === 'network';
+                if (backendDropped) {
+                    this.postStatus('Backend connection dropped — recovering local backend');
+                    await this.backendManager.start();
+                }
                 this.postRequestFailure(errorMessage, {
-                    retryable: providerAttempt.retriesExhausted
+                    retryable: providerAttempt.retriesExhausted || backendDropped
                 });
                 return;
             }
@@ -2448,6 +2501,7 @@ class DevMateChatViewProvider {
 
     .mode-button,
     .toolbar-settings,
+    .backend-status,
     .scope-button,
     .attachment-row-remove,
     .action-button {
@@ -2479,7 +2533,8 @@ class DevMateChatViewProvider {
       border-color: var(--vscode-button-background);
     }
 
-    .toolbar-settings {
+    .toolbar-settings,
+    .backend-status {
       display: inline-flex;
       gap: 5px;
       align-items: center;
@@ -2495,8 +2550,44 @@ class DevMateChatViewProvider {
       font-size: 11px;
     }
 
+    .backend-status {
+      margin-left: auto;
+      cursor: pointer;
+    }
+
+    .toolbar-settings {
+      margin-left: 0;
+    }
+
+    .backend-status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+
+    .backend-status[data-state="online"] .backend-status-dot {
+      background: var(--vscode-testing-iconPassed, #2ea043);
+      box-shadow: 0 0 5px color-mix(in srgb, var(--vscode-testing-iconPassed, #2ea043) 55%, transparent);
+    }
+
+    .backend-status[data-state="starting"] .backend-status-dot,
+    .backend-status[data-state="restarting"] .backend-status-dot,
+    .backend-status[data-state="checking"] .backend-status-dot {
+      background: var(--vscode-progressBar-background, var(--vscode-button-background));
+      animation: tool-pulse 1.4s ease-in-out infinite;
+    }
+
+    .backend-status[data-state="offline"] .backend-status-dot {
+      background: var(--vscode-editorError-foreground);
+    }
+
     .toolbar-settings:hover {
       color: var(--vscode-foreground);
+      background: var(--vscode-toolbar-hoverBackground);
+    }
+
+    .backend-status:hover {
       background: var(--vscode-toolbar-hoverBackground);
     }
 
@@ -3076,6 +3167,9 @@ class DevMateChatViewProvider {
       .working-phase[data-status="active"] .working-phase-icon,
       .working-indicator,
       .working-indicator::after,
+      .backend-status[data-state="checking"] .backend-status-dot,
+      .backend-status[data-state="starting"] .backend-status-dot,
+      .backend-status[data-state="restarting"] .backend-status-dot,
       .tool-activity[data-status="running"] .tool-activity-icon {
         animation: none;
       }
@@ -3419,6 +3513,12 @@ class DevMateChatViewProvider {
       font-weight: 600;
     }
 
+    .backend-settings-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
     .remembered-command-list {
       display: grid;
       gap: 6px;
@@ -3496,6 +3596,16 @@ class DevMateChatViewProvider {
         <button class="mode-button" type="button" data-mode="code" aria-pressed="true">Code</button>
         <button class="mode-button" type="button" data-mode="debug" aria-pressed="false">Debug</button>
       </div>
+      <button
+        id="backendStatus"
+        class="backend-status"
+        type="button"
+        data-state="checking"
+        title="Checking local backend"
+        aria-label="Checking local backend"
+      >
+        <span class="backend-status-dot" aria-hidden="true"></span>
+      </button>
       <button
         id="settingsButton"
         class="toolbar-settings"
@@ -3660,6 +3770,22 @@ class DevMateChatViewProvider {
             </div>
           </div>
         </section>
+        <section class="settings-section" aria-labelledby="backendSettingsTitle">
+          <h3 id="backendSettingsTitle" class="settings-section-title">Local backend</h3>
+          <div class="permission-setting-list">
+            <div class="permission-setting-row">
+              <span class="permission-setting-copy">
+                <strong id="backendSettingsLabel">Checking backend</strong>
+                <span id="backendSettingsDetail">Checking the configured backend.</span>
+              </span>
+              <span id="backendSettingsBadge" class="permission-blocked-badge">Checking</span>
+            </div>
+            <div class="backend-settings-actions">
+              <button id="restartBackend" class="action-button secondary" type="button">Restart backend</button>
+              <button id="openBackendLogs" class="action-button secondary" type="button">Open backend logs</button>
+            </div>
+          </div>
+        </section>
         <section class="settings-section" aria-labelledby="filePermissionSettingsTitle">
           <h3 id="filePermissionSettingsTitle" class="settings-section-title">File permissions</h3>
           <div class="permission-setting-list">
@@ -3743,6 +3869,13 @@ class DevMateChatViewProvider {
         rememberedCommands: [],
         workspaceTrusted: true
       },
+      backendStatus: {
+        state: 'checking',
+        detail: 'Checking the configured backend.',
+        managed: false,
+        canRestart: false
+      },
+      backendLabel: 'Checking backend',
       workingStartedAt: 0,
       workingTimer: undefined,
       lastRequest: undefined,
@@ -3775,6 +3908,7 @@ class DevMateChatViewProvider {
     const llmProfileFormErrorEl = document.getElementById('llmProfileFormError');
     const saveLlmProfileEl = document.getElementById('saveLlmProfile');
     const settingsButtonEl = document.getElementById('settingsButton');
+    const backendStatusEl = document.getElementById('backendStatus');
     const permissionDialogEl = document.getElementById('permissionDialog');
     const permissionFormEl = document.getElementById('permissionForm');
     const permissionCreateFilesEl = document.getElementById('permissionCreateFiles');
@@ -3788,6 +3922,11 @@ class DevMateChatViewProvider {
     const rememberedCommandListEl = document.getElementById('rememberedCommandList');
     const clearRememberedCommandsEl = document.getElementById('clearRememberedCommands');
     const workspaceTrustBadgeEl = document.getElementById('workspaceTrustBadge');
+    const backendSettingsLabelEl = document.getElementById('backendSettingsLabel');
+    const backendSettingsDetailEl = document.getElementById('backendSettingsDetail');
+    const backendSettingsBadgeEl = document.getElementById('backendSettingsBadge');
+    const restartBackendEl = document.getElementById('restartBackend');
+    const openBackendLogsEl = document.getElementById('openBackendLogs');
     const ollamaDefaultBaseUrl = 'http://127.0.0.1:11434';
 
     document.querySelectorAll('.mode-button').forEach((button) => {
@@ -3862,6 +4001,19 @@ class DevMateChatViewProvider {
     };
 
     settingsButtonEl.addEventListener('click', openSettingsDialog);
+    backendStatusEl.addEventListener('click', () => {
+      vscode.postMessage({ command: 'openBackendLogs' });
+    });
+    restartBackendEl.addEventListener('click', () => {
+      if (restartBackendEl.disabled) {
+        return;
+      }
+      restartBackendEl.disabled = true;
+      vscode.postMessage({ command: 'restartBackend' });
+    });
+    openBackendLogsEl.addEventListener('click', () => {
+      vscode.postMessage({ command: 'openBackendLogs' });
+    });
 
     settingsTimeoutSecondsEl.addEventListener('input', renderTimeoutApproximation);
 
@@ -4065,6 +4217,12 @@ class DevMateChatViewProvider {
 
       if (message.command === 'settingsSaved' && permissionDialogEl.open) {
         permissionDialogEl.close();
+      }
+
+      if (message.command === 'backendStatusUpdated') {
+        state.backendStatus = message.status;
+        state.backendLabel = message.label;
+        renderBackendStatus();
       }
 
       if (message.command === 'permissionRequest') {
@@ -4632,11 +4790,35 @@ class DevMateChatViewProvider {
       });
       attachFilesEl.disabled = state.askPending;
       llmProfileSelectorEl.disabled = state.askPending;
+      renderBackendStatus();
       askEl.title = !state.activeProfile
         ? 'Add a model profile before asking'
         : state.askPending
           ? 'DevMate is working on your request'
           : '';
+    }
+
+    function renderBackendStatus() {
+      const backend = state.backendStatus;
+      const label = state.backendLabel || 'Backend status';
+      backendStatusEl.dataset.state = backend.state;
+      backendStatusEl.title = label + (backend.detail ? ' · ' + backend.detail : '')
+        + ' · Click to open logs';
+      backendStatusEl.setAttribute('aria-label', backendStatusEl.title);
+      backendSettingsLabelEl.textContent = label;
+      backendSettingsDetailEl.textContent = backend.detail || '';
+      backendSettingsBadgeEl.textContent = backend.state === 'online'
+        ? 'Online'
+        : backend.state === 'starting'
+          ? 'Starting'
+          : backend.state === 'restarting'
+            ? 'Restarting'
+            : backend.state === 'disabled'
+              ? 'Unmanaged'
+              : backend.state === 'checking'
+                ? 'Checking'
+                : 'Offline';
+      restartBackendEl.disabled = state.askPending || !backend.canRestart;
     }
 
     function showLlmProfileForm(profile, hasApiKey) {

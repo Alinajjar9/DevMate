@@ -79,3 +79,20 @@ test('only explicit request events release the pending UI state', () => {
   assert.match(source, /attachFilesEl\.disabled = state\.askPending/);
   assert.match(source, /llmProfileSelectorEl\.disabled = state\.askPending/);
 });
+
+test('managed backend state and recovery controls are exposed in the UI', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'extension.ts'),
+    'utf8'
+  );
+  const managerSource = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'backendManager.ts'),
+    'utf8'
+  );
+  assert.match(source, /id="backendStatus"/);
+  assert.match(source, /id="restartBackend"/);
+  assert.match(source, /id="openBackendLogs"/);
+  assert.match(source, /message\.command === 'backendStatusUpdated'/);
+  assert.match(source, /backendDropped[\s\S]*?retryable:/);
+  assert.doesNotMatch(managerSource, /['"]--reload['"]/);
+});

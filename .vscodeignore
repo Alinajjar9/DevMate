@@ -2,6 +2,11 @@
 .vscode-test/**
 src/**
 node_modules/**
+.venv/**
+venv/**
 tests/**
+backend/tests/**
+backend/requirements-dev.txt
+**/__pycache__/**
 *.map
 tsconfig.json
