@@ -18,7 +18,7 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 - Enter-to-send composer with Shift+Enter for new lines
 - Distinct You and DevMate message bubbles
 - Workspace-scoped in-chat approvals, native diff review, and exact-command remembering
-- Bounded in-memory follow-up context for the current DevMate session
+- Project-bound sessions with a global past-sessions landing screen
 - Bounded Selection and active File context with language and truncation metadata
 - Persistent workspace-local Project index with bounded chunk retrieval and deterministic fallback ranking
 - Workspace-only multi-file attachments with a compact expandable selected-file list
@@ -35,9 +35,9 @@ Retrieval is deterministic and runs entirely in the extension host using BM25-st
 
 ## Agent tools
 
-DevMate can ask the extension host to inspect and improve the open project before answering. Read-only tools support `list_files`, ranged `read_file`, and plain-text `search_code`. In trusted workspaces, Code and Debug additionally receive `create_file`, exact-replacement `edit_file`, `delete_file`, `rename_file`, `move_file`, approved `run_command` verification, and manifest-based `install_dependencies` tools. Tool activity appears as compact cards in the conversation. The per-request tool limit defaults to 16 and is configurable from 4 through 32; older results are compacted first when a longer loop approaches the bounded context budget.
+DevMate can ask the extension host to inspect and improve the open project before answering. Read-only tools support `list_files`, ranged `read_file`, and plain-text `search_code`. In trusted workspaces, Code and Debug additionally receive `create_file`, exact-replacement `edit_file`, `delete_file`, `rename_file`, `move_file`, approved `run_command` verification, and manifest-based `install_dependencies` tools. Tool activity appears as compact cards in the chat. The per-request tool limit defaults to 16 and is configurable from 4 through 32; older results are compacted first when a longer loop approaches the bounded context budget.
 
-Each request immediately creates a working card in the conversation. It displays the selected model, elapsed time, actual lifecycle phases such as context collection and tool use, and a Cancel button. The active card remains pinned near the top of the chat viewport while tool and permission cards accumulate. Conversation cards are non-shrinking flex items, so a long tool run scrolls normally instead of compressing and clipping the working card. Its deliberately restrained edge, sheen, indicator, and active-phase animations run on slower cycles and respect reduced-motion preferences. Routine progress no longer occupies the top status strip; that area is reserved for warnings and errors. The working card is removed when the final assistant message arrives, while completed tool activity remains visible.
+Each request immediately creates a working card in the chat. It displays the selected model, elapsed time, actual lifecycle phases such as context collection and tool use, and a Cancel button. The active card remains pinned near the top of the chat viewport while tool and permission cards accumulate. Chat cards are non-shrinking flex items, so a long tool run scrolls normally instead of compressing and clipping the working card. Its deliberately restrained edge, sheen, indicator, and active-phase animations run on slower cycles and respect reduced-motion preferences. Routine progress no longer occupies the top status strip; that area is reserved for warnings and errors. The working card is removed when the final assistant message arrives, while completed tool activity remains visible.
 
 Warnings from scope selection, health checks, and other UI actions do not end an active request. Only explicit success, failure, or cancellation events release the pending state and re-enable Send. Mode, scope, attachment, and model selectors remain locked for the duration, preventing context changes or a second request from colliding with work still running in the extension host.
 
@@ -49,7 +49,9 @@ Tool calls are normalized before loop detection, so formatting differences canno
 
 If a model repeats another completed tool call or returns reasoning without a final answer, DevMate performs one tools-off final turn. A model that still requests tools after the limit now fails immediately instead of being mislabeled as a busy provider and retried three times. Nemotron 3 requests reserve half of the response budget for reasoning and disable thinking during this recovery turn. The default `devMate.maxTokens` is 16,384 so reasoning models and multi-file Code responses have room to finish.
 
-Completed user/assistant turns are retained in bounded memory for the current Extension Host session, so follow-ups such as “okay, do it” keep the immediately preceding task context. The newest six turns are kept within a 20,000-character limit. This history is not yet persisted after VS Code or the Extension Host restarts.
+DevMate opens on a past-sessions screen before showing the composer. The global catalog displays sessions from every project, labels each one with its project, and allows up to 20 sessions to be created, renamed, or deleted. Selecting a session opens its chat only when its saved project identity matches the currently open workspace; a foreign-project selection stays on the list and displays a warning. Existing workspace-local sessions are migrated into the catalog when that workspace is first opened.
+
+Each session retains up to 30 completed turns within bounded per-session and total storage budgets, while the model receives only the newest six turns within 20,000 characters. Failed and cancelled requests, permission prompts, working cards, and tool activity are intentionally transient and are not restored.
 
 Directory deletion and movement, arbitrary dependency commands, arbitrary shells, Git commands, servers, generators, and writable formatters remain blocked.
 
@@ -83,7 +85,7 @@ Only workspace-relative text files in the first open folder can be changed. Abso
 
 ## Verification commands
 
-`run_command` accepts an executable and argument array rather than a raw shell string. Each new exact command asks inside the conversation; **Always allow this command** remembers only that executable, arguments, and working directory for the current workspace. Remembered commands can be revoked from Settings. Verification requires Workspace Trust and VS Code terminal shell integration.
+`run_command` accepts an executable and argument array rather than a raw shell string. Each new exact command asks inside the chat; **Always allow this command** remembers only that executable, arguments, and working directory for the current workspace. Remembered commands can be revoked from Settings. Verification requires Workspace Trust and VS Code terminal shell integration.
 
 If a provider emits a common legacy command shape, DevMate can safely split it into an executable and arguments before validation. The parsed command still passes through the same strict registry and is executed through VS Code's executable/argument API; it is never passed to a shell as raw text.
 
@@ -139,6 +141,8 @@ Use `--reload` only while actively editing backend Python and when no long model
 If the backend connection drops during a request, DevMate attempts local recovery and stops the interrupted request with **Retry now**. It does not replay automatically because the disconnected request may already have produced a file mutation.
 
 DevMate waits up to fifteen minutes for each model-provider call by default, and the extension automatically adds a 30-second transport buffer. Change **DevMate: Request Timeout Seconds** (`devMate.requestTimeoutSeconds`) in VS Code Settings to any value from 10 through 1800. The value is sent with every request and controls both sides, so changing it does not require a backend restart. `DEVMATE_PROVIDER_TIMEOUT_SECONDS` remains the backend fallback for older clients or requests that omit the setting.
+
+Long-running `/ask` calls use a bounded Node HTTP transport instead of the built-in `fetch` header deadline, so slow providers can use the full configured timeout rather than disconnecting after five minutes. Cancellation still destroys the active request immediately, responses are capped at 4,000,000 bytes, and genuine connection failures remain eligible for managed-backend recovery. After fifteen seconds without a provider response, the working card changes from **Generating answer** to an explicit slow-model waiting phase; project tools can begin only after the provider returns its first tool call.
 
 Verification commands default to a five-minute maximum. Configure `devMate.commandTimeoutSeconds` from the in-chat Settings dialog or VS Code Settings. A model-requested shorter timeout is honored; it cannot exceed the configured maximum.
 

@@ -31,7 +31,23 @@ import type {
   AssistantMode
 } from './api/types';
 import { createBoundedContextItem } from './context';
-import { appendConversationTurn } from './conversation';
+import {
+  CONVERSATION_SESSIONS_STORAGE_KEY,
+  LEGACY_CONVERSATION_SESSIONS_STORAGE_KEY,
+  activeConversationSession,
+  activeSessionModelHistory,
+  addConversationSession,
+  appendConversationSessionTurn,
+  createEmptyConversationSessionStore,
+  deleteConversationSession,
+  mergeConversationSessionStores,
+  migrateLegacyConversationSessionStore,
+  parseConversationSessionStore,
+  renameConversationSession,
+  sessionBelongsToWorkspace,
+  selectConversationSession
+} from './sessions';
+import type { ConversationSessionStore, ConversationWorkspace } from './sessions';
 import {
   boundedModelCommandOutput,
   commandLabel,
@@ -226,6 +242,10 @@ type WebviewMessage =
   | { command: 'clearRememberedCommands' }
   | { command: 'restartBackend' }
   | { command: 'openBackendLogs' }
+  | { command: 'newSession' }
+  | { command: 'selectSession'; sessionId: string }
+  | { command: 'renameSession'; sessionId: string }
+  | { command: 'deleteSession'; sessionId: string }
   | {
       command: 'commandPermissionDecision';
       requestId: string;
@@ -339,7 +359,7 @@ class DevMateChatViewProvider implements
   private projectIndexCache?: ProjectIndex;
   private readonly diffDocuments = new Map<string, string>();
   private readonly commandTerminals = new Map<string, vscode.Terminal>();
-  private conversationHistory: Array<{ user: string; assistant: string }> = [];
+  private sessionStore: ConversationSessionStore;
 
   constructor(
     private readonly extensionContext: vscode.ExtensionContext,
@@ -347,6 +367,33 @@ class DevMateChatViewProvider implements
     private readonly backendOutput: vscode.OutputChannel
   ) {
     this.extensionUri = extensionContext.extensionUri;
+    const parsedStoredSessions = parseConversationSessionStore(
+      extensionContext.globalState.get<unknown>(CONVERSATION_SESSIONS_STORAGE_KEY)
+    );
+    const storedSessions = parsedStoredSessions ?? createEmptyConversationSessionStore();
+    const workspace = this.getConversationWorkspace();
+    const legacySessions = workspace
+      ? migrateLegacyConversationSessionStore(
+        extensionContext.workspaceState.get<unknown>(LEGACY_CONVERSATION_SESSIONS_STORAGE_KEY),
+        workspace
+      )
+      : undefined;
+    this.sessionStore = legacySessions
+      ? mergeConversationSessionStores(storedSessions, legacySessions)
+      : storedSessions;
+    if (legacySessions) {
+      void this.persistSessionStore().then((saved) => {
+        if (saved) {
+          return extensionContext.workspaceState.update(
+            LEGACY_CONVERSATION_SESSIONS_STORAGE_KEY,
+            undefined
+          );
+        }
+        return undefined;
+      });
+    } else if (!parsedStoredSessions) {
+      void this.persistSessionStore();
+    }
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -486,6 +533,18 @@ class DevMateChatViewProvider implements
       case 'openBackendLogs':
         this.backendOutput.show(true);
         return;
+      case 'newSession':
+        await this.createSession();
+        return;
+      case 'selectSession':
+        await this.selectSession(message.sessionId);
+        return;
+      case 'renameSession':
+        await this.renameSession(message.sessionId);
+        return;
+      case 'deleteSession':
+        await this.deleteSession(message.sessionId);
+        return;
       case 'commandPermissionDecision':
         await this.handleCommandPermissionDecision(message.requestId, message.decision);
         return;
@@ -504,6 +563,7 @@ class DevMateChatViewProvider implements
         this.postPermissionPolicyState();
         this.postSettingsState();
         this.postBackendStatus();
+        this.postSessionState(false);
         return;
       default:
         this.postStatus('Unsupported command received.', 'error');
@@ -521,6 +581,160 @@ class DevMateChatViewProvider implements
 
     this.postMessage({ command: 'scopeUpdated', scope: collectedScope.info });
     this.postStatus('Ready');
+  }
+
+  private async createSession(): Promise<void> {
+    if (!this.canChangeSession()) {
+      return;
+    }
+    const workspace = this.getConversationWorkspace();
+    if (!workspace) {
+      this.postSessionWarning('Open a project folder before starting a DevMate session.');
+      return;
+    }
+    this.sessionStore = addConversationSession(
+      this.sessionStore,
+      randomUUID(),
+      Date.now(),
+      workspace
+    );
+    await this.persistSessionStore();
+    this.postSessionState(true, true);
+  }
+
+  private async selectSession(sessionId: string): Promise<void> {
+    if (!this.canChangeSession()) {
+      return;
+    }
+    const session = this.sessionStore.sessions.find((item) => item.id === sessionId);
+    if (!session) {
+      return;
+    }
+    const workspace = this.getConversationWorkspace();
+    if (!sessionBelongsToWorkspace(session, workspace)) {
+      this.postSessionWarning(
+        `This session belongs to “${session.workspaceName}”. Open that project to continue it.`
+      );
+      return;
+    }
+    const nextStore = selectConversationSession(this.sessionStore, sessionId);
+    this.sessionStore = nextStore;
+    await this.persistSessionStore();
+    this.postSessionState(true, true);
+  }
+
+  private async renameSession(sessionId: string): Promise<void> {
+    if (!this.canChangeSession()) {
+      return;
+    }
+    const session = this.sessionStore.sessions.find((item) => item.id === sessionId);
+    if (!session) {
+      return;
+    }
+    const title = await vscode.window.showInputBox({
+      title: 'Rename DevMate session',
+      prompt: 'Choose a short name for this session.',
+      value: session.title,
+      valueSelection: [0, session.title.length],
+      validateInput: (value) => value.trim() ? undefined : 'Enter a session name.'
+    });
+    if (title === undefined || this.activeRequest) {
+      return;
+    }
+    this.sessionStore = renameConversationSession(this.sessionStore, sessionId, title);
+    await this.persistSessionStore();
+    this.postSessionState(false);
+  }
+
+  private async deleteSession(sessionId: string): Promise<void> {
+    if (!this.canChangeSession()) {
+      return;
+    }
+    const session = this.sessionStore.sessions.find((item) => item.id === sessionId);
+    if (!session) {
+      return;
+    }
+    const decision = await vscode.window.showWarningMessage(
+      `Delete “${session.title}”? This permanently removes its saved messages from “${session.workspaceName}”.`,
+      { modal: true },
+      'Delete'
+    );
+    if (decision !== 'Delete' || this.activeRequest) {
+      return;
+    }
+    this.sessionStore = deleteConversationSession(this.sessionStore, sessionId);
+    await this.persistSessionStore();
+    this.postSessionState(false);
+  }
+
+  private canChangeSession(): boolean {
+    if (!this.activeRequest) {
+      return true;
+    }
+    this.postStatus('Wait for the active request to finish before changing sessions.', 'warning');
+    return false;
+  }
+
+  private async persistSessionStore(): Promise<boolean> {
+    try {
+      await this.extensionContext.globalState.update(
+        CONVERSATION_SESSIONS_STORAGE_KEY,
+        this.sessionStore
+      );
+      return true;
+    } catch {
+      this.postStatus(
+        'The session is available now, but VS Code could not save it for the next restart.',
+        'warning'
+      );
+      return false;
+    }
+  }
+
+  private postSessionState(includeMessages: boolean, openChat = false): void {
+    const activeSession = activeConversationSession(this.sessionStore);
+    const workspace = this.getConversationWorkspace();
+    this.postMessage({
+      command: 'sessionsUpdated',
+      activeSessionId: this.sessionStore.activeSessionId,
+      activeTitle: activeSession?.title ?? 'Sessions',
+      currentWorkspaceName: workspace?.name ?? 'No project open',
+      openChat,
+      sessions: this.sessionStore.sessions.map((session) => ({
+        id: session.id,
+        title: session.title,
+        workspaceName: session.workspaceName,
+        belongsToCurrentWorkspace: sessionBelongsToWorkspace(session, workspace),
+        updatedAt: session.updatedAt,
+        turnCount: session.turns.length
+      })),
+      ...(includeMessages && activeSession
+        ? {
+          messages: activeSession.turns.flatMap((turn) => [
+            { role: 'user', text: turn.user },
+            { role: 'assistant', text: turn.assistant }
+          ])
+        }
+        : {})
+    });
+  }
+
+  private postSessionWarning(message: string): void {
+    this.postMessage({ command: 'sessionProjectWarning', message });
+  }
+
+  private getConversationWorkspace(): ConversationWorkspace | undefined {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      return undefined;
+    }
+    const rawId = folder.uri.toString(true);
+    return {
+      id: process.platform === 'win32' && folder.uri.scheme === 'file'
+        ? rawId.toLocaleLowerCase('en-US')
+        : rawId,
+      name: folder.name
+    };
   }
 
   private async collectScope(scope: ScopeKind, question?: string): Promise<CollectedScope | undefined> {
@@ -2799,13 +3013,21 @@ class DevMateChatViewProvider implements
   ): Promise<{ result: ApiResult<AskResponse>; retriesExhausted: boolean }> {
     let retryNumber = 0;
     while (true) {
-      const result = await ask(
-        backendUrl,
-        request,
-        providerApiKey,
-        timeoutMilliseconds,
-        signal
-      );
+      const waitingTimer = setTimeout(() => {
+        this.postStatus('Waiting for model response — the selected model is still working');
+      }, 15_000);
+      let result: ApiResult<AskResponse>;
+      try {
+        result = await ask(
+          backendUrl,
+          request,
+          providerApiKey,
+          timeoutMilliseconds,
+          signal
+        );
+      } finally {
+        clearTimeout(waitingTimer);
+      }
       if (!isRetryableProviderFailure(result)) {
         return { result, retriesExhausted: false };
       }
@@ -2839,6 +3061,15 @@ class DevMateChatViewProvider implements
     const question = message.question.trim();
     if (!question) {
       this.postRequestFailure('Enter a question before asking.', { level: 'warning' });
+      return;
+    }
+
+    const activeSession = activeConversationSession(this.sessionStore);
+    if (!activeSession || !sessionBelongsToWorkspace(activeSession, this.getConversationWorkspace())) {
+      this.postRequestFailure(
+        'Choose a session for the currently open project before asking.',
+        { level: 'warning' }
+      );
       return;
     }
 
@@ -2943,7 +3174,7 @@ class DevMateChatViewProvider implements
         agentEditsEnabled: message.mode === 'code' || message.mode === 'debug',
         forceFinalAnswer: forceFinalThisTurn,
         toolHistory: compactAgentToolHistory(toolHistory),
-        conversationHistory: this.conversationHistory
+        conversationHistory: activeSessionModelHistory(this.sessionStore)
       };
       this.postStatus(forceFinalThisTurn
         ? 'Requesting concise final answer'
@@ -3176,16 +3407,19 @@ class DevMateChatViewProvider implements
       changeOutcome
     ].filter(Boolean).join('\n\n');
 
-    this.conversationHistory = appendConversationTurn(
-      this.conversationHistory,
+    this.sessionStore = appendConversationSessionTurn(
+      this.sessionStore,
       question,
-      [finalData.answer, changeOutcome].filter(Boolean).join('\n\n')
+      response,
+      Date.now()
     );
+    await this.persistSessionStore();
 
     this.postMessage({
       command: 'assistantResponse',
       response
     });
+    this.postSessionState(false);
     this.postStatus('Ready');
   }
 
@@ -3362,6 +3596,10 @@ class DevMateChatViewProvider implements
       box-sizing: border-box;
     }
 
+    [hidden] {
+      display: none !important;
+    }
+
     body {
       margin: 0;
       padding: 0;
@@ -3383,6 +3621,70 @@ class DevMateChatViewProvider implements
       grid-template-rows: auto auto 1fr auto;
       height: 100vh;
       min-height: 0;
+    }
+
+    .session-home {
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr);
+      gap: 12px;
+      height: 100vh;
+      padding: 14px 12px 12px;
+      background: var(--surface);
+    }
+
+    .session-home-header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: end;
+    }
+
+    .session-home-brand {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+    }
+
+    .session-home-heading h1 {
+      margin: 0 0 3px;
+      font-size: 18px;
+      font-weight: 650;
+    }
+
+    .session-home-heading p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .session-home-list {
+      min-height: 0;
+      overflow-y: auto;
+      scrollbar-gutter: stable;
+    }
+
+    .session-home-warning {
+      padding: 9px 10px;
+      border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground));
+      border-radius: 6px;
+      color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+      background: var(--vscode-inputValidation-warningBackground, var(--surface-soft));
+      font-size: 11px;
+      line-height: 1.4;
+    }
+
+    .session-empty {
+      margin-top: 20px;
+      padding: 20px 14px;
+      border: 1px dashed var(--border);
+      border-radius: 8px;
+      color: var(--muted);
+      text-align: center;
+      font-size: 11px;
+      line-height: 1.5;
     }
 
     .toolbar {
@@ -3413,6 +3715,8 @@ class DevMateChatViewProvider implements
     }
 
     .mode-button,
+    .session-selector,
+    .toolbar-new-session,
     .toolbar-settings,
     .backend-status,
     .scope-button,
@@ -3446,15 +3750,15 @@ class DevMateChatViewProvider implements
       border-color: var(--vscode-button-background);
     }
 
+    .session-selector,
+    .toolbar-new-session,
     .toolbar-settings,
     .backend-status {
       display: inline-flex;
       gap: 5px;
       align-items: center;
       justify-content: center;
-      width: 28px;
       height: 28px;
-      margin-left: auto;
       padding: 0;
       border-color: var(--border);
       border-radius: 5px;
@@ -3463,8 +3767,35 @@ class DevMateChatViewProvider implements
       font-size: 11px;
     }
 
-    .backend-status {
+    .session-selector {
+      min-width: 28px;
+      max-width: 138px;
       margin-left: auto;
+      padding: 0 7px;
+      overflow: hidden;
+      cursor: pointer;
+    }
+
+    .session-selector-title {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .session-selector-chevron {
+      flex: 0 0 auto;
+      font-size: 8px;
+    }
+
+    .toolbar-new-session,
+    .toolbar-settings,
+    .backend-status {
+      flex: 0 0 28px;
+      width: 28px;
+    }
+
+    .backend-status {
       cursor: pointer;
     }
 
@@ -3495,6 +3826,8 @@ class DevMateChatViewProvider implements
       background: var(--vscode-editorError-foreground);
     }
 
+    .session-selector:hover,
+    .toolbar-new-session:hover,
     .toolbar-settings:hover {
       color: var(--vscode-foreground);
       background: var(--vscode-toolbar-hoverBackground);
@@ -4345,6 +4678,89 @@ class DevMateChatViewProvider implements
       border-top: 1px solid var(--border);
     }
 
+    .session-list {
+      display: grid;
+      gap: 6px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .session-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 6px;
+      align-items: center;
+      padding: 6px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--surface-soft);
+    }
+
+    .session-row.active {
+      border-color: var(--focus);
+    }
+
+    .session-row.foreign {
+      border-style: dashed;
+    }
+
+    .session-select {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+      padding: 4px 5px;
+      border: 0;
+      border-radius: 4px;
+      color: var(--vscode-foreground);
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .session-select:hover {
+      background: var(--vscode-list-hoverBackground);
+    }
+
+    .session-title {
+      overflow: hidden;
+      font-size: 12px;
+      font-weight: 600;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .session-meta {
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .session-project-badge {
+      color: var(--vscode-textLink-foreground);
+      font-weight: 600;
+    }
+
+    .session-actions {
+      display: inline-flex;
+      gap: 3px;
+    }
+
+    .session-action {
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      color: var(--muted);
+      background: transparent;
+      cursor: pointer;
+    }
+
+    .session-action:hover {
+      color: var(--vscode-foreground);
+      background: var(--vscode-toolbar-hoverBackground);
+    }
+
     .settings-section {
       display: grid;
       gap: 9px;
@@ -4479,6 +4895,14 @@ class DevMateChatViewProvider implements
     }
 
     @media (max-width: 480px) {
+      .session-selector {
+        max-width: 34px;
+      }
+
+      .session-selector-title {
+        display: none;
+      }
+
       .profile-form-row {
         grid-template-columns: 1fr;
       }
@@ -4502,13 +4926,48 @@ class DevMateChatViewProvider implements
   </style>
 </head>
 <body>
-  <main class="app">
+  <section id="sessionHome" class="session-home" aria-labelledby="sessionHomeTitle">
+    <header class="session-home-header">
+      <div class="session-home-heading">
+        <span class="session-home-brand">DEVMATE</span>
+        <h1 id="sessionHomeTitle">Sessions</h1>
+        <p id="currentProjectLabel">Loading project sessions…</p>
+      </div>
+      <button id="newSessionOnHome" class="action-button primary" type="button">New chat</button>
+    </header>
+    <div id="sessionProjectWarning" class="session-home-warning" role="alert" hidden></div>
+    <div class="session-home-list">
+      <ul id="sessionList" class="session-list" aria-label="Saved DevMate sessions"></ul>
+      <div id="sessionEmpty" class="session-empty" hidden>
+        No past sessions yet.<br>Start a new chat for this project.
+      </div>
+    </div>
+  </section>
+
+  <main id="chatApp" class="app" hidden>
     <header class="toolbar">
       <div class="mode-tabs" role="group" aria-label="Assistant mode">
         <button class="mode-button" type="button" data-mode="ideas" aria-pressed="false">Ideas</button>
         <button class="mode-button" type="button" data-mode="code" aria-pressed="true">Code</button>
         <button class="mode-button" type="button" data-mode="debug" aria-pressed="false">Debug</button>
       </div>
+      <button
+        id="sessionSelector"
+        class="session-selector"
+        type="button"
+        title="Open sessions"
+        aria-label="Open sessions"
+      >
+        <span aria-hidden="true">←</span>
+        <span id="activeSessionTitle" class="session-selector-title">New session</span>
+      </button>
+      <button
+        id="newSessionButton"
+        class="toolbar-new-session"
+        type="button"
+        title="New session"
+        aria-label="New session"
+      >＋</button>
       <button
         id="backendStatus"
         class="backend-status"
@@ -4789,6 +5248,10 @@ class DevMateChatViewProvider implements
         canRestart: false
       },
       backendLabel: 'Checking backend',
+      sessions: [],
+      activeSessionId: '',
+      activeSessionTitle: 'New session',
+      currentWorkspaceName: 'No project open',
       workingStartedAt: 0,
       workingTimer: undefined,
       lastRequest: undefined,
@@ -4796,6 +5259,11 @@ class DevMateChatViewProvider implements
     };
 
     const statusEl = document.getElementById('status');
+    const sessionHomeEl = document.getElementById('sessionHome');
+    const chatAppEl = document.getElementById('chatApp');
+    const currentProjectLabelEl = document.getElementById('currentProjectLabel');
+    const sessionProjectWarningEl = document.getElementById('sessionProjectWarning');
+    const sessionEmptyEl = document.getElementById('sessionEmpty');
     const messagesEl = document.getElementById('messages');
     const questionEl = document.getElementById('question');
     const scopeDetailEl = document.getElementById('scopeDetail');
@@ -4806,6 +5274,11 @@ class DevMateChatViewProvider implements
     const llmProfileSelectorEl = document.getElementById('llmProfileSelector');
     const llmProfileLabelEl = document.getElementById('llmProfileLabel');
     const askEl = document.getElementById('ask');
+    const sessionSelectorEl = document.getElementById('sessionSelector');
+    const activeSessionTitleEl = document.getElementById('activeSessionTitle');
+    const newSessionButtonEl = document.getElementById('newSessionButton');
+    const sessionListEl = document.getElementById('sessionList');
+    const newSessionOnHomeEl = document.getElementById('newSessionOnHome');
     const llmProfileDialogEl = document.getElementById('llmProfileDialog');
     const llmProfileFormEl = document.getElementById('llmProfileForm');
     const llmProfileFormTitleEl = document.getElementById('llmProfileFormTitle');
@@ -4914,6 +5387,18 @@ class DevMateChatViewProvider implements
     };
 
     settingsButtonEl.addEventListener('click', openSettingsDialog);
+    sessionSelectorEl.addEventListener('click', () => {
+      showSessionHome();
+    });
+    const requestNewSession = () => {
+      if (state.askPending) {
+        return;
+      }
+      sessionProjectWarningEl.hidden = true;
+      vscode.postMessage({ command: 'newSession' });
+    };
+    newSessionButtonEl.addEventListener('click', requestNewSession);
+    newSessionOnHomeEl.addEventListener('click', requestNewSession);
     backendStatusEl.addEventListener('click', () => {
       vscode.postMessage({ command: 'openBackendLogs' });
     });
@@ -5060,6 +5545,29 @@ class DevMateChatViewProvider implements
         finishWorkingTurn(message.response);
         state.askPending = false;
         renderAskAvailability();
+      }
+
+      if (message.command === 'sessionsUpdated') {
+        state.sessions = Array.isArray(message.sessions) ? message.sessions : [];
+        state.activeSessionId = message.activeSessionId || '';
+        state.activeSessionTitle = message.activeTitle || 'New session';
+        state.currentWorkspaceName = message.currentWorkspaceName || 'No project open';
+        sessionProjectWarningEl.hidden = true;
+        renderSessions();
+        if (message.openChat === true) {
+          showChat();
+        }
+        if (Array.isArray(message.messages)) {
+          renderSessionMessages(message.messages);
+          state.askPending = false;
+          renderAskAvailability();
+        }
+      }
+
+      if (message.command === 'sessionProjectWarning') {
+        sessionProjectWarningEl.textContent = message.message;
+        sessionProjectWarningEl.hidden = false;
+        showSessionHome(false);
       }
 
       if (message.command === 'requestCancelling') {
@@ -5221,7 +5729,7 @@ class DevMateChatViewProvider implements
       });
     }
 
-    function appendMessage(text, role) {
+    function appendMessage(text, role, scroll = true) {
       const item = document.createElement('article');
       item.className = 'message ' + role;
 
@@ -5235,7 +5743,99 @@ class DevMateChatViewProvider implements
       body.textContent = text;
       item.appendChild(body);
       messagesEl.appendChild(item);
+      if (scroll) {
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+    }
+
+    function renderSessionMessages(messages) {
+      clearWorkingTimer();
+      messagesEl.replaceChildren();
+      messages.forEach((message) => {
+        if ((message.role === 'user' || message.role === 'assistant') && typeof message.text === 'string') {
+          appendMessage(message.text, message.role, false);
+        }
+      });
       messagesEl.scrollTop = messagesEl.scrollHeight;
+      questionEl.focus();
+    }
+
+    function showSessionHome(render = true) {
+      chatAppEl.hidden = true;
+      sessionHomeEl.hidden = false;
+      if (render) {
+        renderSessions();
+      }
+    }
+
+    function showChat() {
+      sessionHomeEl.hidden = true;
+      chatAppEl.hidden = false;
+    }
+
+    function renderSessions() {
+      activeSessionTitleEl.textContent = state.activeSessionTitle;
+      sessionSelectorEl.title = state.activeSessionTitle + ' · Back to sessions';
+      sessionSelectorEl.setAttribute('aria-label', sessionSelectorEl.title);
+      currentProjectLabelEl.textContent = 'Current project: ' + state.currentWorkspaceName;
+      sessionListEl.replaceChildren();
+      sessionEmptyEl.hidden = state.sessions.length > 0;
+      state.sessions.forEach((session) => {
+        const row = document.createElement('li');
+        row.className = 'session-row'
+          + (session.id === state.activeSessionId && session.belongsToCurrentWorkspace ? ' active' : '')
+          + (session.belongsToCurrentWorkspace ? '' : ' foreign');
+
+        const select = document.createElement('button');
+        select.type = 'button';
+        select.className = 'session-select';
+        const title = document.createElement('span');
+        title.className = 'session-title';
+        title.textContent = session.title;
+        const meta = document.createElement('span');
+        meta.className = 'session-meta';
+        const project = document.createElement('span');
+        project.className = 'session-project-badge';
+        project.textContent = session.workspaceName
+          + (session.belongsToCurrentWorkspace ? '' : ' · Different project');
+        const turns = Number(session.turnCount) || 0;
+        const updated = Number.isFinite(session.updatedAt)
+          ? new Date(session.updatedAt).toLocaleString()
+          : '';
+        const details = document.createElement('span');
+        details.textContent = ' · ' + turns + (turns === 1 ? ' turn' : ' turns')
+          + (updated ? ' · ' + updated : '');
+        meta.append(project, details);
+        select.append(title, meta);
+        select.addEventListener('click', () => {
+          sessionProjectWarningEl.hidden = true;
+          vscode.postMessage({ command: 'selectSession', sessionId: session.id });
+        });
+
+        const actions = document.createElement('span');
+        actions.className = 'session-actions';
+        const rename = document.createElement('button');
+        rename.type = 'button';
+        rename.className = 'session-action';
+        rename.textContent = '✎';
+        rename.title = 'Rename session';
+        rename.setAttribute('aria-label', rename.title);
+        rename.addEventListener('click', () => {
+          vscode.postMessage({ command: 'renameSession', sessionId: session.id });
+        });
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'session-action';
+        remove.textContent = '×';
+        remove.title = 'Delete session';
+        remove.setAttribute('aria-label', remove.title);
+        remove.addEventListener('click', () => {
+          vscode.postMessage({ command: 'deleteSession', sessionId: session.id });
+        });
+        actions.append(rename, remove);
+        row.append(select, actions);
+        sessionListEl.appendChild(row);
+      });
     }
 
     function startWorkingTurn() {
@@ -5703,6 +6303,9 @@ class DevMateChatViewProvider implements
       });
       attachFilesEl.disabled = state.askPending;
       llmProfileSelectorEl.disabled = state.askPending;
+      sessionSelectorEl.disabled = state.askPending;
+      newSessionButtonEl.disabled = state.askPending;
+      newSessionOnHomeEl.disabled = state.askPending;
       renderBackendStatus();
       askEl.title = !state.activeProfile
         ? 'Add a model profile before asking'

@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const http = require('node:http');
 const test = require('node:test');
 
 const {
@@ -24,93 +25,84 @@ test('recognizes only loopback backend URLs for provider-key handoff', () => {
 });
 
 test('refuses to send a provider key to a remote backend', async () => {
-  const originalFetch = global.fetch;
-  global.fetch = async () => {
-    throw new Error('fetch should not be called');
-  };
+  const result = await ask(
+    'https://backend.example.com',
+    askRequest(),
+    'secret-provider-key'
+  );
 
-  try {
-    const result = await ask(
-      'https://backend.example.com',
-      askRequest(),
-      'secret-provider-key'
-    );
-
-    assert.equal(result.status, 'error');
-    assert.match(result.message, /only sends provider API keys/);
-  } finally {
-    global.fetch = originalFetch;
-  }
+  assert.equal(result.status, 'error');
+  assert.match(result.message, /only sends provider API keys/);
 });
 
-test('sends the provider key in a header to the loopback backend', async () => {
-  const originalFetch = global.fetch;
+test('uses the configurable Node HTTP transport and sends the provider key', async () => {
   let receivedHeaders;
-  global.fetch = async (_url, init) => {
-    receivedHeaders = init.headers;
-    return new Response(JSON.stringify({
-      status: 'ok',
-      data: { answer: 'Real answer', usedFiles: [], changes: [] }
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' }
-    });
+  const originalFetch = global.fetch;
+  global.fetch = async () => {
+    throw new Error('long-running ask must not use fetch');
   };
-
   try {
-    const result = await ask(
-      'http://127.0.0.1:8000',
-      askRequest(),
-      'secret-provider-key'
-    );
+    await withServer((request, response) => {
+      receivedHeaders = request.headers;
+      sendJson(response, 200, {
+        status: 'ok',
+        data: { answer: 'Real answer', usedFiles: [], changes: [], toolCalls: [] }
+      });
+    }, async (backendUrl) => {
+      const result = await ask(
+        backendUrl,
+        askRequest(),
+        'secret-provider-key',
+        10_000
+      );
 
-    assert.equal(result.status, 'ok');
-    assert.equal(receivedHeaders['X-DevMate-Provider-Key'], 'secret-provider-key');
+      assert.equal(result.status, 'ok');
+      assert.equal(receivedHeaders['x-devmate-provider-key'], 'secret-provider-key');
+      assert.equal(receivedHeaders['accept-encoding'], 'identity');
+    });
   } finally {
     global.fetch = originalFetch;
   }
 });
 
 test('surfaces FastAPI provider error details', async () => {
-  const originalFetch = global.fetch;
-  global.fetch = async () => new Response(
-    JSON.stringify({ detail: 'The model provider rejected the API key.' }),
-    {
-      status: 401,
-      headers: { 'Content-Type': 'application/json' }
-    }
-  );
-
-  try {
+  await withServer((_request, response) => {
+    sendJson(response, 401, { detail: 'The model provider rejected the API key.' });
+  }, async (backendUrl) => {
     const result = await ask(
-      'http://localhost:8000',
+      backendUrl,
       askRequest(),
-      'bad-key'
+      'bad-key',
+      10_000
     );
 
     assert.equal(result.status, 'error');
     assert.equal(result.message, 'The model provider rejected the API key.');
     assert.equal(result.statusCode, 401);
     assert.equal(result.errorKind, 'http');
-  } finally {
-    global.fetch = originalFetch;
-  }
+  });
+});
+
+test('uses DevMate timeout instead of a fixed five-minute header deadline', async () => {
+  await withServer(() => undefined, async (backendUrl) => {
+    const result = await ask(
+      backendUrl,
+      askRequest(),
+      undefined,
+      30
+    );
+
+    assert.equal(result.status, 'error');
+    assert.match(result.message, /timed out after 0\.03 seconds/);
+    assert.equal(result.errorKind, 'timeout');
+  });
 });
 
 test('cancels an active backend request through an external signal', async () => {
-  const originalFetch = global.fetch;
-  global.fetch = async (_url, init) => new Promise((_resolve, reject) => {
-    init.signal.addEventListener('abort', () => {
-      const error = new Error('cancelled');
-      error.name = 'AbortError';
-      reject(error);
-    }, { once: true });
-  });
   const controller = new AbortController();
-
-  try {
+  await withServer(() => undefined, async (backendUrl) => {
     const pending = ask(
-      'http://127.0.0.1:8000',
+      backendUrl,
       askRequest(),
       undefined,
       10_000,
@@ -119,13 +111,22 @@ test('cancels an active backend request through an external signal', async () =>
     controller.abort();
 
     const result = await pending;
-
     assert.equal(result.status, 'error');
     assert.equal(result.message, 'Request cancelled.');
     assert.equal(result.errorKind, 'cancelled');
-  } finally {
-    global.fetch = originalFetch;
-  }
+  });
+});
+
+test('rejects oversized backend responses before parsing them', async () => {
+  await withServer((_request, response) => {
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end('x'.repeat(4_000_001));
+  }, async (backendUrl) => {
+    const result = await ask(backendUrl, askRequest(), undefined, 10_000);
+    assert.equal(result.status, 'error');
+    assert.equal(result.errorKind, 'invalid-response');
+    assert.match(result.message, /oversized response/);
+  });
 });
 
 function askRequest() {
@@ -142,4 +143,24 @@ function askRequest() {
       timeoutSeconds: 900
     }
   };
+}
+
+function sendJson(response, statusCode, value) {
+  response.writeHead(statusCode, { 'Content-Type': 'application/json' });
+  response.end(JSON.stringify(value));
+}
+
+async function withServer(handler, run) {
+  const server = http.createServer(handler);
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  try {
+    await run(`http://127.0.0.1:${address.port}`);
+  } finally {
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+  }
 }

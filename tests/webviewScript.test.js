@@ -96,3 +96,34 @@ test('managed backend state and recovery controls are exposed in the UI', () => 
   assert.match(source, /backendDropped[\s\S]*?retryable:/);
   assert.doesNotMatch(managerSource, /['"]--reload['"]/);
 });
+
+test('slow provider calls replace the static generating phase with a waiting heartbeat', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'extension.ts'),
+    'utf8'
+  );
+  assert.match(source, /Waiting for model response — the selected model is still working/);
+  assert.match(source, /}, 15_000\);/);
+  assert.match(source, /clearTimeout\(waitingTimer\)/);
+});
+
+test('project-bound sessions open from a dedicated landing screen', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'extension.ts'),
+    'utf8'
+  );
+  assert.match(source, /id="sessionSelector"/);
+  assert.match(source, /id="newSessionButton"/);
+  assert.match(source, /id="sessionHome"/);
+  assert.match(source, /id="chatApp"[^>]+hidden/);
+  assert.match(source, /id="sessionProjectWarning"/);
+  assert.match(source, /message\.command === 'sessionsUpdated'/);
+  assert.match(source, /message\.command === 'sessionProjectWarning'/);
+  assert.match(source, /command: 'selectSession'/);
+  assert.match(source, /command: 'renameSession'/);
+  assert.match(source, /command: 'deleteSession'/);
+  assert.match(source, /sessionSelectorEl\.disabled = state\.askPending/);
+  assert.match(source, /newSessionButtonEl\.disabled = state\.askPending/);
+  assert.match(source, /sessionBelongsToWorkspace\(session, workspace\)/);
+  assert.match(source, /extensionContext\.globalState\.get/);
+});
