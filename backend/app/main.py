@@ -18,6 +18,11 @@ from .providers import (
     ProviderError,
     ProviderName,
 )
+from .text_tool_calls import (
+    classify_text_tool_call_prefix,
+    looks_like_text_tool_call,
+    parse_text_tool_calls,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -517,17 +522,34 @@ async def ask_stream(
         yield _stream_line({"type": "start"})
         completion: ChatCompletion | None = None
         reasoning_announced = False
+        tool_announced = False
+        preview_mode: Literal["pending", "answer", "tool"] = "pending"
+        preview_buffer = ""
         try:
             stream_method = getattr(chat_provider, "stream", None)
             if callable(stream_method):
                 async for event in stream_method(completion_request):
                     if event.kind == "content" and event.text:
-                        yield _stream_line({"type": "delta", "text": event.text})
+                        if preview_mode == "answer":
+                            yield _stream_line({"type": "delta", "text": event.text})
+                        elif preview_mode == "pending":
+                            preview_buffer += event.text
+                            preview_mode = classify_text_tool_call_prefix(preview_buffer)
+                            if preview_mode == "answer":
+                                yield _stream_line({"type": "delta", "text": preview_buffer})
+                                preview_buffer = ""
+                            elif preview_mode == "tool":
+                                preview_buffer = ""
+                                if not tool_announced:
+                                    tool_announced = True
+                                    yield _stream_line({"type": "progress", "phase": "Preparing project tool call"})
                     elif event.kind == "reasoning" and not reasoning_announced:
                         reasoning_announced = True
                         yield _stream_line({"type": "progress", "phase": "Model is reasoning"})
                     elif event.kind == "tool":
-                        yield _stream_line({"type": "progress", "phase": "Preparing project tool call"})
+                        if not tool_announced:
+                            tool_announced = True
+                            yield _stream_line({"type": "progress", "phase": "Preparing project tool call"})
                     elif event.kind == "complete" and event.completion:
                         completion = event.completion
             else:
@@ -536,13 +558,22 @@ async def ask_stream(
                     content=completion_value
                 )
                 if completion.content:
-                    yield _stream_line({"type": "delta", "text": completion.content})
+                    preview_buffer = completion.content
+                    preview_mode = classify_text_tool_call_prefix(preview_buffer)
 
             if not completion:
                 raise HTTPException(
                     status_code=502,
                     detail="The model provider ended its stream without a final response.",
                 )
+            completion, converted_text_tool = _normalize_text_tool_completion(completion)
+            if converted_text_tool and not tool_announced:
+                tool_announced = True
+                yield _stream_line({"type": "progress", "phase": "Preparing project tool call"})
+            if preview_mode == "pending" and preview_buffer and not converted_text_tool:
+                yield _stream_line({"type": "delta", "text": preview_buffer})
+            elif preview_mode == "answer" and preview_buffer:
+                yield _stream_line({"type": "delta", "text": preview_buffer})
             result = _ask_result_from_completion(
                 request,
                 completion,
@@ -634,6 +665,7 @@ def _ask_result_from_completion(
     enabled_tools: tuple[AgentToolName, ...],
     used_files: list[str],
 ) -> AskResult:
+    completion, _ = _normalize_text_tool_completion(completion)
     tools_enabled = bool(enabled_tools)
     if completion.tool_calls:
         if not tools_enabled:
@@ -685,6 +717,27 @@ def _ask_result_from_completion(
             changes=changes,
         ),
     )
+
+
+def _normalize_text_tool_completion(
+    completion: ChatCompletion,
+) -> tuple[ChatCompletion, bool]:
+    if completion.tool_calls or not completion.content:
+        return completion, False
+    if not looks_like_text_tool_call(completion.content):
+        return completion, False
+    tool_calls = parse_text_tool_calls(completion.content)
+    if not tool_calls:
+        raise HTTPException(
+            status_code=502,
+            detail="The model returned a malformed textual tool call.",
+        )
+    return ChatCompletion(
+        content=None,
+        tool_calls=tool_calls,
+        finish_reason=completion.finish_reason,
+        reasoning_content=completion.reasoning_content,
+    ), True
 
 
 def _stream_line(value: dict[str, object]) -> str:

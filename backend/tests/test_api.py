@@ -15,6 +15,7 @@ from backend.app.main import (
 from backend.app.providers import (
     ChatCompletion,
     ChatCompletionRequest,
+    ChatStreamEvent,
     ChatToolCall,
     ProviderError,
 )
@@ -388,6 +389,86 @@ class DevMateApiTests(unittest.TestCase):
         )
         self.assertEqual(len(self.provider.requests[-1].tools), 3)
 
+    def test_ask_converts_textual_tool_markup_into_a_validated_call(self) -> None:
+        self.provider.answer = ChatCompletion(
+            content=(
+                "<tool_call>\n<function=read_file>\n"
+                "<parameter=endLine>1950</parameter>\n"
+                "<parameter=path>styles.css</parameter>\n"
+                "<parameter=startLine>1</parameter>\n"
+                "</function>\n</tool_call>"
+            )
+        )
+
+        response = self.client.post(
+            "/ask",
+            json=self._ask_payload(scope_type="project", items=[]),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertEqual(data["answer"], "")
+        self.assertEqual(len(data["toolCalls"]), 1)
+        self.assertEqual(data["toolCalls"][0]["name"], "read_file")
+        self.assertEqual(data["toolCalls"][0]["arguments"], {
+            "endLine": 1950,
+            "path": "styles.css",
+            "startLine": 1,
+        })
+
+    def test_stream_hides_textual_tool_markup_and_returns_the_call(self) -> None:
+        content = (
+            "<tool_call>\n<function=read_file>\n"
+            "<parameter=path>styles.css</parameter>\n"
+            "</function>\n</tool_call>"
+        )
+
+        async def stream(request: ChatCompletionRequest):
+            self.provider.requests.append(request)
+            yield ChatStreamEvent(kind="content", text="<tool_")
+            yield ChatStreamEvent(kind="content", text=content[len("<tool_"):])
+            yield ChatStreamEvent(
+                kind="complete",
+                completion=ChatCompletion(content=content),
+            )
+
+        self.provider.stream = stream
+        try:
+            with self.client.stream(
+                "POST",
+                "/ask/stream",
+                json=self._ask_payload(scope_type="project", items=[]),
+            ) as response:
+                events = [json.loads(line) for line in response.iter_lines() if line]
+        finally:
+            del self.provider.stream
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(any(event.get("type") == "delta" for event in events))
+        self.assertTrue(any(
+            event.get("type") == "progress"
+            and event.get("phase") == "Preparing project tool call"
+            for event in events
+        ))
+        self.assertEqual(events[-1]["type"], "final")
+        self.assertEqual(events[-1]["result"]["data"]["toolCalls"][0]["name"], "read_file")
+
+    def test_ask_rejects_malformed_textual_tool_markup(self) -> None:
+        self.provider.answer = ChatCompletion(
+            content="<tool_call><function=read_file><parameter=path>styles.css</function></tool_call>"
+        )
+
+        response = self.client.post(
+            "/ask",
+            json=self._ask_payload(scope_type="project", items=[]),
+        )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(
+            response.json(),
+            {"detail": "The model returned a malformed textual tool call."},
+        )
+
     def test_ask_returns_manifest_dependency_install_tool_calls(self) -> None:
         self.provider.answer = ChatCompletion(
             content=None,
@@ -436,6 +517,8 @@ class DevMateApiTests(unittest.TestCase):
         self.assertEqual(provider_request.tools, ())
         self.assertTrue(provider_request.force_final_answer)
         self.assertIn("prior turn did not produce", provider_request.messages[0].content)
+        self.assertIn("human-readable summary", provider_request.messages[0].content)
+        self.assertIn("Do not emit tool-call markup", provider_request.messages[0].content)
         self.assertEqual(provider_request.messages[-2].role, "assistant")
         self.assertEqual(provider_request.messages[-2].tool_calls[0].id, "call-1")
         self.assertEqual(provider_request.messages[-1].role, "tool")
