@@ -9,6 +9,7 @@ export type LlmProfile = {
   provider: LlmProvider;
   model: string;
   baseUrl?: string;
+  builtIn?: true;
 };
 
 export type LlmProfileDraft = Omit<LlmProfile, 'id'>;
@@ -17,6 +18,16 @@ export const PROVIDER_LABELS: Record<LlmProvider, string> = {
   openai: 'OpenAI',
   ollama: 'Ollama'
 };
+
+export const BUILT_IN_NEMOTRON_PROFILE_ID = 'builtin-nemotron-3-ultra';
+export const BUILT_IN_NEMOTRON_PROFILE: LlmProfile = Object.freeze({
+  id: BUILT_IN_NEMOTRON_PROFILE_ID,
+  name: 'Nemotron 3 Ultra',
+  provider: 'openai',
+  model: 'nvidia/nemotron-3-ultra-550b-a55b',
+  baseUrl: 'https://integrate.api.nvidia.com/v1',
+  builtIn: true
+});
 
 const supportedProviders = new Set<LlmProvider>(['openai', 'ollama']);
 
@@ -127,6 +138,27 @@ export function parseStoredProfiles(value: unknown): LlmProfile[] {
   }
 
   return profiles;
+}
+
+export function profilesWithBuiltInNemotron(profiles: LlmProfile[]): LlmProfile[] {
+  return [
+    BUILT_IN_NEMOTRON_PROFILE,
+    ...profiles.filter((profile) => profile.id !== BUILT_IN_NEMOTRON_PROFILE_ID)
+  ];
+}
+
+export function isBuiltInLlmProfile(profile: LlmProfile): boolean {
+  return profile.id === BUILT_IN_NEMOTRON_PROFILE_ID;
+}
+
+export function isEquivalentNemotronProfile(profile: LlmProfile): boolean {
+  return profile.provider === BUILT_IN_NEMOTRON_PROFILE.provider
+    && profile.model.toLocaleLowerCase() === BUILT_IN_NEMOTRON_PROFILE.model.toLocaleLowerCase()
+    && profile.baseUrl?.toLocaleLowerCase() === BUILT_IN_NEMOTRON_PROFILE.baseUrl?.toLocaleLowerCase();
+}
+
+export function providerLabelForProfile(profile: LlmProfile): string {
+  return isBuiltInLlmProfile(profile) ? 'NVIDIA' : PROVIDER_LABELS[profile.provider];
 }
 
 export function secretKeyForProfile(profileId: string): string {

@@ -153,6 +153,19 @@ test('composer shows a live token estimate and a compact ask action', () => {
   assert.match(source, /project context and the response are not included/);
 });
 
+test('built-in Nemotron setup locks provider fields while keeping the API key configurable', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'extension.ts'),
+    'utf8'
+  );
+  assert.match(source, /profile\?\.builtIn === true/);
+  assert.match(source, /llmProfileNameEl\.disabled = isBuiltIn/);
+  assert.match(source, /llmProfileProviderEl\.disabled = isBuiltIn/);
+  assert.match(source, /Configure built-in Nemotron/);
+  assert.match(source, /Save API key/);
+  assert.match(source, /The built-in Nemotron profile cannot be deleted/);
+});
+
 test('project-bound sessions open from a dedicated landing screen', () => {
   const source = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'extension.ts'),

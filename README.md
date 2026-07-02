@@ -22,7 +22,7 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 - Bounded Selection and active File context with language and truncation metadata
 - Persistent workspace-local Project index with bounded chunk retrieval and deterministic fallback ranking
 - Workspace-only multi-file attachments with a compact expandable selected-file list
-- Compact model selector with reusable OpenAI and Ollama profiles
+- Built-in NVIDIA Nemotron model plus reusable custom OpenAI and Ollama profiles
 - API keys stored in VS Code SecretStorage instead of ordinary extension settings
 
 Local lexical RAG is connected for Project scope. Semantic embeddings and library-documentation retrieval are not connected yet.
@@ -69,9 +69,11 @@ Use the gear button in the top-right of the DevMate view to configure provider t
 
 ## Model profiles
 
-Use the model button beside **Ask** to add or select a model profile. Adding or editing opens one modal containing the display name, provider, exact model ID, optional custom base URL, and API key. The key is sent once from the modal to the extension host, cleared when the modal closes, and stored through VS Code SecretStorage. It is not kept in webview state or normal settings.
+Nemotron 3 Ultra is always available as DevMate’s built-in default through NVIDIA’s OpenAI-compatible endpoint. On first use, DevMate asks for an NVIDIA API key and stores it through VS Code SecretStorage; no provider credential is bundled with the extension. A matching Nemotron profile created in an earlier version is migrated to the built-in entry together with its stored key.
 
-Selecting **Manage model profiles** from the same menu lets you choose, edit, or delete saved profiles. Ollama profiles default to `http://127.0.0.1:11434` and do not require an API key in the current implementation.
+Use the model button beside **Ask** to select Nemotron or add another model profile. Adding or editing a custom profile opens one modal containing the display name, provider, exact model ID, optional custom base URL, and API key. The key is sent once from the modal to the extension host, cleared when the modal closes, and stored through VS Code SecretStorage. It is not kept in webview state or normal settings.
+
+Selecting **Manage model profiles** from the same menu lets you configure Nemotron’s key or choose, edit, and delete custom profiles. The built-in Nemotron entry cannot be deleted. Ollama profiles default to `http://127.0.0.1:11434` and do not require an API key in the current implementation.
 
 Profiles without a custom OpenAI base URL use `https://api.openai.com/v1`. OpenAI-compatible services can use a custom base URL; for example, NVIDIA NIM uses `https://integrate.api.nvidia.com/v1`. Ollama server-root URLs are automatically routed to `/v1/chat/completions`.
 

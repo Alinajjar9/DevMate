@@ -1,9 +1,13 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PROVIDER_LABELS = exports.ACTIVE_LLM_PROFILE_STORAGE_KEY = exports.LLM_PROFILES_STORAGE_KEY = void 0;
+exports.BUILT_IN_NEMOTRON_PROFILE = exports.BUILT_IN_NEMOTRON_PROFILE_ID = exports.PROVIDER_LABELS = exports.ACTIVE_LLM_PROFILE_STORAGE_KEY = exports.LLM_PROFILES_STORAGE_KEY = void 0;
 exports.normalizeProfileDraft = normalizeProfileDraft;
 exports.validateProfileDraft = validateProfileDraft;
 exports.parseStoredProfiles = parseStoredProfiles;
+exports.profilesWithBuiltInNemotron = profilesWithBuiltInNemotron;
+exports.isBuiltInLlmProfile = isBuiltInLlmProfile;
+exports.isEquivalentNemotronProfile = isEquivalentNemotronProfile;
+exports.providerLabelForProfile = providerLabelForProfile;
 exports.secretKeyForProfile = secretKeyForProfile;
 exports.LLM_PROFILES_STORAGE_KEY = 'devMate.llmProfiles.v1';
 exports.ACTIVE_LLM_PROFILE_STORAGE_KEY = 'devMate.activeLlmProfileId.v1';
@@ -11,6 +15,15 @@ exports.PROVIDER_LABELS = {
     openai: 'OpenAI',
     ollama: 'Ollama'
 };
+exports.BUILT_IN_NEMOTRON_PROFILE_ID = 'builtin-nemotron-3-ultra';
+exports.BUILT_IN_NEMOTRON_PROFILE = Object.freeze({
+    id: exports.BUILT_IN_NEMOTRON_PROFILE_ID,
+    name: 'Nemotron 3 Ultra',
+    provider: 'openai',
+    model: 'nvidia/nemotron-3-ultra-550b-a55b',
+    baseUrl: 'https://integrate.api.nvidia.com/v1',
+    builtIn: true
+});
 const supportedProviders = new Set(['openai', 'ollama']);
 function normalizeProfileDraft(draft) {
     const baseUrl = draft.baseUrl?.trim().replace(/\/+$/, '');
@@ -97,6 +110,23 @@ function parseStoredProfiles(value) {
         profiles.push(profile);
     }
     return profiles;
+}
+function profilesWithBuiltInNemotron(profiles) {
+    return [
+        exports.BUILT_IN_NEMOTRON_PROFILE,
+        ...profiles.filter((profile) => profile.id !== exports.BUILT_IN_NEMOTRON_PROFILE_ID)
+    ];
+}
+function isBuiltInLlmProfile(profile) {
+    return profile.id === exports.BUILT_IN_NEMOTRON_PROFILE_ID;
+}
+function isEquivalentNemotronProfile(profile) {
+    return profile.provider === exports.BUILT_IN_NEMOTRON_PROFILE.provider
+        && profile.model.toLocaleLowerCase() === exports.BUILT_IN_NEMOTRON_PROFILE.model.toLocaleLowerCase()
+        && profile.baseUrl?.toLocaleLowerCase() === exports.BUILT_IN_NEMOTRON_PROFILE.baseUrl?.toLocaleLowerCase();
+}
+function providerLabelForProfile(profile) {
+    return isBuiltInLlmProfile(profile) ? 'NVIDIA' : exports.PROVIDER_LABELS[profile.provider];
 }
 function secretKeyForProfile(profileId) {
     return `devMate.llmProfile.${profileId}.apiKey`;

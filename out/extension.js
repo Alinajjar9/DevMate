@@ -312,7 +312,9 @@ class DevMateChatViewProvider {
                 return;
             case 'ready':
                 this.postAttachmentState();
+                await this.migrateBuiltInNemotronProfile();
                 await this.postLlmProfileState();
+                await this.promptForBuiltInNemotronKey();
                 this.postPermissionPolicyState();
                 this.postSettingsState();
                 this.postBackendStatus();
@@ -859,12 +861,59 @@ class DevMateChatViewProvider {
         }));
         this.postMessage({ command: 'attachmentsUpdated', attachments });
     }
-    getLlmProfiles() {
+    getStoredLlmProfiles() {
         return (0, llmProfiles_1.parseStoredProfiles)(this.extensionContext.globalState.get(llmProfiles_1.LLM_PROFILES_STORAGE_KEY));
+    }
+    getLlmProfiles() {
+        return (0, llmProfiles_1.profilesWithBuiltInNemotron)(this.getStoredLlmProfiles());
     }
     getActiveLlmProfile(profiles = this.getLlmProfiles()) {
         const activeProfileId = this.extensionContext.globalState.get(llmProfiles_1.ACTIVE_LLM_PROFILE_STORAGE_KEY);
         return profiles.find((profile) => profile.id === activeProfileId) ?? profiles[0];
+    }
+    async migrateBuiltInNemotronProfile() {
+        const storedProfiles = this.getStoredLlmProfiles();
+        const equivalentProfiles = storedProfiles.filter(llmProfiles_1.isEquivalentNemotronProfile);
+        if (equivalentProfiles.length === 0) {
+            return;
+        }
+        const activeProfileId = this.extensionContext.globalState.get(llmProfiles_1.ACTIVE_LLM_PROFILE_STORAGE_KEY);
+        const preferredProfile = equivalentProfiles.find((profile) => profile.id === activeProfileId);
+        const keyCandidates = preferredProfile
+            ? [preferredProfile, ...equivalentProfiles.filter((profile) => profile !== preferredProfile)]
+            : equivalentProfiles;
+        try {
+            const builtInSecretKey = (0, llmProfiles_1.secretKeyForProfile)(llmProfiles_1.BUILT_IN_NEMOTRON_PROFILE_ID);
+            const existingBuiltInKey = await this.extensionContext.secrets.get(builtInSecretKey);
+            if (!existingBuiltInKey) {
+                for (const candidate of keyCandidates) {
+                    const candidateKey = await this.extensionContext.secrets.get((0, llmProfiles_1.secretKeyForProfile)(candidate.id));
+                    if (candidateKey) {
+                        await this.extensionContext.secrets.store(builtInSecretKey, candidateKey);
+                        break;
+                    }
+                }
+            }
+            const equivalentIds = new Set(equivalentProfiles.map((profile) => profile.id));
+            await this.extensionContext.globalState.update(llmProfiles_1.LLM_PROFILES_STORAGE_KEY, storedProfiles.filter((profile) => !equivalentIds.has(profile.id)));
+            if (!activeProfileId || equivalentIds.has(activeProfileId)) {
+                await this.extensionContext.globalState.update(llmProfiles_1.ACTIVE_LLM_PROFILE_STORAGE_KEY, llmProfiles_1.BUILT_IN_NEMOTRON_PROFILE_ID);
+            }
+            await Promise.all(equivalentProfiles.map((profile) => this.extensionContext.secrets.delete((0, llmProfiles_1.secretKeyForProfile)(profile.id))));
+        }
+        catch {
+            this.postStatus(`Could not migrate the existing ${llmProfiles_1.BUILT_IN_NEMOTRON_PROFILE.name} profile.`, 'warning');
+        }
+    }
+    async promptForBuiltInNemotronKey() {
+        const activeProfile = this.getActiveLlmProfile();
+        if (!activeProfile || !(0, llmProfiles_1.isBuiltInLlmProfile)(activeProfile)) {
+            return;
+        }
+        const apiKey = await this.extensionContext.secrets.get((0, llmProfiles_1.secretKeyForProfile)(llmProfiles_1.BUILT_IN_NEMOTRON_PROFILE_ID));
+        if (!apiKey) {
+            await this.showLlmProfileForm(activeProfile);
+        }
     }
     async chooseLlmProfile() {
         const profiles = this.getLlmProfiles();
@@ -874,10 +923,11 @@ class DevMateChatViewProvider {
         }
         const activeProfile = this.getActiveLlmProfile(profiles);
         const choices = profiles.map((profile) => ({
-            label: profile.name,
+            label: (0, llmProfiles_1.isBuiltInLlmProfile)(profile) ? `$(sparkle) ${profile.name}` : profile.name,
             description: [
                 profile.id === activeProfile?.id ? 'Selected' : undefined,
-                llmProfiles_1.PROVIDER_LABELS[profile.provider],
+                (0, llmProfiles_1.isBuiltInLlmProfile)(profile) ? 'Built-in' : undefined,
+                (0, llmProfiles_1.providerLabelForProfile)(profile),
                 profile.model
             ].filter(Boolean).join(' · '),
             detail: profile.baseUrl,
@@ -890,7 +940,7 @@ class DevMateChatViewProvider {
             action: 'add'
         }, {
             label: '$(gear) Manage model profiles',
-            description: 'Edit or delete saved profiles',
+            description: 'Configure Nemotron or edit and delete custom profiles',
             action: 'manage'
         });
         const selected = await vscode.window.showQuickPick(choices, {
@@ -913,6 +963,7 @@ class DevMateChatViewProvider {
         if (selected.profileId) {
             await this.extensionContext.globalState.update(llmProfiles_1.ACTIVE_LLM_PROFILE_STORAGE_KEY, selected.profileId);
             await this.postLlmProfileState();
+            await this.promptForBuiltInNemotronKey();
             this.postStatus('Ready');
         }
     }
@@ -957,7 +1008,8 @@ class DevMateChatViewProvider {
                     name: profile.name,
                     provider: profile.provider,
                     model: profile.model,
-                    baseUrl: profile.baseUrl
+                    baseUrl: profile.baseUrl,
+                    builtIn: (0, llmProfiles_1.isBuiltInLlmProfile)(profile)
                 }
                 : undefined,
             hasApiKey
@@ -977,6 +1029,7 @@ class DevMateChatViewProvider {
             return;
         }
         const profiles = this.getLlmProfiles();
+        const storedProfiles = this.getStoredLlmProfiles();
         const existingProfile = submission.id
             ? profiles.find((profile) => profile.id === submission.id)
             : undefined;
@@ -985,6 +1038,10 @@ class DevMateChatViewProvider {
                 command: 'llmProfileFormError',
                 message: 'That model profile no longer exists.'
             });
+            return;
+        }
+        if (existingProfile && (0, llmProfiles_1.isBuiltInLlmProfile)(existingProfile)) {
+            await this.saveBuiltInNemotronApiKey(submission.apiKey);
             return;
         }
         const draft = (0, llmProfiles_1.normalizeProfileDraft)({
@@ -1015,8 +1072,8 @@ class DevMateChatViewProvider {
         };
         const secretKey = (0, llmProfiles_1.secretKeyForProfile)(profile.id);
         const updatedProfiles = existingProfile
-            ? profiles.map((candidate) => candidate.id === profile.id ? profile : candidate)
-            : [...profiles, profile];
+            ? storedProfiles.map((candidate) => candidate.id === profile.id ? profile : candidate)
+            : [...storedProfiles, profile];
         try {
             if (draft.provider === 'openai' && submittedApiKey) {
                 await this.extensionContext.secrets.store(secretKey, submittedApiKey);
@@ -1043,6 +1100,33 @@ class DevMateChatViewProvider {
         this.postMessage({ command: 'closeLlmProfileForm' });
         this.postStatus(existingProfile ? `${profile.name} updated.` : `${profile.name} selected.`);
     }
+    async saveBuiltInNemotronApiKey(apiKey) {
+        const secretKey = (0, llmProfiles_1.secretKeyForProfile)(llmProfiles_1.BUILT_IN_NEMOTRON_PROFILE_ID);
+        const submittedApiKey = apiKey?.trim();
+        const existingApiKey = await this.extensionContext.secrets.get(secretKey);
+        if (!submittedApiKey && !existingApiKey) {
+            this.postMessage({
+                command: 'llmProfileFormError',
+                message: 'Enter an NVIDIA API key for the built-in Nemotron model.'
+            });
+            return;
+        }
+        try {
+            if (submittedApiKey) {
+                await this.extensionContext.secrets.store(secretKey, submittedApiKey);
+            }
+        }
+        catch {
+            this.postMessage({
+                command: 'llmProfileFormError',
+                message: 'Could not save the NVIDIA API key.'
+            });
+            return;
+        }
+        await this.postLlmProfileState();
+        this.postMessage({ command: 'closeLlmProfileForm' });
+        this.postStatus(`${llmProfiles_1.BUILT_IN_NEMOTRON_PROFILE.name} is ready.`);
+    }
     async manageLlmProfiles() {
         const profiles = this.getLlmProfiles();
         if (profiles.length === 0) {
@@ -1050,8 +1134,12 @@ class DevMateChatViewProvider {
             return;
         }
         const selected = await vscode.window.showQuickPick(profiles.map((profile) => ({
-            label: profile.name,
-            description: `${llmProfiles_1.PROVIDER_LABELS[profile.provider]} · ${profile.model}`,
+            label: (0, llmProfiles_1.isBuiltInLlmProfile)(profile) ? `$(sparkle) ${profile.name}` : profile.name,
+            description: [
+                (0, llmProfiles_1.isBuiltInLlmProfile)(profile) ? 'Built-in' : undefined,
+                (0, llmProfiles_1.providerLabelForProfile)(profile),
+                profile.model
+            ].filter(Boolean).join(' · '),
             detail: profile.baseUrl,
             profile
         })), {
@@ -1071,7 +1159,12 @@ class DevMateChatViewProvider {
                 action: 'select'
             });
         }
-        actions.push({ label: '$(edit) Edit profile', action: 'edit' }, { label: '$(trash) Delete profile', action: 'delete' });
+        if ((0, llmProfiles_1.isBuiltInLlmProfile)(selected.profile)) {
+            actions.push({ label: '$(key) Configure NVIDIA API key', action: 'configure' });
+        }
+        else {
+            actions.push({ label: '$(edit) Edit profile', action: 'edit' }, { label: '$(trash) Delete profile', action: 'delete' });
+        }
         const action = await vscode.window.showQuickPick(actions, {
             placeHolder: `Manage ${selected.profile.name}`,
             title: 'DevMate: Manage model profile'
@@ -1082,27 +1175,32 @@ class DevMateChatViewProvider {
         if (action.action === 'select') {
             await this.extensionContext.globalState.update(llmProfiles_1.ACTIVE_LLM_PROFILE_STORAGE_KEY, selected.profile.id);
             await this.postLlmProfileState();
+            await this.promptForBuiltInNemotronKey();
             return;
         }
-        if (action.action === 'edit') {
+        if (action.action === 'edit' || action.action === 'configure') {
             await this.showLlmProfileForm(selected.profile);
             return;
         }
         await this.deleteLlmProfile(selected.profile);
     }
     async deleteLlmProfile(profile) {
+        if ((0, llmProfiles_1.isBuiltInLlmProfile)(profile)) {
+            this.postStatus('The built-in Nemotron profile cannot be deleted.', 'warning');
+            return;
+        }
         const confirmation = await vscode.window.showWarningMessage(`Delete the model profile "${profile.name}"?`, { modal: true }, 'Delete');
         if (confirmation !== 'Delete') {
             return;
         }
         const profiles = this.getLlmProfiles();
-        const remainingProfiles = profiles.filter((candidate) => candidate.id !== profile.id);
+        const remainingProfiles = this.getStoredLlmProfiles().filter((candidate) => candidate.id !== profile.id);
         try {
             await this.extensionContext.globalState.update(llmProfiles_1.LLM_PROFILES_STORAGE_KEY, remainingProfiles);
             await this.extensionContext.secrets.delete((0, llmProfiles_1.secretKeyForProfile)(profile.id));
             const activeProfile = this.getActiveLlmProfile(profiles);
             if (activeProfile?.id === profile.id) {
-                await this.extensionContext.globalState.update(llmProfiles_1.ACTIVE_LLM_PROFILE_STORAGE_KEY, remainingProfiles[0]?.id);
+                await this.extensionContext.globalState.update(llmProfiles_1.ACTIVE_LLM_PROFILE_STORAGE_KEY, llmProfiles_1.BUILT_IN_NEMOTRON_PROFILE_ID);
             }
         }
         catch {
@@ -1127,7 +1225,7 @@ class DevMateChatViewProvider {
                     id: activeProfile.id,
                     name: activeProfile.name,
                     provider: activeProfile.provider,
-                    providerLabel: llmProfiles_1.PROVIDER_LABELS[activeProfile.provider],
+                    providerLabel: (0, llmProfiles_1.providerLabelForProfile)(activeProfile),
                     model: activeProfile.model
                 }
                 : undefined
@@ -2343,8 +2441,10 @@ class DevMateChatViewProvider {
             : undefined;
         if (activeProfile.provider === 'openai' && !providerApiKey) {
             this.postRequestFailure('The selected model profile is missing an API key.', {
-                level: 'warning'
+                level: 'warning',
+                retryable: true
             });
+            await this.showLlmProfileForm(activeProfile);
             return;
         }
         const toolHistory = [];
@@ -4361,7 +4461,7 @@ class DevMateChatViewProvider {
     <form id="llmProfileForm" class="profile-form" novalidate>
       <header class="profile-form-header">
         <h2 id="llmProfileFormTitle">Add model profile</h2>
-        <p>Save a reusable model configuration for DevMate.</p>
+        <p id="llmProfileFormDescription">Save a reusable model configuration for DevMate.</p>
       </header>
       <div class="profile-form-body">
         <input id="llmProfileId" type="hidden">
@@ -4606,6 +4706,7 @@ class DevMateChatViewProvider {
     const llmProfileDialogEl = document.getElementById('llmProfileDialog');
     const llmProfileFormEl = document.getElementById('llmProfileForm');
     const llmProfileFormTitleEl = document.getElementById('llmProfileFormTitle');
+    const llmProfileFormDescriptionEl = document.getElementById('llmProfileFormDescription');
     const llmProfileIdEl = document.getElementById('llmProfileId');
     const llmProfileNameEl = document.getElementById('llmProfileName');
     const llmProfileProviderEl = document.getElementById('llmProfileProvider');
@@ -6042,23 +6143,41 @@ class DevMateChatViewProvider {
 
     function showLlmProfileForm(profile, hasApiKey) {
       llmProfileFormEl.reset();
+      const isBuiltIn = profile?.builtIn === true;
       llmProfileIdEl.value = profile?.id || '';
       llmProfileNameEl.value = profile?.name || '';
       llmProfileProviderEl.value = profile?.provider || 'openai';
       llmProfileModelEl.value = profile?.model || '';
       llmProfileBaseUrlEl.value = profile?.baseUrl || '';
       llmProfileApiKeyEl.value = '';
+      llmProfileNameEl.disabled = isBuiltIn;
+      llmProfileProviderEl.disabled = isBuiltIn;
+      llmProfileModelEl.disabled = isBuiltIn;
+      llmProfileBaseUrlEl.disabled = isBuiltIn;
+      llmProfileProviderEl.options[0].textContent = isBuiltIn ? 'NVIDIA' : 'OpenAI';
+      llmProfileFormEl.dataset.builtIn = String(isBuiltIn);
       llmProfileDialogEl.dataset.hasApiKey = String(Boolean(hasApiKey));
       llmProfileDialogEl.dataset.currentProvider = llmProfileProviderEl.value;
-      llmProfileFormTitleEl.textContent = profile ? 'Edit model profile' : 'Add model profile';
-      saveLlmProfileEl.textContent = profile ? 'Save changes' : 'Add model';
+      llmProfileFormTitleEl.textContent = isBuiltIn
+        ? 'Configure built-in Nemotron'
+        : profile
+          ? 'Edit model profile'
+          : 'Add model profile';
+      llmProfileFormDescriptionEl.textContent = isBuiltIn
+        ? 'Nemotron is included with DevMate. Add your NVIDIA API key to use it.'
+        : 'Save a reusable model configuration for DevMate.';
+      saveLlmProfileEl.textContent = isBuiltIn
+        ? 'Save API key'
+        : profile
+          ? 'Save changes'
+          : 'Add model';
       setLlmProfileFormError('');
       setLlmProfileFormSaving(false);
       renderLlmProfileProvider(false);
       if (!llmProfileDialogEl.open) {
         llmProfileDialogEl.showModal();
       }
-      llmProfileNameEl.focus();
+      (isBuiltIn ? llmProfileApiKeyEl : llmProfileNameEl).focus();
     }
 
     function closeLlmProfileForm() {
@@ -6093,10 +6212,14 @@ class DevMateChatViewProvider {
         : 'Optional — uses the OpenAI default';
       llmProfileBaseUrlHelpEl.textContent = isOllama
         ? 'Enter the URL of the Ollama server.'
-        : 'Leave blank to use the OpenAI default.';
+        : llmProfileFormEl.dataset.builtIn === 'true'
+          ? 'DevMate uses NVIDIA’s built-in OpenAI-compatible endpoint.'
+          : 'Leave blank to use the OpenAI default.';
       llmProfileApiKeyHelpEl.textContent = llmProfileDialogEl.dataset.hasApiKey === 'true'
         ? 'A key is already stored. Leave this blank to keep it, or enter a replacement.'
-        : 'The key is transferred to the extension and saved in VS Code SecretStorage.';
+        : llmProfileFormEl.dataset.builtIn === 'true'
+          ? 'Enter an NVIDIA API key. It is saved in VS Code SecretStorage.'
+          : 'The key is transferred to the extension and saved in VS Code SecretStorage.';
     }
 
     function setLlmProfileFormError(message) {
@@ -6109,7 +6232,11 @@ class DevMateChatViewProvider {
       if (saving) {
         saveLlmProfileEl.textContent = 'Saving...';
       } else {
-        saveLlmProfileEl.textContent = llmProfileIdEl.value ? 'Save changes' : 'Add model';
+        saveLlmProfileEl.textContent = llmProfileFormEl.dataset.builtIn === 'true'
+          ? 'Save API key'
+          : llmProfileIdEl.value
+            ? 'Save changes'
+            : 'Add model';
       }
     }
 
