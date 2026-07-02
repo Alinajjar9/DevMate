@@ -73,7 +73,9 @@ def build_chat_messages(
         tool_instruction = (
             "You can use the tools enabled for this turn. Prefer targeted searches and reads, ask for file changes "
             "only when needed, run a relevant verification command after editing when one is available, and never "
-            "repeat an identical tool call unnecessarily. Every tool path is relative to the already-open workspace "
+            "repeat an identical tool call unnecessarily. Before a tool call, any user-visible progress narration must "
+            "be at most one short sentence stating the immediate action; do not narrate reasoning or repeat the plan. "
+            "Every tool path is relative to the already-open workspace "
             "root: never include an absolute path or repeat the workspace folder name. Use an empty path or cwd '.' "
             "for the workspace root. If an exact replacement fails, read a narrow range around the relevant lines and "
             "copy the current text exactly before retrying. Use the dedicated file tools to delete, rename, or move "

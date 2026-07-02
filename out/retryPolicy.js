@@ -1,10 +1,24 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PROVIDER_RETRY_DELAYS_MS = void 0;
+exports.emptyResponseRecoveryAction = emptyResponseRecoveryAction;
+exports.isRecoverableEmptyModelResponse = isRecoverableEmptyModelResponse;
 exports.isRetryableProviderFailure = isRetryableProviderFailure;
 exports.providerRetryDelay = providerRetryDelay;
 exports.PROVIDER_RETRY_DELAYS_MS = [2_000, 5_000, 10_000];
 const retryableStatusCodes = new Set([429, 502, 503, 504]);
+function emptyResponseRecoveryAction(message, recoveryAlreadyAttempted, finalAnswerAlreadyForced) {
+    if (finalAnswerAlreadyForced || !isRecoverableEmptyModelResponse(message)) {
+        return 'none';
+    }
+    return recoveryAlreadyAttempted ? 'force-final' : 'retry-without-thinking';
+}
+function isRecoverableEmptyModelResponse(message) {
+    const normalized = message.toLocaleLowerCase();
+    return normalized.includes('response budget for reasoning')
+        || normalized.includes('empty final answer')
+        || normalized.includes('empty or invalid answer');
+}
 function isRetryableProviderFailure(result) {
     if (result.status !== 'error' || result.errorKind !== 'http') {
         return false;

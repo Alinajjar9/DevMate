@@ -136,6 +136,12 @@ test('streamed output is visibly drained before the final answer replaces it', (
   assert.match(source, /streamQueue:\s*''/);
   assert.match(source, /pendingAssistantResponse:\s*undefined/);
   assert.match(source, /function pumpProviderStream\(\)/);
+  assert.match(source, /className = 'message assistant model-narration'/);
+  assert.match(source, /MAX_INTERMEDIATE_NARRATION_CHARACTERS = 220/);
+  assert.match(source, /function compactProviderNarration\(value\)/);
+  assert.match(source, /author\.textContent = 'DevMate update'/);
+  assert.match(source, /finalizeProviderNarration\(\);[\s\S]*?renderAgentToolActivity/);
+  assert.doesNotMatch(source, /#workingTurn \.working-stream/);
   assert.match(source, /state\.pendingAssistantResponse = message\.response/);
   assert.match(source, /completeAssistantResponse\(response\)/);
   assert.match(source, /Live streaming unavailable — waiting for the completed response/);
@@ -181,6 +187,7 @@ test('working UI exposes tool usage and resumable agent checkpoints', () => {
   assert.match(source, /command: 'continueAgentRun'/);
   assert.match(source, /message\.command === 'agentCheckpointUpdated'/);
   assert.match(source, /retrying with reasoning disabled/);
+  assert.match(source, /requesting final summary without tools/);
 });
 
 test('project-bound sessions open from a dedicated landing screen', () => {

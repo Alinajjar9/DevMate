@@ -2701,12 +2701,18 @@ class DevMateChatViewProvider {
                     };
                     break;
                 }
-                if (!forceFinalThisTurn
-                    && !emptyResponseRecoveryAttempted
-                    && isRecoverableEmptyModelResponse(errorMessage)) {
+                const emptyRecovery = (0, retryPolicy_1.emptyResponseRecoveryAction)(errorMessage, emptyResponseRecoveryAttempted, forceFinalThisTurn);
+                if (emptyRecovery === 'retry-without-thinking') {
                     emptyResponseRecoveryAttempted = true;
                     disableThinking = true;
                     this.postStatus('Model returned no final answer — retrying with reasoning disabled');
+                    await persistCheckpoint();
+                    continue;
+                }
+                if (emptyRecovery === 'force-final') {
+                    forceFinalAnswer = true;
+                    disableThinking = true;
+                    this.postStatus('Model still returned no final answer — requesting final summary without tools');
                     await persistCheckpoint();
                     continue;
                 }
@@ -3791,21 +3797,14 @@ class DevMateChatViewProvider {
       list-style: none;
     }
 
-    .working-stream {
-      max-height: 220px;
-      margin-top: 8px;
-      padding: 8px 9px;
-      overflow: auto;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      color: var(--vscode-foreground);
-      background: var(--vscode-textCodeBlock-background, var(--surface));
+    .model-narration {
+      width: fit-content;
+      max-width: min(82%, 620px);
+      padding: 7px 9px;
       font-size: 11px;
-      line-height: 1.45;
-      white-space: pre-wrap;
     }
 
-    .working-stream::after {
+    .model-narration[data-streaming="true"] .model-narration-body::after {
       content: '▋';
       margin-left: 2px;
       color: var(--vscode-button-background);
@@ -4022,7 +4021,7 @@ class DevMateChatViewProvider {
       .working-card[data-state="working"] .working-heading::after,
       .working-phase[data-status="active"],
       .working-phase[data-status="active"] .working-phase-icon,
-      .working-stream::after,
+      .model-narration[data-streaming="true"] .model-narration-body::after,
       .working-indicator,
       .working-indicator::after,
       .backend-status[data-state="checking"] .backend-status-dot,
@@ -4881,6 +4880,7 @@ class DevMateChatViewProvider {
 
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
+    const MAX_INTERMEDIATE_NARRATION_CHARACTERS = 220;
     const state = {
       mode: 'code',
       scope: {
@@ -4919,6 +4919,7 @@ class DevMateChatViewProvider {
       workingStartedAt: 0,
       workingTimer: undefined,
       streamQueue: '',
+      narrationText: '',
       streamPumpTimer: undefined,
       pendingAssistantResponse: undefined,
       toolUsage: { used: 0, limit: 16 },
@@ -5353,6 +5354,7 @@ class DevMateChatViewProvider {
 
       if (message.command === 'agentToolActivity') {
         if (message.activity.status === 'running') {
+          finalizeProviderNarration();
           updateWorkingTurn(message.activity.title);
         }
         renderAgentToolActivity(message.activity);
@@ -5870,6 +5872,7 @@ class DevMateChatViewProvider {
     }
 
     function startWorkingTurn() {
+      finalizeProviderNarration();
       clearProviderStreamAnimation();
       document.getElementById('workingTurn')?.remove();
       clearWorkingTimer();
@@ -5911,12 +5914,6 @@ class DevMateChatViewProvider {
       const phases = document.createElement('ul');
       phases.className = 'working-phases';
       card.appendChild(phases);
-
-      const stream = document.createElement('div');
-      stream.className = 'working-stream';
-      stream.hidden = true;
-      stream.setAttribute('aria-label', 'Streaming model response');
-      card.appendChild(stream);
 
       const footer = document.createElement('div');
       footer.className = 'working-footer';
@@ -5974,25 +5971,69 @@ class DevMateChatViewProvider {
         state.streamPumpTimer = undefined;
       }
       state.streamQueue = '';
+      state.narrationText = '';
       state.pendingAssistantResponse = undefined;
     }
 
     function resetProviderStream() {
+      finalizeProviderNarration();
       clearProviderStreamAnimation();
-      const stream = document.querySelector('#workingTurn .working-stream');
-      if (!stream) {
-        return;
-      }
-      stream.textContent = '';
-      stream.hidden = true;
     }
 
     function appendProviderStreamDelta(text) {
       if (typeof text !== 'string' || !text) {
         return;
       }
+      ensureProviderNarration();
       state.streamQueue = (state.streamQueue + text).slice(-50_000);
       ensureProviderStreamPump();
+    }
+
+    function ensureProviderNarration() {
+      let card = document.getElementById('providerNarration');
+      if (card) {
+        return card;
+      }
+      card = document.createElement('article');
+      state.narrationText = '';
+      card.id = 'providerNarration';
+      card.className = 'message assistant model-narration';
+      card.dataset.streaming = 'true';
+      card.setAttribute('aria-live', 'polite');
+
+      const author = document.createElement('span');
+      author.className = 'message-author';
+      author.textContent = 'DevMate update';
+      card.appendChild(author);
+
+      const body = document.createElement('div');
+      body.className = 'message-body model-narration-body';
+      card.appendChild(body);
+      messagesEl.appendChild(card);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+      return card;
+    }
+
+    function finalizeProviderNarration() {
+      const card = document.getElementById('providerNarration');
+      if (!card) {
+        return;
+      }
+      if (state.streamPumpTimer) {
+        clearTimeout(state.streamPumpTimer);
+        state.streamPumpTimer = undefined;
+      }
+      const body = card.querySelector('.model-narration-body');
+      if (state.streamQueue) {
+        state.narrationText = (state.narrationText + state.streamQueue).slice(0, 20_000);
+        state.streamQueue = '';
+      }
+      body.textContent = compactProviderNarration(state.narrationText);
+      card.removeAttribute('id');
+      card.dataset.streaming = 'false';
+      if (!body.textContent.trim()) {
+        card.remove();
+      }
     }
 
     function ensureProviderStreamPump() {
@@ -6004,7 +6045,8 @@ class DevMateChatViewProvider {
 
     function pumpProviderStream() {
       state.streamPumpTimer = undefined;
-      const stream = document.querySelector('#workingTurn .working-stream');
+      const narration = document.getElementById('providerNarration');
+      const stream = narration?.querySelector('.model-narration-body');
       if (!stream) {
         state.streamQueue = '';
         state.pendingAssistantResponse = undefined;
@@ -6019,9 +6061,8 @@ class DevMateChatViewProvider {
             : 10;
         const chunk = state.streamQueue.slice(0, chunkSize);
         state.streamQueue = state.streamQueue.slice(chunkSize);
-        stream.textContent = (stream.textContent + chunk).slice(-50_000);
-        stream.hidden = false;
-        stream.scrollTop = stream.scrollHeight;
+        state.narrationText = (state.narrationText + chunk).slice(0, 20_000);
+        stream.textContent = compactProviderNarration(state.narrationText);
         messagesEl.scrollTop = messagesEl.scrollHeight;
         state.streamPumpTimer = setTimeout(pumpProviderStream, 18);
         return;
@@ -6035,6 +6076,34 @@ class DevMateChatViewProvider {
           completeAssistantResponse(response);
         }, 120);
       }
+    }
+
+    function compactProviderNarration(value) {
+      const normalized = String(value || '')
+        .replace(/\x60{3}[\s\S]*?\x60{3}/g, ' Code omitted. ')
+        .replace(/^\s{0,3}(?:#{1,6}|[-*]|\d+[.)])\s+/gm, '')
+        .replace(/[\x60*_>#]+/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (normalized.length <= MAX_INTERMEDIATE_NARRATION_CHARACTERS) {
+        return normalized;
+      }
+      const sentences = normalized.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [normalized];
+      let summary = '';
+      for (const sentence of sentences.slice(0, 2)) {
+        const candidate = (summary + ' ' + sentence.trim()).trim();
+        if (candidate.length > MAX_INTERMEDIATE_NARRATION_CHARACTERS) {
+          break;
+        }
+        summary = candidate;
+      }
+      const source = summary || normalized;
+      if (source.length <= MAX_INTERMEDIATE_NARRATION_CHARACTERS) {
+        return source;
+      }
+      const sliced = source.slice(0, MAX_INTERMEDIATE_NARRATION_CHARACTERS - 1);
+      const lastSpace = sliced.lastIndexOf(' ');
+      return sliced.slice(0, lastSpace > 80 ? lastSpace : sliced.length).trimEnd() + '…';
     }
 
     function completeAssistantResponse(response) {
@@ -6118,6 +6187,7 @@ class DevMateChatViewProvider {
     }
 
     function stopWorkingTurn(stateName, detail, retryable = false) {
+      finalizeProviderNarration();
       clearProviderStreamAnimation();
       const card = document.getElementById('workingTurn');
       if (!card) {
@@ -6158,7 +6228,19 @@ class DevMateChatViewProvider {
       clearProviderStreamAnimation();
       clearWorkingTimer();
       document.getElementById('workingTurn')?.remove();
-      appendMessage(response, 'assistant');
+      const narration = document.getElementById('providerNarration');
+      if (!narration) {
+        appendMessage(response, 'assistant');
+        return;
+      }
+      narration.removeAttribute('id');
+      narration.dataset.streaming = 'false';
+      narration.querySelector('.message-author').textContent = 'DevMate';
+      const body = narration.querySelector('.model-narration-body');
+      body.classList.add('markdown');
+      body.textContent = '';
+      renderMarkdown(body, response);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
     function cancelPendingPermissionCards() {
@@ -6748,12 +6830,6 @@ function describeAgentToolCall(call) {
         title: 'Searching code',
         detail: `"${call.arguments.query}"${call.arguments.path ? ` in ${call.arguments.path}` : ''}`
     };
-}
-function isRecoverableEmptyModelResponse(message) {
-    const normalized = message.toLocaleLowerCase();
-    return normalized.includes('response budget for reasoning')
-        || normalized.includes('empty final answer')
-        || normalized.includes('empty or invalid answer');
 }
 function formatAskResponse(answer, usedFiles) {
     if (usedFiles.length === 0) {

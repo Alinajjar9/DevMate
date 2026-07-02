@@ -2,9 +2,18 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  emptyResponseRecoveryAction,
   isRetryableProviderFailure,
   providerRetryDelay
 } = require('../out/retryPolicy');
+
+test('escalates empty model responses through bounded recovery stages', () => {
+  const message = 'The model provider returned an empty final answer.';
+  assert.equal(emptyResponseRecoveryAction(message, false, false), 'retry-without-thinking');
+  assert.equal(emptyResponseRecoveryAction(message, true, false), 'force-final');
+  assert.equal(emptyResponseRecoveryAction(message, true, true), 'none');
+  assert.equal(emptyResponseRecoveryAction('Authentication failed.', false, false), 'none');
+});
 
 test('retries only transient provider HTTP failures', () => {
   for (const statusCode of [429, 502, 503, 504]) {

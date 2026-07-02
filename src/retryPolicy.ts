@@ -4,6 +4,29 @@ export const PROVIDER_RETRY_DELAYS_MS = [2_000, 5_000, 10_000] as const;
 
 const retryableStatusCodes = new Set([429, 502, 503, 504]);
 
+export type EmptyResponseRecoveryAction =
+  | 'none'
+  | 'retry-without-thinking'
+  | 'force-final';
+
+export function emptyResponseRecoveryAction(
+  message: string,
+  recoveryAlreadyAttempted: boolean,
+  finalAnswerAlreadyForced: boolean
+): EmptyResponseRecoveryAction {
+  if (finalAnswerAlreadyForced || !isRecoverableEmptyModelResponse(message)) {
+    return 'none';
+  }
+  return recoveryAlreadyAttempted ? 'force-final' : 'retry-without-thinking';
+}
+
+export function isRecoverableEmptyModelResponse(message: string): boolean {
+  const normalized = message.toLocaleLowerCase();
+  return normalized.includes('response budget for reasoning')
+    || normalized.includes('empty final answer')
+    || normalized.includes('empty or invalid answer');
+}
+
 export function isRetryableProviderFailure(result: ApiResult<unknown>): boolean {
   if (result.status !== 'error' || result.errorKind !== 'http') {
     return false;
