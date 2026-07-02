@@ -2248,9 +2248,20 @@ class DevMateChatViewProvider {
                         this.postStatus(event.phase);
                     }
                 });
-                result = streamAttempt.unsupported
-                    ? await (0, client_1.ask)(backendUrl, request, providerApiKey, timeoutMilliseconds, signal)
-                    : streamAttempt.result;
+                if (streamAttempt.unsupported) {
+                    this.postStatus('Live streaming unavailable — waiting for the completed response');
+                    result = await (0, client_1.ask)(backendUrl, request, providerApiKey, timeoutMilliseconds, signal);
+                    if (result.status === 'ok'
+                        && result.data?.answer
+                        && (result.data.toolCalls?.length ?? 0) === 0) {
+                        receivedStreamText = true;
+                        this.postStatus('Receiving model response');
+                        pendingStreamText += result.data.answer;
+                    }
+                }
+                else {
+                    result = streamAttempt.result;
+                }
             }
             finally {
                 clearTimeout(waitingTimer);
@@ -3816,6 +3827,42 @@ class DevMateChatViewProvider {
       flex: 1 1 auto;
     }
 
+    .composer-submit {
+      display: inline-flex;
+      flex: 0 0 auto;
+      gap: 7px;
+      align-items: center;
+      margin-left: auto;
+    }
+
+    .token-estimate {
+      color: var(--muted);
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .token-estimate[data-active="true"] {
+      color: var(--vscode-foreground);
+    }
+
+    .action-button.ask-button {
+      gap: 5px;
+      min-width: 0;
+      height: 26px;
+      padding: 0 9px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .ask-button-icon {
+      font-size: 13px;
+      line-height: 1;
+      transform: translateY(-0.5px);
+    }
+
     .model-selector {
       max-width: min(260px, 70vw);
       color: var(--vscode-foreground);
@@ -4293,7 +4340,18 @@ class DevMateChatViewProvider {
             <span class="model-selector-chevron" aria-hidden="true">▼</span>
           </button>
           <span class="composer-actions-spacer"></span>
-          <button id="ask" class="action-button primary" type="button" disabled>Ask</button>
+          <div class="composer-submit">
+            <span
+              id="tokenEstimate"
+              class="token-estimate"
+              data-active="false"
+              title="Approximate tokens in the current message; project context and the response are not included."
+            >≈ 0 tokens</span>
+            <button id="ask" class="action-button primary ask-button" type="button" disabled>
+              <span>Ask</span>
+              <span class="ask-button-icon" aria-hidden="true">↑</span>
+            </button>
+          </div>
         </div>
       </div>
     </section>
@@ -4516,6 +4574,9 @@ class DevMateChatViewProvider {
       currentWorkspaceName: 'No project open',
       workingStartedAt: 0,
       workingTimer: undefined,
+      streamQueue: '',
+      streamPumpTimer: undefined,
+      pendingAssistantResponse: undefined,
       lastRequest: undefined,
       askPending: false
     };
@@ -4535,6 +4596,7 @@ class DevMateChatViewProvider {
     const attachmentToggleEl = document.getElementById('toggleAttachments');
     const llmProfileSelectorEl = document.getElementById('llmProfileSelector');
     const llmProfileLabelEl = document.getElementById('llmProfileLabel');
+    const tokenEstimateEl = document.getElementById('tokenEstimate');
     const askEl = document.getElementById('ask');
     const sessionSelectorEl = document.getElementById('sessionSelector');
     const activeSessionTitleEl = document.getElementById('activeSessionTitle');
@@ -4605,6 +4667,7 @@ class DevMateChatViewProvider {
 
       appendMessage(question, 'user');
       questionEl.value = '';
+      renderTokenEstimate();
       state.askPending = true;
       startWorkingTurn();
       renderAskAvailability();
@@ -4623,6 +4686,8 @@ class DevMateChatViewProvider {
         askEl.click();
       }
     });
+
+    questionEl.addEventListener('input', renderTokenEstimate);
 
     attachFilesEl.addEventListener('click', () => {
       vscode.postMessage({ command: 'pickFiles' });
@@ -4804,9 +4869,11 @@ class DevMateChatViewProvider {
       }
 
       if (message.command === 'assistantResponse') {
-        finishWorkingTurn(message.response);
-        state.askPending = false;
-        renderAskAvailability();
+        if (state.streamQueue || state.streamPumpTimer) {
+          state.pendingAssistantResponse = message.response;
+        } else {
+          completeAssistantResponse(message.response);
+        }
       }
 
       if (message.command === 'sessionsUpdated') {
@@ -4936,6 +5003,7 @@ class DevMateChatViewProvider {
       }
     });
 
+    renderTokenEstimate();
     vscode.postMessage({ command: 'setScope', scope: 'project' });
     vscode.postMessage({ command: 'ready' });
 
@@ -4961,6 +5029,25 @@ class DevMateChatViewProvider {
         .toFixed(1)
         .replace(/\.0$/, '');
       settingsTimeoutHelpEl.textContent = 'Approximately ' + roundedMinutes + ' min.';
+    }
+
+    function renderTokenEstimate() {
+      const characterCount = questionEl.value.trim().length;
+      const tokenCount = characterCount === 0 ? 0 : Math.max(1, Math.ceil(characterCount / 4));
+      let tokenLabel = String(tokenCount);
+      if (tokenCount >= 1_000) {
+        const roundedThousands = (Math.round((tokenCount / 1_000) * 10) / 10).toFixed(1);
+        tokenLabel = (roundedThousands.endsWith('.0')
+          ? roundedThousands.slice(0, -2)
+          : roundedThousands) + 'k';
+      }
+      tokenEstimateEl.textContent = '≈ ' + tokenLabel + (tokenCount === 1 ? ' token' : ' tokens');
+      tokenEstimateEl.dataset.active = String(tokenCount > 0);
+      tokenEstimateEl.setAttribute(
+        'aria-label',
+        'Approximately ' + tokenCount + (tokenCount === 1 ? ' token' : ' tokens')
+          + ' in the current message'
+      );
     }
 
     function renderRememberedCommands() {
@@ -5371,6 +5458,7 @@ class DevMateChatViewProvider {
     }
 
     function startWorkingTurn() {
+      clearProviderStreamAnimation();
       document.getElementById('workingTurn')?.remove();
       clearWorkingTimer();
       state.workingStartedAt = Date.now();
@@ -5460,7 +5548,17 @@ class DevMateChatViewProvider {
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
+    function clearProviderStreamAnimation() {
+      if (state.streamPumpTimer) {
+        clearTimeout(state.streamPumpTimer);
+        state.streamPumpTimer = undefined;
+      }
+      state.streamQueue = '';
+      state.pendingAssistantResponse = undefined;
+    }
+
     function resetProviderStream() {
+      clearProviderStreamAnimation();
       const stream = document.querySelector('#workingTurn .working-stream');
       if (!stream) {
         return;
@@ -5470,15 +5568,59 @@ class DevMateChatViewProvider {
     }
 
     function appendProviderStreamDelta(text) {
-      const stream = document.querySelector('#workingTurn .working-stream');
-      if (!stream || typeof text !== 'string' || !text) {
+      if (typeof text !== 'string' || !text) {
         return;
       }
-      const nextText = (stream.textContent + text).slice(-50_000);
-      stream.textContent = nextText;
-      stream.hidden = false;
-      stream.scrollTop = stream.scrollHeight;
-      messagesEl.scrollTop = messagesEl.scrollHeight;
+      state.streamQueue = (state.streamQueue + text).slice(-50_000);
+      ensureProviderStreamPump();
+    }
+
+    function ensureProviderStreamPump() {
+      if (state.streamPumpTimer) {
+        return;
+      }
+      state.streamPumpTimer = setTimeout(pumpProviderStream, 18);
+    }
+
+    function pumpProviderStream() {
+      state.streamPumpTimer = undefined;
+      const stream = document.querySelector('#workingTurn .working-stream');
+      if (!stream) {
+        state.streamQueue = '';
+        state.pendingAssistantResponse = undefined;
+        return;
+      }
+
+      if (state.streamQueue) {
+        const chunkSize = state.streamQueue.length > 4_000
+          ? 80
+          : state.streamQueue.length > 1_000
+            ? 30
+            : 10;
+        const chunk = state.streamQueue.slice(0, chunkSize);
+        state.streamQueue = state.streamQueue.slice(chunkSize);
+        stream.textContent = (stream.textContent + chunk).slice(-50_000);
+        stream.hidden = false;
+        stream.scrollTop = stream.scrollHeight;
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+        state.streamPumpTimer = setTimeout(pumpProviderStream, 18);
+        return;
+      }
+
+      if (state.pendingAssistantResponse !== undefined) {
+        const response = state.pendingAssistantResponse;
+        state.pendingAssistantResponse = undefined;
+        state.streamPumpTimer = setTimeout(() => {
+          state.streamPumpTimer = undefined;
+          completeAssistantResponse(response);
+        }, 120);
+      }
+    }
+
+    function completeAssistantResponse(response) {
+      finishWorkingTurn(response);
+      state.askPending = false;
+      renderAskAvailability();
     }
 
     function updateWorkingTurn(text) {
@@ -5527,6 +5669,7 @@ class DevMateChatViewProvider {
     }
 
     function stopWorkingTurn(stateName, detail, retryable = false) {
+      clearProviderStreamAnimation();
       const card = document.getElementById('workingTurn');
       if (!card) {
         return;
@@ -5563,6 +5706,7 @@ class DevMateChatViewProvider {
     }
 
     function finishWorkingTurn(response) {
+      clearProviderStreamAnimation();
       clearWorkingTimer();
       document.getElementById('workingTurn')?.remove();
       appendMessage(response, 'assistant');

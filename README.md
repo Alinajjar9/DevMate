@@ -15,7 +15,7 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 - Animated in-chat working state with real phases, elapsed time, selected model, and cancellation
 - Compact segmented mode controls and a top-right in-chat Settings dialog
 - Mode-aware prompts for Ideas, Code, and Debug
-- Enter-to-send composer with Shift+Enter for new lines
+- Enter-to-send composer with Shift+Enter for new lines, a compact send action, and a live approximate message-token count
 - Distinct You and DevMate message bubbles
 - Workspace-scoped in-chat approvals, native diff review, and exact-command remembering
 - Project-bound sessions with a global past-sessions landing screen
@@ -39,7 +39,7 @@ DevMate can ask the extension host to inspect and improve the open project befor
 
 Each request immediately creates a working card in the chat. It displays the selected model, elapsed time, actual lifecycle phases such as context collection and tool use, and a Cancel button. The active card remains pinned near the top of the chat viewport while tool and permission cards accumulate. Chat cards are non-shrinking flex items, so a long tool run scrolls normally instead of compressing and clipping the working card. Its deliberately restrained edge, sheen, indicator, and active-phase animations run on slower cycles and respect reduced-motion preferences. Routine progress no longer occupies the top status strip; that area is reserved for warnings and errors. The working card is removed when the final assistant message arrives, while completed tool activity remains visible.
 
-Provider text now appears progressively inside the working card through `/ask/stream`. Internal reasoning text is never exposed; DevMate shows only a generic reasoning phase until answer text or a tool call arrives. Final answers use a DOM-built Markdown renderer with headings, lists, inline code, highlighted fenced code, copy actions, HTTP links, and workspace-bound clickable file references. Raw model HTML is never injected into the webview.
+Provider text now appears progressively inside the working card through `/ask/stream`. The webview drains incoming text through a bounded preview queue, so even providers that deliver a completed answer in one large chunk show visible progress before the final message replaces the working card. Internal reasoning text is never exposed; DevMate shows only a generic reasoning phase until answer text or a tool call arrives. Final answers use a DOM-built Markdown renderer with headings, lists, inline code, highlighted fenced code, copy actions, HTTP links, and workspace-bound clickable file references. Raw model HTML is never injected into the webview.
 
 Warnings from scope selection, health checks, and other UI actions do not end an active request. Only explicit success, failure, or cancellation events release the pending state and re-enable Send. Mode, scope, attachment, and model selectors remain locked for the duration, preventing context changes or a second request from colliding with work still running in the extension host.
 

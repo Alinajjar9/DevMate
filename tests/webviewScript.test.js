@@ -128,6 +128,31 @@ test('provider streaming and safe rich answer rendering are wired into the chat'
   assert.doesNotMatch(source, /\.innerHTML\s*=/);
 });
 
+test('streamed output is visibly drained before the final answer replaces it', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'extension.ts'),
+    'utf8'
+  );
+  assert.match(source, /streamQueue:\s*''/);
+  assert.match(source, /pendingAssistantResponse:\s*undefined/);
+  assert.match(source, /function pumpProviderStream\(\)/);
+  assert.match(source, /state\.pendingAssistantResponse = message\.response/);
+  assert.match(source, /completeAssistantResponse\(response\)/);
+  assert.match(source, /Live streaming unavailable — waiting for the completed response/);
+});
+
+test('composer shows a live token estimate and a compact ask action', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'extension.ts'),
+    'utf8'
+  );
+  assert.match(source, /id="tokenEstimate"/);
+  assert.match(source, /class="action-button primary ask-button"/);
+  assert.match(source, /questionEl\.addEventListener\('input', renderTokenEstimate\)/);
+  assert.match(source, /Math\.ceil\(characterCount \/ 4\)/);
+  assert.match(source, /project context and the response are not included/);
+});
+
 test('project-bound sessions open from a dedicated landing screen', () => {
   const source = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'extension.ts'),
