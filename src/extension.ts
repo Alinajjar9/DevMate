@@ -33,7 +33,8 @@ import type {
   AskRequest,
   AskResponse,
   AskScope,
-  AssistantMode
+  AssistantMode,
+  TokenUsage
 } from './api/types';
 import { createBoundedContextItem } from './context';
 import {
@@ -874,7 +875,15 @@ class DevMateChatViewProvider implements
       command: 'agentCheckpointUpdated',
       available: Boolean(checkpoint),
       used: checkpoint?.toolHistory.length ?? 0,
-      limit
+      limit,
+      tokenUsage: checkpoint
+        ? {
+          inputTokens: checkpoint.inputTokens,
+          outputTokens: checkpoint.outputTokens,
+          totalTokens: checkpoint.totalTokens,
+          exact: checkpoint.tokenUsageExact
+        }
+        : undefined
     });
   }
 
@@ -3322,7 +3331,8 @@ class DevMateChatViewProvider implements
     request: AskRequest,
     providerApiKey: string | undefined,
     timeoutMilliseconds: number,
-    signal: AbortSignal
+    signal: AbortSignal,
+    onTokenUsage?: (usage: TokenUsage) => void
   ): Promise<{ result: ApiResult<AskResponse>; retriesExhausted: boolean }> {
     let retryNumber = 0;
     while (true) {
@@ -3332,13 +3342,28 @@ class DevMateChatViewProvider implements
       }, 15_000);
       let receivedStreamText = false;
       let pendingStreamText = '';
+      let streamedOutputCharacters = 0;
+      let currentUsage: TokenUsage | undefined;
       let streamFlushTimer: NodeJS.Timeout | undefined;
       const flushStreamText = () => {
         if (!pendingStreamText) {
           return;
         }
         this.postMessage({ command: 'providerStreamDelta', text: pendingStreamText });
+        streamedOutputCharacters += pendingStreamText.length;
         pendingStreamText = '';
+        if (currentUsage) {
+          const outputTokens = Math.max(
+            currentUsage.outputTokens,
+            estimatedTokenCount(streamedOutputCharacters)
+          );
+          onTokenUsage?.({
+            inputTokens: currentUsage.inputTokens,
+            outputTokens,
+            totalTokens: currentUsage.inputTokens + outputTokens,
+            exact: false
+          });
+        }
       };
       let result: ApiResult<AskResponse>;
       try {
@@ -3350,7 +3375,10 @@ class DevMateChatViewProvider implements
           signal,
           (event) => {
             clearTimeout(waitingTimer);
-            if (event.type === 'delta') {
+            if (event.type === 'usage') {
+              currentUsage = event.usage;
+              onTokenUsage?.(event.usage);
+            } else if (event.type === 'delta') {
               if (!receivedStreamText) {
                 receivedStreamText = true;
                 this.postStatus('Receiving model response');
@@ -3524,6 +3552,14 @@ class DevMateChatViewProvider implements
     let forceFinalAnswer = resumedCheckpoint?.forceFinalAnswer ?? false;
     let disableThinking = resumedCheckpoint?.disableThinking ?? false;
     let emptyResponseRecoveryAttempted = resumedCheckpoint?.emptyResponseRecoveryAttempted ?? false;
+    let completedTokenUsage: TokenUsage = resumedCheckpoint
+      ? {
+        inputTokens: resumedCheckpoint.inputTokens,
+        outputTokens: resumedCheckpoint.outputTokens,
+        totalTokens: resumedCheckpoint.totalTokens,
+        exact: resumedCheckpoint.tokenUsageExact
+      }
+      : { inputTokens: 0, outputTokens: 0, totalTokens: 0, exact: true };
     const checkpointCreatedAt = resumedCheckpoint?.createdAt ?? Date.now();
     const persistCheckpoint = async () => {
       const workspace = this.getConversationWorkspace();
@@ -3552,6 +3588,10 @@ class DevMateChatViewProvider implements
         forceFinalAnswer,
         disableThinking,
         emptyResponseRecoveryAttempted,
+        inputTokens: completedTokenUsage.inputTokens,
+        outputTokens: completedTokenUsage.outputTokens,
+        totalTokens: completedTokenUsage.totalTokens,
+        tokenUsageExact: completedTokenUsage.exact,
         createdAt: checkpointCreatedAt,
         updatedAt: Date.now()
       });
@@ -3609,7 +3649,13 @@ class DevMateChatViewProvider implements
         request,
         providerApiKey,
         (modelTimeoutSeconds + 30) * 1_000,
-        signal
+        signal,
+        (currentUsage) => {
+          this.postMessage({
+            command: 'tokenUsageUpdated',
+            usage: addTokenUsage(completedTokenUsage, currentUsage)
+          });
+        }
       );
       const result = providerAttempt.result;
       if (this.finishCancelledRequest(signal)) {
@@ -3637,6 +3683,11 @@ class DevMateChatViewProvider implements
           retryable: providerAttempt.retriesExhausted || backendDropped
         });
         return;
+      }
+
+      if (result.data.tokenUsage) {
+        completedTokenUsage = addTokenUsage(completedTokenUsage, result.data.tokenUsage);
+        this.postMessage({ command: 'tokenUsageUpdated', usage: completedTokenUsage });
       }
 
       const toolCalls = result.data.toolCalls ?? [];
@@ -4841,6 +4892,14 @@ class DevMateChatViewProvider implements
       font-variant-numeric: tabular-nums;
     }
 
+    .working-token-usage {
+      margin-right: auto;
+      color: var(--muted);
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
     .working-cancel,
     .working-retry {
       height: 24px;
@@ -5155,7 +5214,6 @@ class DevMateChatViewProvider implements
     }
 
     .action-button.ask-button {
-      gap: 5px;
       min-width: 0;
       height: 26px;
       padding: 0 9px;
@@ -5170,12 +5228,6 @@ class DevMateChatViewProvider implements
       color: var(--vscode-button-foreground);
       background: color-mix(in srgb, var(--vscode-button-background) 72%, transparent);
       font-weight: 600;
-    }
-
-    .ask-button-icon {
-      font-size: 13px;
-      line-height: 1;
-      transform: translateY(-0.5px);
     }
 
     .model-selector {
@@ -5667,12 +5719,9 @@ class DevMateChatViewProvider implements
               id="tokenEstimate"
               class="token-estimate"
               data-active="false"
-              title="Approximate tokens in the current message; project context and the response are not included."
+              title="Before sending, this estimates the current message. During a request, full prompt and response usage appears here."
             >≈ 0 tokens</span>
-            <button id="ask" class="action-button primary ask-button" type="button" disabled>
-              <span>Ask</span>
-              <span class="ask-button-icon" aria-hidden="true">↑</span>
-            </button>
+            <button id="ask" class="action-button primary ask-button" type="button" disabled>Ask</button>
           </div>
         </div>
       </div>
@@ -5900,6 +5949,7 @@ class DevMateChatViewProvider implements
       streamPumpTimer: undefined,
       pendingAssistantResponse: undefined,
       toolUsage: { used: 0, limit: 16 },
+      requestTokenUsage: undefined,
       checkpointAvailable: false,
       lastRequest: undefined,
       askPending: false
@@ -5993,6 +6043,7 @@ class DevMateChatViewProvider implements
 
       appendMessage(question, 'user');
       questionEl.value = '';
+      state.requestTokenUsage = undefined;
       renderTokenEstimate();
       state.askPending = true;
       startWorkingTurn();
@@ -6224,6 +6275,8 @@ class DevMateChatViewProvider implements
           showChat();
         }
         if (Array.isArray(message.messages)) {
+          state.requestTokenUsage = undefined;
+          renderTokenEstimate();
           renderSessionMessages(message.messages);
           state.askPending = false;
           renderAskAvailability();
@@ -6347,6 +6400,12 @@ class DevMateChatViewProvider implements
         renderToolUsage();
       }
 
+      if (message.command === 'tokenUsageUpdated') {
+        state.requestTokenUsage = message.usage;
+        renderWorkingTokenUsage();
+        renderTokenEstimate();
+      }
+
       if (message.command === 'agentCheckpointUpdated') {
         state.checkpointAvailable = message.available === true;
         if (state.checkpointAvailable) {
@@ -6354,6 +6413,9 @@ class DevMateChatViewProvider implements
             used: Number(message.used) || 0,
             limit: Number(message.limit) || 16
           };
+          if (message.tokenUsage) {
+            state.requestTokenUsage = message.tokenUsage;
+          }
         }
         renderAskAvailability();
       }
@@ -6389,21 +6451,41 @@ class DevMateChatViewProvider implements
 
     function renderTokenEstimate() {
       const characterCount = questionEl.value.trim().length;
-      const tokenCount = characterCount === 0 ? 0 : Math.max(1, Math.ceil(characterCount / 4));
-      let tokenLabel = String(tokenCount);
-      if (tokenCount >= 1_000) {
-        const roundedThousands = (Math.round((tokenCount / 1_000) * 10) / 10).toFixed(1);
-        tokenLabel = (roundedThousands.endsWith('.0')
-          ? roundedThousands.slice(0, -2)
-          : roundedThousands) + 'k';
+      if (characterCount === 0 && state.requestTokenUsage) {
+        const usage = state.requestTokenUsage;
+        tokenEstimateEl.textContent = (usage.exact ? '' : '≈ ')
+          + formatTokenCount(usage.totalTokens) + ' total';
+        tokenEstimateEl.dataset.active = 'true';
+        tokenEstimateEl.title = (usage.exact ? 'Provider-reported' : 'Estimated')
+          + ' full request usage: ' + usage.inputTokens + ' input and '
+          + usage.outputTokens + ' output tokens.';
+        tokenEstimateEl.setAttribute(
+          'aria-label',
+          (usage.exact ? '' : 'Approximately ') + usage.totalTokens
+            + ' total tokens in the last request'
+        );
+        return;
       }
+      const tokenCount = characterCount === 0 ? 0 : Math.max(1, Math.ceil(characterCount / 4));
+      const tokenLabel = formatTokenCount(tokenCount);
       tokenEstimateEl.textContent = '≈ ' + tokenLabel + (tokenCount === 1 ? ' token' : ' tokens');
       tokenEstimateEl.dataset.active = String(tokenCount > 0);
+      tokenEstimateEl.title = 'Approximate tokens in the current message before project context is collected.';
       tokenEstimateEl.setAttribute(
         'aria-label',
         'Approximately ' + tokenCount + (tokenCount === 1 ? ' token' : ' tokens')
           + ' in the current message'
       );
+    }
+
+    function formatTokenCount(tokenCount) {
+      if (tokenCount < 1_000) {
+        return String(tokenCount);
+      }
+      const roundedThousands = (Math.round((tokenCount / 1_000) * 10) / 10).toFixed(1);
+      return (roundedThousands.endsWith('.0')
+        ? roundedThousands.slice(0, -2)
+        : roundedThousands) + 'k';
     }
 
     function renderRememberedCommands() {
@@ -6867,6 +6949,9 @@ class DevMateChatViewProvider implements
       const elapsed = document.createElement('span');
       elapsed.className = 'working-elapsed';
       footer.appendChild(elapsed);
+      const tokenUsage = document.createElement('span');
+      tokenUsage.className = 'working-token-usage';
+      footer.appendChild(tokenUsage);
       const cancel = document.createElement('button');
       cancel.type = 'button';
       cancel.className = 'working-cancel';
@@ -6903,6 +6988,7 @@ class DevMateChatViewProvider implements
 
       updateWorkingElapsed();
       renderToolUsage();
+      renderWorkingTokenUsage();
       state.workingTimer = setInterval(updateWorkingElapsed, 1000);
       updateWorkingTurn('Preparing request');
       messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -6991,6 +7077,25 @@ class DevMateChatViewProvider implements
       usage.textContent = 'Tools ' + state.toolUsage.used + ' / ' + state.toolUsage.limit;
       usage.title = state.toolUsage.used + ' of ' + state.toolUsage.limit
         + ' project tool calls used in this request';
+    }
+
+    function renderWorkingTokenUsage() {
+      const target = document.querySelector('#workingTurn .working-token-usage');
+      if (!target) {
+        return;
+      }
+      const usage = state.requestTokenUsage;
+      if (!usage) {
+        target.textContent = '';
+        target.hidden = true;
+        return;
+      }
+      const marker = usage.exact ? '' : '≈';
+      target.textContent = 'Input ' + marker + formatTokenCount(usage.inputTokens)
+        + ' · Output ' + marker + formatTokenCount(usage.outputTokens);
+      target.title = (usage.exact ? 'Provider-reported' : 'Estimated')
+        + ' token usage for this request';
+      target.hidden = false;
     }
 
     function updateWorkingTurn(text) {
@@ -7565,6 +7670,21 @@ function createNonce(): string {
 
 function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function estimatedTokenCount(characterCount: number): number {
+  return characterCount <= 0 ? 0 : Math.max(1, Math.ceil(characterCount / 4));
+}
+
+function addTokenUsage(left: TokenUsage, right: TokenUsage): TokenUsage {
+  const inputTokens = left.inputTokens + right.inputTokens;
+  const outputTokens = left.outputTokens + right.outputTokens;
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens: left.totalTokens + right.totalTokens,
+    exact: left.exact && right.exact
+  };
 }
 
 function waitForRetryDelay(milliseconds: number, signal: AbortSignal): Promise<boolean> {

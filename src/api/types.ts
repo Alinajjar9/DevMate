@@ -73,6 +73,14 @@ export type AskResponse = {
   usedFiles: string[];
   changes: FileChange[];
   toolCalls: AgentToolCall[];
+  tokenUsage?: TokenUsage;
+};
+
+export type TokenUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  exact: boolean;
 };
 
 export type AgentToolStep = {

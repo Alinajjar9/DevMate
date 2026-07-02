@@ -72,6 +72,7 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
                     'data: {"choices":[{"delta":{"reasoning_content":"private"}}]}\n\n'
                     'data: {"choices":[{"delta":{"content":"Hello "}}]}\n\n'
                     'data: {"choices":[{"delta":{"content":"world"},"finish_reason":"stop"}]}\n\n'
+                    'data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}\n\n'
                     'data: [DONE]\n\n'
                 ),
             )
@@ -86,6 +87,9 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[-1].completion.content, "Hello world")
         self.assertEqual(events[-1].completion.reasoning_content, "private")
         self.assertEqual(events[-1].completion.finish_reason, "stop")
+        self.assertEqual(events[-1].completion.usage.input_tokens, 12)
+        self.assertEqual(events[-1].completion.usage.output_tokens, 3)
+        self.assertEqual(events[-1].completion.usage.total_tokens, 15)
 
     async def test_reassembles_streamed_tool_call_arguments(self) -> None:
         async def handler(request: httpx.Request) -> httpx.Response:

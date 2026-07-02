@@ -2,7 +2,7 @@ import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
 import type { ClientRequest, IncomingMessage } from 'http';
 import { StringDecoder } from 'string_decoder';
-import type { ApiResult, AskRequest, AskResponse, HealthResponse } from './types';
+import type { ApiResult, AskRequest, AskResponse, HealthResponse, TokenUsage } from './types';
 
 const HEALTH_TIMEOUT_MS = 2_000;
 export const DEFAULT_ASK_TIMEOUT_MS = 930_000;
@@ -11,7 +11,8 @@ const MAX_BACKEND_RESPONSE_BYTES = 4_000_000;
 
 export type AskStreamEvent =
   | { type: 'delta'; text: string }
-  | { type: 'progress'; phase: string };
+  | { type: 'progress'; phase: string }
+  | { type: 'usage'; usage: TokenUsage };
 
 export type AskStreamResult = {
   result: ApiResult<AskResponse>;
@@ -417,6 +418,13 @@ async function nodeHttpStreamRequest(
         onEvent?.({ type: 'progress', phase: value.phase.slice(0, 120) });
         return;
       }
+      if (value.type === 'usage') {
+        const usage = parseTokenUsage(value.usage);
+        if (usage) {
+          onEvent?.({ type: 'usage', usage });
+        }
+        return;
+      }
       if (value.type === 'final' && isApiResult<AskResponse>(value.result)) {
         finalResult = value.result;
         return;
@@ -535,6 +543,29 @@ async function nodeHttpStreamRequest(
       failTransport();
     }
   });
+}
+
+function parseTokenUsage(value: unknown): TokenUsage | undefined {
+  if (!isRecord(value)
+    || !safeTokenCount(value.inputTokens)
+    || !safeTokenCount(value.outputTokens)
+    || !safeTokenCount(value.totalTokens)
+    || typeof value.exact !== 'boolean') {
+    return undefined;
+  }
+  return {
+    inputTokens: value.inputTokens,
+    outputTokens: value.outputTokens,
+    totalTokens: value.totalTokens,
+    exact: value.exact
+  };
+}
+
+function safeTokenCount(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isInteger(value)
+    && value >= 0
+    && value <= 200_000_000;
 }
 
 function createEndpoint(backendUrl: string, path: string): string | undefined {

@@ -226,11 +226,19 @@ class AgentToolCall(BaseModel):
     arguments: dict[str, object]
 
 
+class TokenUsage(BaseModel):
+    inputTokens: int = Field(ge=0)
+    outputTokens: int = Field(ge=0)
+    totalTokens: int = Field(ge=0)
+    exact: bool
+
+
 class AskData(BaseModel):
     answer: str
     usedFiles: list[str]
     changes: list[FileChange] = Field(default_factory=list)
     toolCalls: list[AgentToolCall] = Field(default_factory=list)
+    tokenUsage: TokenUsage
 
 
 class AskResult(BaseModel):
@@ -504,7 +512,13 @@ async def ask(
     completion = completion_value if isinstance(completion_value, ChatCompletion) else ChatCompletion(
         content=completion_value
     )
-    return _ask_result_from_completion(request, completion, enabled_tools, used_files)
+    return _ask_result_from_completion(
+        request,
+        completion,
+        enabled_tools,
+        used_files,
+        _completion_token_usage(completion_request, completion),
+    )
 
 
 @app.post("/ask/stream")
@@ -523,6 +537,8 @@ async def ask_stream(
 
     async def event_stream() -> AsyncIterator[str]:
         yield _stream_line({"type": "start"})
+        initial_usage = _completion_token_usage(completion_request, None)
+        yield _stream_line({"type": "usage", "usage": initial_usage.model_dump(mode="json")})
         completion: ChatCompletion | None = None
         reasoning_announced = False
         tool_announced = False
@@ -582,6 +598,7 @@ async def ask_stream(
                 completion,
                 enabled_tools,
                 used_files,
+                _completion_token_usage(completion_request, completion),
             )
             yield _stream_line({"type": "final", "result": result.model_dump(mode="json")})
         except ProviderError as error:
@@ -669,6 +686,7 @@ def _ask_result_from_completion(
     completion: ChatCompletion,
     enabled_tools: tuple[AgentToolName, ...],
     used_files: list[str],
+    token_usage: TokenUsage,
 ) -> AskResult:
     completion, _ = _normalize_text_tool_completion(completion)
     tools_enabled = bool(enabled_tools)
@@ -688,6 +706,7 @@ def _ask_result_from_completion(
                 answer="",
                 usedFiles=used_files,
                 toolCalls=tool_calls,
+                tokenUsage=token_usage,
             ),
         )
 
@@ -723,6 +742,7 @@ def _ask_result_from_completion(
             answer=answer,
             usedFiles=used_files,
             changes=changes,
+            tokenUsage=token_usage,
         ),
     )
 
@@ -745,7 +765,50 @@ def _normalize_text_tool_completion(
         tool_calls=tool_calls,
         finish_reason=completion.finish_reason,
         reasoning_content=completion.reasoning_content,
+        usage=completion.usage,
     ), True
+
+
+def _completion_token_usage(
+    request: ChatCompletionRequest,
+    completion: ChatCompletion | None,
+) -> TokenUsage:
+    if completion and completion.usage:
+        return TokenUsage(
+            inputTokens=completion.usage.input_tokens,
+            outputTokens=completion.usage.output_tokens,
+            totalTokens=completion.usage.total_tokens,
+            exact=True,
+        )
+
+    input_characters = 0
+    for message in request.messages:
+        input_characters += len(message.role) + len(message.content or "")
+        input_characters += len(message.tool_call_id or "")
+        for tool_call in message.tool_calls:
+            input_characters += len(tool_call.id) + len(tool_call.name) + len(tool_call.arguments)
+    for tool in request.tools:
+        input_characters += len(tool.name) + len(tool.description)
+        input_characters += len(json.dumps(tool.parameters, separators=(",", ":"), ensure_ascii=False))
+
+    output_characters = 0
+    if completion:
+        output_characters += len(completion.content or "")
+        output_characters += len(completion.reasoning_content or "")
+        for tool_call in completion.tool_calls:
+            output_characters += len(tool_call.id) + len(tool_call.name) + len(tool_call.arguments)
+    input_tokens = _estimated_token_count(input_characters)
+    output_tokens = _estimated_token_count(output_characters)
+    return TokenUsage(
+        inputTokens=input_tokens,
+        outputTokens=output_tokens,
+        totalTokens=input_tokens + output_tokens,
+        exact=False,
+    )
+
+
+def _estimated_token_count(character_count: int) -> int:
+    return 0 if character_count <= 0 else max(1, (character_count + 3) // 4)
 
 
 def _stream_line(value: dict[str, object]) -> str:

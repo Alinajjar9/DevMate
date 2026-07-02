@@ -16,6 +16,7 @@ from backend.app.providers import (
     ChatCompletion,
     ChatCompletionRequest,
     ChatStreamEvent,
+    ChatTokenUsage,
     ChatToolCall,
     ProviderError,
 )
@@ -77,9 +78,13 @@ class DevMateApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["content-type"].split(";")[0], "application/x-ndjson")
         self.assertEqual(events[0], {"type": "start"})
-        self.assertEqual(events[1], {"type": "delta", "text": "Mock provider answer"})
+        self.assertEqual(events[1]["type"], "usage")
+        self.assertFalse(events[1]["usage"]["exact"])
+        self.assertGreater(events[1]["usage"]["inputTokens"], 0)
+        self.assertIn({"type": "delta", "text": "Mock provider answer"}, events)
         self.assertEqual(events[-1]["type"], "final")
         self.assertEqual(events[-1]["result"]["data"]["answer"], "Mock provider answer")
+        self.assertGreater(events[-1]["result"]["data"]["tokenUsage"]["totalTokens"], 0)
 
     def test_ask_uses_selection_context(self) -> None:
         response = self.client.post(
@@ -388,6 +393,30 @@ class DevMateApiTests(unittest.TestCase):
             ],
         )
         self.assertEqual(len(self.provider.requests[-1].tools), 3)
+        self.assertGreater(data["tokenUsage"]["inputTokens"], 0)
+
+    def test_ask_prefers_provider_reported_token_usage(self) -> None:
+        self.provider.answer = ChatCompletion(
+            content="Exact usage answer",
+            usage=ChatTokenUsage(
+                input_tokens=123,
+                output_tokens=17,
+                total_tokens=140,
+            ),
+        )
+
+        response = self.client.post(
+            "/ask",
+            json=self._ask_payload(scope_type="project", items=[]),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["tokenUsage"], {
+            "inputTokens": 123,
+            "outputTokens": 17,
+            "totalTokens": 140,
+            "exact": True,
+        })
 
     def test_ask_converts_textual_tool_markup_into_a_validated_call(self) -> None:
         self.provider.answer = ChatCompletion(

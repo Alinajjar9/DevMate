@@ -89,6 +89,10 @@ test('parses progressive backend events and returns the validated final result',
   await withServer((_request, response) => {
     response.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
     response.write(JSON.stringify({ type: 'start' }) + '\n');
+    response.write(JSON.stringify({
+      type: 'usage',
+      usage: { inputTokens: 120, outputTokens: 0, totalTokens: 120, exact: false }
+    }) + '\n');
     response.write(JSON.stringify({ type: 'progress', phase: 'Model is reasoning' }) + '\n');
     response.write(JSON.stringify({ type: 'delta', text: 'Hello ' }) + '\n');
     response.write(JSON.stringify({ type: 'delta', text: 'world' }) + '\n');
@@ -113,6 +117,10 @@ test('parses progressive backend events and returns the validated final result',
     assert.equal(streamed.result.status, 'ok');
     assert.equal(streamed.result.data.answer, 'Hello world');
     assert.deepEqual(events, [
+      {
+        type: 'usage',
+        usage: { inputTokens: 120, outputTokens: 0, totalTokens: 120, exact: false }
+      },
       { type: 'progress', phase: 'Model is reasoning' },
       { type: 'delta', text: 'Hello ' },
       { type: 'delta', text: 'world' }

@@ -66,6 +66,14 @@ class ChatCompletion:
     tool_calls: tuple[ChatToolCall, ...] = ()
     finish_reason: str | None = None
     reasoning_content: str | None = None
+    usage: "ChatTokenUsage | None" = None
+
+
+@dataclass(frozen=True)
+class ChatTokenUsage:
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
 
 
 @dataclass(frozen=True)
@@ -213,6 +221,7 @@ class OpenAICompatibleProvider:
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         streamed_tool_calls: dict[int, dict[str, str]] = {}
+        streamed_usage: ChatTokenUsage | None = None
         finish_reason: str | None = None
         tool_announced = False
         try:
@@ -268,6 +277,9 @@ class OpenAICompatibleProvider:
                                 "The model provider returned an invalid streaming event.",
                                 502,
                             ) from error
+                        chunk_usage = _read_token_usage(chunk)
+                        if chunk_usage:
+                            streamed_usage = chunk_usage
                         choice = _first_stream_choice(chunk)
                         if choice is None:
                             continue
@@ -306,6 +318,7 @@ class OpenAICompatibleProvider:
             reasoning_parts,
             streamed_tool_calls,
             finish_reason,
+            streamed_usage,
         )
         if not completion:
             raise ProviderError("The model provider returned an empty or invalid answer.", 502)
@@ -355,6 +368,7 @@ def _stream_completion(
     reasoning_parts: list[str],
     streamed_tool_calls: dict[int, dict[str, str]],
     finish_reason: str | None,
+    usage: ChatTokenUsage | None,
 ) -> ChatCompletion | None:
     tool_calls: list[ChatToolCall] = []
     for index in sorted(streamed_tool_calls):
@@ -374,6 +388,7 @@ def _stream_completion(
         tool_calls=tuple(tool_calls),
         finish_reason=finish_reason,
         reasoning_content=reasoning,
+        usage=usage,
     )
 
 
@@ -549,4 +564,38 @@ def _read_completion(payload: object) -> ChatCompletion | None:
         tool_calls=tuple(tool_calls),
         finish_reason=finish_reason,
         reasoning_content=reasoning_content,
+        usage=_read_token_usage(payload),
+    )
+
+
+def _read_token_usage(payload: object) -> ChatTokenUsage | None:
+    if not isinstance(payload, dict) or not isinstance(payload.get("usage"), dict):
+        return None
+    usage = payload["usage"]
+    input_tokens = usage.get("prompt_tokens", usage.get("input_tokens"))
+    output_tokens = usage.get("completion_tokens", usage.get("output_tokens"))
+    total_tokens = usage.get("total_tokens")
+    if (
+        not isinstance(input_tokens, int)
+        or isinstance(input_tokens, bool)
+        or not isinstance(output_tokens, int)
+        or isinstance(output_tokens, bool)
+        or input_tokens < 0
+        or output_tokens < 0
+        or input_tokens > 100_000_000
+        or output_tokens > 100_000_000
+    ):
+        return None
+    expected_total = input_tokens + output_tokens
+    if (
+        not isinstance(total_tokens, int)
+        or isinstance(total_tokens, bool)
+        or total_tokens < expected_total
+        or total_tokens > 200_000_000
+    ):
+        total_tokens = expected_total
+    return ChatTokenUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
     )

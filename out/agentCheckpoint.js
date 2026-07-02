@@ -38,6 +38,11 @@ function parseAgentRunCheckpoint(value, now = Date.now()) {
         || typeof value.forceFinalAnswer !== 'boolean'
         || typeof value.disableThinking !== 'boolean'
         || typeof value.emptyResponseRecoveryAttempted !== 'boolean'
+        || !validCounter(value.inputTokens, 200_000_000)
+        || !validCounter(value.outputTokens, 200_000_000)
+        || !validCounter(value.totalTokens, 400_000_000)
+        || value.totalTokens < value.inputTokens + value.outputTokens
+        || typeof value.tokenUsageExact !== 'boolean'
         || !validTimestamp(value.createdAt)
         || !validTimestamp(value.updatedAt)
         || value.updatedAt < value.createdAt
@@ -71,6 +76,10 @@ function parseAgentRunCheckpoint(value, now = Date.now()) {
         forceFinalAnswer: value.forceFinalAnswer,
         disableThinking: value.disableThinking,
         emptyResponseRecoveryAttempted: value.emptyResponseRecoveryAttempted,
+        inputTokens: value.inputTokens,
+        outputTokens: value.outputTokens,
+        totalTokens: value.totalTokens,
+        tokenUsageExact: value.tokenUsageExact,
         createdAt: value.createdAt,
         updatedAt: value.updatedAt
     };

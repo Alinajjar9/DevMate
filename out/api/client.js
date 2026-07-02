@@ -348,6 +348,13 @@ async function nodeHttpStreamRequest(backendUrl, requestPath, init, timeoutMilli
                 onEvent?.({ type: 'progress', phase: value.phase.slice(0, 120) });
                 return;
             }
+            if (value.type === 'usage') {
+                const usage = parseTokenUsage(value.usage);
+                if (usage) {
+                    onEvent?.({ type: 'usage', usage });
+                }
+                return;
+            }
             if (value.type === 'final' && isApiResult(value.result)) {
                 finalResult = value.result;
                 return;
@@ -466,6 +473,27 @@ async function nodeHttpStreamRequest(backendUrl, requestPath, init, timeoutMilli
             failTransport();
         }
     });
+}
+function parseTokenUsage(value) {
+    if (!isRecord(value)
+        || !safeTokenCount(value.inputTokens)
+        || !safeTokenCount(value.outputTokens)
+        || !safeTokenCount(value.totalTokens)
+        || typeof value.exact !== 'boolean') {
+        return undefined;
+    }
+    return {
+        inputTokens: value.inputTokens,
+        outputTokens: value.outputTokens,
+        totalTokens: value.totalTokens,
+        exact: value.exact
+    };
+}
+function safeTokenCount(value) {
+    return typeof value === 'number'
+        && Number.isInteger(value)
+        && value >= 0
+        && value <= 200_000_000;
 }
 function createEndpoint(backendUrl, path) {
     try {

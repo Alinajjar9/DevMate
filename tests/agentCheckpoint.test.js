@@ -46,6 +46,10 @@ function validCheckpoint() {
     forceFinalAnswer: false,
     disableThinking: true,
     emptyResponseRecoveryAttempted: true,
+    inputTokens: 1200,
+    outputTokens: 80,
+    totalTokens: 1280,
+    tokenUsageExact: false,
     createdAt: now - 1_000,
     updatedAt: now
   };

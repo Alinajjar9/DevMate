@@ -148,9 +148,13 @@ test('composer shows a live token estimate and a compact ask action', () => {
   );
   assert.match(source, /id="tokenEstimate"/);
   assert.match(source, /class="action-button primary ask-button"/);
+  assert.doesNotMatch(source, /ask-button-icon/);
   assert.match(source, /questionEl\.addEventListener\('input', renderTokenEstimate\)/);
   assert.match(source, /Math\.ceil\(characterCount \/ 4\)/);
-  assert.match(source, /project context and the response are not included/);
+  assert.match(source, /full prompt and response usage appears here/);
+  assert.match(source, /message\.command === 'tokenUsageUpdated'/);
+  assert.match(source, /Input ' \+ marker/);
+  assert.match(source, /formatTokenCount\(usage\.totalTokens\) \+ ' total'/);
 });
 
 test('built-in Nemotron setup locks provider fields while keeping the API key configurable', () => {
