@@ -12,6 +12,7 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 - Managed local-backend startup, health monitoring, logs, restart controls, and configurable external backend URLs
 - Streamed OpenAI-compatible responses with non-streaming backend fallback
 - Iterative agent tools for project inspection, exact file edits, and approved verification commands
+- VS Code-powered document symbols, definition lookup, and reference lookup
 - Animated in-chat working state with real phases, elapsed time, selected model, and cancellation
 - Compact segmented mode controls and a top-right in-chat Settings dialog
 - Mode-aware prompts for Ideas, Code, and Debug
@@ -35,7 +36,9 @@ Retrieval is deterministic and runs entirely in the extension host using BM25-st
 
 ## Agent tools
 
-DevMate can ask the extension host to inspect and improve the open project before answering. Read-only tools support `list_files`, ranged `read_file`, plain-text `search_code`, current VS Code Problems through `get_diagnostics`, and recent failed user-terminal commands through `read_terminal_errors`. In trusted workspaces, Code and Debug additionally receive `create_file`, exact-replacement `edit_file`, `delete_file`, `rename_file`, `move_file`, approved `run_command` verification, and manifest-based `install_dependencies` tools. Tool activity appears as compact cards in the chat. The per-request tool limit defaults to 16 and is configurable from 4 through 100; older results are compacted first when a longer loop approaches the bounded context budget.
+DevMate can ask the extension host to inspect and improve the open project before answering. Read-only tools support `list_files`, ranged `read_file`, plain-text `search_code`, document structure through `get_symbols`, precise `find_definition` and `find_references` navigation, current VS Code Problems through `get_diagnostics`, and recent failed user-terminal commands through `read_terminal_errors`. In trusted workspaces, Code and Debug additionally receive `create_file`, exact-replacement `edit_file`, `delete_file`, `rename_file`, `move_file`, approved `run_command` verification, and manifest-based `install_dependencies` tools. Tool activity appears as compact cards in the chat. The per-request tool limit defaults to 16 and is configurable from 4 through 100; older results are compacted first when a longer loop approaches the bounded context budget.
+
+Code navigation uses the language provider already installed in VS Code for the target file. `get_symbols` returns declared symbol kinds, names, containers, and one-based positions. Definition and reference lookup accept a workspace-relative file plus a one-based line and column, then return only eligible locations inside the current workspace. External dependency definitions are deliberately excluded. Languages without an active symbol/reference provider return an empty result without interrupting the agent loop. The shared navigation result cap defaults to 100 and is configurable from 10 through 300 under **Settings → Agent tools**.
 
 `run_command` is reserved for verification and never performs filesystem management. Rejected `mkdir`, move, rename, copy, and deletion commands return guidance naming the appropriate dedicated file tool. `create_file` and `move_file` create missing parent directories automatically, so agents do not need placeholder files or separate directory commands.
 
@@ -77,7 +80,7 @@ DevMate is contributed directly to VS Code's Secondary Side Bar in its own dedic
 
 ## DevMate settings
 
-Use the gear button in the top-right of the DevMate view to configure provider timeout, verification-command timeout, per-request tool-call limit, maximum output tokens, temperature, workspace-local create/update permissions, and remembered exact commands. File deletion, rename, and move always ask once and cannot be remembered. Ideas, Code, and Debug use a compact segmented control on the left side of the top bar.
+Use the gear button in the top-right of the DevMate view to configure provider timeout, verification-command timeout, per-request tool-call limit, maximum output tokens, temperature, workspace-local create/update permissions, and remembered exact commands. The separate **Agent tools** screen controls read ranges and bounded list, search, diagnostic, terminal-error, and code-navigation results. File deletion, rename, and move always ask once and cannot be remembered. Ideas, Code, and Debug use a compact segmented control on the left side of the top bar.
 
 ## Model profiles
 
@@ -85,7 +88,7 @@ Nemotron 3 Ultra is always available as DevMate’s built-in default through NVI
 
 Use the model button beside **Ask** to open DevMate's styled model selector. It displays the selected and built-in states, provider, exact model ID, endpoint, and inline Configure/Edit actions. Adding or editing a custom profile opens a matching modal containing the display name, provider, exact model ID, optional custom base URL, and API key; custom-profile deletion uses an in-modal confirmation. The key is sent once from the modal to the extension host, cleared when the modal closes, and stored through VS Code SecretStorage. It is not kept in webview state or normal settings.
 
-Recognized reasoning models expose a compact **Intelligence** selector beside the model button. The selected Auto, Low, Medium, High, or Extra High preference is stored per profile. DevMate sends OpenAI's `reasoning_effort` only to recognized GPT-5/o-series models on the official OpenAI endpoint; Extra High appears only for supported newer GPT-5 versions. Nemotron 3 Ultra maps the same UI to its supported thinking, medium-effort, and reasoning-budget controls. Unknown OpenAI-compatible endpoints and ordinary Ollama models keep their provider defaults and do not display the selector.
+Recognized reasoning models expose a compact icon-only **Intelligence** button beside the model selector. Clicking it opens a small Auto, Low, Medium, High, or Extra High menu, while the composer itself stays uncluttered. The selected preference is stored per profile. DevMate sends OpenAI's `reasoning_effort` only to recognized GPT-5/o-series models on the official OpenAI endpoint; Extra High appears only for supported newer GPT-5 versions. Nemotron 3 Ultra maps the same UI to its supported thinking, medium-effort, and reasoning-budget controls. Unknown OpenAI-compatible endpoints and ordinary Ollama models keep their provider defaults and do not display the button.
 
 Selecting **Manage model profiles** from the same menu lets you configure Nemotron’s key or choose, edit, and delete custom profiles. The built-in Nemotron entry cannot be deleted. Ollama profiles default to `http://127.0.0.1:11434` and do not require an API key in the current implementation.
 

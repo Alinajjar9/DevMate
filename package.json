@@ -134,6 +134,13 @@
           "minimum": 1,
           "maximum": 10,
           "description": "Maximum failed terminal commands returned by read_terminal_errors."
+        },
+        "devMate.codeNavigationMaxResults": {
+          "type": "integer",
+          "default": 100,
+          "minimum": 10,
+          "maximum": 300,
+          "description": "Maximum locations returned by get_symbols, find_definition, or find_references."
         }
       }
     }

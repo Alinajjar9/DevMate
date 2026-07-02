@@ -18,12 +18,17 @@ export const DEFAULT_TERMINAL_ERRORS_MAX_RESULTS = 5;
 export const MIN_TERMINAL_ERRORS_MAX_RESULTS = 1;
 export const MAX_TERMINAL_ERRORS_MAX_RESULTS = 10;
 
+export const DEFAULT_CODE_NAVIGATION_MAX_RESULTS = 100;
+export const MIN_CODE_NAVIGATION_MAX_RESULTS = 10;
+export const MAX_CODE_NAVIGATION_MAX_RESULTS = 300;
+
 export type AgentToolSettings = {
   readFileMaxLines: number;
   listFilesMaxResults: number;
   searchCodeMaxResults: number;
   diagnosticsMaxResults: number;
   terminalErrorsMaxResults: number;
+  codeNavigationMaxResults: number;
 };
 
 export function normalizeAgentToolSettings(value: Partial<AgentToolSettings>): AgentToolSettings {
@@ -57,6 +62,12 @@ export function normalizeAgentToolSettings(value: Partial<AgentToolSettings>): A
       DEFAULT_TERMINAL_ERRORS_MAX_RESULTS,
       MIN_TERMINAL_ERRORS_MAX_RESULTS,
       MAX_TERMINAL_ERRORS_MAX_RESULTS
+    ),
+    codeNavigationMaxResults: boundedInteger(
+      value.codeNavigationMaxResults,
+      DEFAULT_CODE_NAVIGATION_MAX_RESULTS,
+      MIN_CODE_NAVIGATION_MAX_RESULTS,
+      MAX_CODE_NAVIGATION_MAX_RESULTS
     )
   };
 }

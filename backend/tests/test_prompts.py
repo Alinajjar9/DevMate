@@ -71,6 +71,7 @@ class PromptTests(unittest.TestCase):
         self.assertIn("at most one short sentence", messages[0].content)
         self.assertIn("do not narrate reasoning", messages[0].content)
         self.assertIn("Do not return a future-tense plan", messages[0].content)
+        self.assertIn("find_definition or find_references", messages[0].content)
         self.assertIn("internal history-summary", messages[0].content)
         self.assertIn("use move_file instead of recreating", messages[0].content)
         self.assertNotIn("Return only one JSON object", messages[0].content)

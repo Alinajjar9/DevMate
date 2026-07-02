@@ -108,12 +108,53 @@ test('parses bounded ranged reads', () => {
   }), /at most 1000 lines/);
 });
 
+test('parses bounded code-navigation tools with one-based positions', () => {
+  assert.deepEqual(parseAgentToolCall({
+    id: 'symbols',
+    name: 'get_symbols',
+    arguments: { path: 'src/app.ts', maxResults: 999 }
+  }).arguments, {
+    path: 'src/app.ts',
+    maxResults: 300
+  });
+  assert.deepEqual(parseAgentToolCall({
+    id: 'definition',
+    name: 'find_definition',
+    arguments: { path: 'src/app.ts', line: 14, column: 8 }
+  }).arguments, {
+    path: 'src/app.ts',
+    line: 14,
+    column: 8,
+    maxResults: 20
+  });
+  assert.deepEqual(parseAgentToolCall({
+    id: 'references',
+    name: 'find_references',
+    arguments: { path: 'src/app.ts', line: 14, column: 8, maxResults: 80 }
+  }).arguments, {
+    path: 'src/app.ts',
+    line: 14,
+    column: 8,
+    maxResults: 80
+  });
+  assert.throws(() => parseAgentToolCall({
+    id: 'bad-position',
+    name: 'find_definition',
+    arguments: { path: 'src/app.ts', line: 0, column: 1 }
+  }), /positive one-based line/);
+});
+
 test('normalizes harmless workspace-qualified model paths', () => {
   assert.equal(normalizeAgentToolCallForWorkspace({
     id: 'absolute-read',
     name: 'read_file',
     arguments: { path: 'C:\\Users\\ali\\Desktop\\testing the ai project\\app.py' }
   }, workspace).arguments.path, 'app.py');
+  assert.equal(normalizeAgentToolCallForWorkspace({
+    id: 'absolute-symbols',
+    name: 'get_symbols',
+    arguments: { path: 'C:\\Users\\ali\\Desktop\\testing the ai project\\src\\app.ts' }
+  }, workspace).arguments.path, 'src/app.ts');
   assert.equal(normalizeAgentToolCallForWorkspace({
     id: 'named-root',
     name: 'list_files',
@@ -217,8 +258,9 @@ test('bounds consecutive inspection loops until meaningful progress', () => {
     ...inspections,
     { name: 'edit_file', isError: false },
     { name: 'get_diagnostics', isError: false },
+    { name: 'find_references', isError: false },
     { name: 'read_terminal_errors', isError: false }
-  ]), 2);
+  ]), 3);
 });
 
 test('builds an honest local summary when a model cannot finalize tool work', () => {

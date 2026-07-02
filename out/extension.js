@@ -1145,15 +1145,6 @@ class DevMateChatViewProvider {
         const reasoningPreferences = this.getReasoningEffortPreferences();
         this.postMessage({
             command: 'showLlmProfilePicker',
-            intelligence: activeProfile
-                ? {
-                    value: (0, llmProfiles_1.reasoningEffortForProfile)(activeProfile, reasoningPreferences),
-                    options: (0, llmProfiles_1.reasoningEffortOptionsForProfile)(activeProfile).map((value) => ({
-                        value,
-                        label: llmProfiles_1.REASONING_EFFORT_LABELS[value]
-                    }))
-                }
-                : undefined,
             profiles: profiles.map((profile) => ({
                 id: profile.id,
                 name: profile.name,
@@ -1478,7 +1469,8 @@ class DevMateChatViewProvider {
             listFilesMaxResults: config.get('listFilesMaxResults', agentToolSettings_1.DEFAULT_LIST_FILES_MAX_RESULTS),
             searchCodeMaxResults: config.get('searchCodeMaxResults', agentToolSettings_1.DEFAULT_SEARCH_CODE_MAX_RESULTS),
             diagnosticsMaxResults: config.get('diagnosticsMaxResults', agentToolSettings_1.DEFAULT_DIAGNOSTICS_MAX_RESULTS),
-            terminalErrorsMaxResults: config.get('terminalErrorsMaxResults', agentToolSettings_1.DEFAULT_TERMINAL_ERRORS_MAX_RESULTS)
+            terminalErrorsMaxResults: config.get('terminalErrorsMaxResults', agentToolSettings_1.DEFAULT_TERMINAL_ERRORS_MAX_RESULTS),
+            codeNavigationMaxResults: config.get('codeNavigationMaxResults', agentToolSettings_1.DEFAULT_CODE_NAVIGATION_MAX_RESULTS)
         });
     }
     async saveAgentToolSettings(settings) {
@@ -1494,7 +1486,8 @@ class DevMateChatViewProvider {
                 config.update('listFilesMaxResults', normalized.listFilesMaxResults, vscode.ConfigurationTarget.Global),
                 config.update('searchCodeMaxResults', normalized.searchCodeMaxResults, vscode.ConfigurationTarget.Global),
                 config.update('diagnosticsMaxResults', normalized.diagnosticsMaxResults, vscode.ConfigurationTarget.Global),
-                config.update('terminalErrorsMaxResults', normalized.terminalErrorsMaxResults, vscode.ConfigurationTarget.Global)
+                config.update('terminalErrorsMaxResults', normalized.terminalErrorsMaxResults, vscode.ConfigurationTarget.Global),
+                config.update('codeNavigationMaxResults', normalized.codeNavigationMaxResults, vscode.ConfigurationTarget.Global)
             ]);
         }
         catch {
@@ -1867,6 +1860,12 @@ class DevMateChatViewProvider {
         if (call.name === 'get_diagnostics') {
             return this.readWorkspaceDiagnostics(call, folder);
         }
+        if (call.name === 'get_symbols') {
+            return this.readDocumentSymbols(call, folder);
+        }
+        if (call.name === 'find_definition' || call.name === 'find_references') {
+            return this.findCodeLocations(call, folder);
+        }
         if (call.name === 'read_terminal_errors') {
             const maxResults = Math.min(call.arguments.maxResults, toolSettings.terminalErrorsMaxResults);
             const available = Math.min(maxResults, this.recentTerminalErrors.length);
@@ -1985,6 +1984,122 @@ class DevMateChatViewProvider {
             resultSummary: `${errors} ${errors === 1 ? 'error' : 'errors'}, ${warnings} ${warnings === 1 ? 'warning' : 'warnings'}`,
             usedFiles: [],
             mutationCharacters: 0
+        };
+    }
+    async readDocumentSymbols(call, folder) {
+        const source = await this.openCodeNavigationSource(folder, call.arguments.path);
+        const configuredLimit = this.getAgentToolSettings().codeNavigationMaxResults;
+        const maxResults = Math.min(call.arguments.maxResults, configuredLimit);
+        const provided = await vscode.commands.executeCommand('vscode.executeDocumentSymbolProvider', source.document.uri);
+        const rows = [];
+        const visit = (symbols, containers = []) => {
+            for (const symbol of symbols) {
+                if (rows.length >= maxResults) {
+                    return;
+                }
+                if (isDocumentSymbol(symbol)) {
+                    const container = containers.join('.');
+                    rows.push(formatSymbolResult(symbol.kind, symbol.name, call.arguments.path, symbol.selectionRange.start, container));
+                    visit(symbol.children, [...containers, symbol.name]);
+                    continue;
+                }
+                const location = this.workspaceCodeLocation(folder, symbol.location.uri, symbol.location.range);
+                if (!location) {
+                    continue;
+                }
+                rows.push(formatSymbolResult(symbol.kind, symbol.name, location.path, new vscode.Position(location.line - 1, location.column - 1), symbol.containerName));
+            }
+        };
+        visit(Array.isArray(provided) ? provided : []);
+        const result = rows.length > 0
+            ? `Symbols in ${call.arguments.path} (${rows.length}):\n${rows.join('\n')}`
+            : `No document symbols were available for ${call.arguments.path}.`;
+        return {
+            result: (0, agentTools_1.truncateAgentToolResult)(result),
+            resultSummary: `${rows.length} ${rows.length === 1 ? 'symbol' : 'symbols'}`,
+            usedFiles: [source.filePath],
+            mutationCharacters: 0
+        };
+    }
+    async findCodeLocations(call, folder) {
+        const source = await this.openCodeNavigationSource(folder, call.arguments.path, call.arguments.line, call.arguments.column);
+        const position = new vscode.Position(call.arguments.line - 1, call.arguments.column - 1);
+        const provided = call.name === 'find_definition'
+            ? await vscode.commands.executeCommand('vscode.executeDefinitionProvider', source.document.uri, position)
+            : await vscode.commands.executeCommand('vscode.executeReferenceProvider', source.document.uri, position);
+        const configuredLimit = this.getAgentToolSettings().codeNavigationMaxResults;
+        const maxResults = Math.min(call.arguments.maxResults, configuredLimit);
+        const locations = [];
+        const seen = new Set();
+        for (const rawLocation of Array.isArray(provided) ? provided : []) {
+            const providerLocation = codeLocationFromProvider(rawLocation);
+            if (!providerLocation) {
+                continue;
+            }
+            const location = this.workspaceCodeLocation(folder, providerLocation.uri, providerLocation.range);
+            if (!location) {
+                continue;
+            }
+            const signature = `${this.fileChangePathKey(location.path)}:${location.line}:${location.column}`;
+            if (seen.has(signature)) {
+                continue;
+            }
+            seen.add(signature);
+            locations.push(location);
+            if (locations.length >= maxResults) {
+                break;
+            }
+        }
+        const noun = call.name === 'find_definition' ? 'definition' : 'reference';
+        const sourceLabel = `${call.arguments.path}:${call.arguments.line}:${call.arguments.column}`;
+        const result = locations.length > 0
+            ? `${noun === 'definition' ? 'Definitions' : 'References'} for ${sourceLabel} (${locations.length}):\n`
+                + locations.map((location) => `${location.path}:${location.line}:${location.column}`).join('\n')
+            : `No workspace ${noun}s were found for ${sourceLabel}.`;
+        return {
+            result: (0, agentTools_1.truncateAgentToolResult)(result),
+            resultSummary: `${locations.length} ${locations.length === 1 ? noun : `${noun}s`}`,
+            usedFiles: [
+                source.filePath,
+                ...locations.map((location) => location.filePath)
+            ].filter((value, index, values) => values.indexOf(value) === index).slice(0, 20),
+            mutationCharacters: 0
+        };
+    }
+    async openCodeNavigationSource(folder, relativePath, line, column) {
+        await this.assertNoWorkspaceSymlink(folder, relativePath, false);
+        const uri = vscode.Uri.joinPath(folder.uri, ...relativePath.split('/'));
+        const candidate = await this.readProjectCandidate(uri);
+        if (!candidate
+            || !agentPathMatches(normalizeRelativeWorkspacePath(candidate.relativePath), relativePath)) {
+            throw new Error('The code-navigation source does not exist or is excluded from DevMate context.');
+        }
+        const document = await vscode.workspace.openTextDocument(uri);
+        if (line !== undefined) {
+            if (line > document.lineCount) {
+                throw new Error(`${relativePath} has only ${document.lineCount} lines.`);
+            }
+            const lineLength = document.lineAt(line - 1).text.length;
+            if (column === undefined || column > lineLength + 1) {
+                throw new Error(`Column ${column ?? ''} is outside line ${line} in ${relativePath}.`);
+            }
+        }
+        return { document, filePath: candidate.filePath };
+    }
+    workspaceCodeLocation(folder, uri, range) {
+        const locationFolder = vscode.workspace.getWorkspaceFolder(uri);
+        if (!locationFolder || locationFolder.uri.toString() !== folder.uri.toString()) {
+            return undefined;
+        }
+        const relativePath = normalizeRelativeWorkspacePath(vscode.workspace.asRelativePath(uri, false));
+        if ((0, projectContext_1.shouldSkipProjectFile)(relativePath)) {
+            return undefined;
+        }
+        return {
+            path: relativePath,
+            line: range.start.line + 1,
+            column: range.start.character + 1,
+            filePath: uri.scheme === 'file' ? uri.fsPath : uri.toString()
         };
     }
     async deleteAgentFile(call, folder, remainingMutationCharacters) {
@@ -2647,6 +2762,9 @@ class DevMateChatViewProvider {
             'list_files',
             'read_file',
             'search_code',
+            'get_symbols',
+            'find_definition',
+            'find_references',
             'get_diagnostics',
             'read_terminal_errors'
         ];
@@ -4166,16 +4284,6 @@ class DevMateChatViewProvider {
       font-weight: 650;
     }
 
-    .working-card[data-state="working"] .working-heading::after {
-      display: inline-block;
-      width: 0;
-      overflow: hidden;
-      vertical-align: bottom;
-      white-space: nowrap;
-      content: '...';
-      animation: working-ellipsis 1.9s steps(4, end) infinite;
-    }
-
     .working-model {
       margin-left: auto;
       overflow: hidden;
@@ -4408,11 +4516,6 @@ class DevMateChatViewProvider {
       78%, 100% { opacity: 0; transform: scale(1.35); }
     }
 
-    @keyframes working-ellipsis {
-      from { width: 0; }
-      to { width: 1.15em; }
-    }
-
     @keyframes working-phase-sweep {
       from { background-position: 115% 0; }
       to { background-position: -115% 0; }
@@ -4425,7 +4528,6 @@ class DevMateChatViewProvider {
 
     @media (prefers-reduced-motion: reduce) {
       .working-card[data-state="working"],
-      .working-card[data-state="working"] .working-heading::after,
       .working-phase[data-status="active"],
       .working-phase[data-status="active"] .working-phase-icon,
       .model-narration[data-streaming="true"] .model-narration-body::after,
@@ -4441,10 +4543,6 @@ class DevMateChatViewProvider {
       .working-card[data-state="working"]::before,
       .working-card[data-state="working"]::after {
         display: none;
-      }
-
-      .working-card[data-state="working"] .working-heading::after {
-        width: 1.15em;
       }
 
       .working-phase[data-status="active"] {
@@ -4628,6 +4726,107 @@ class DevMateChatViewProvider {
       font-size: 9px;
     }
 
+    .intelligence-control {
+      position: relative;
+      display: inline-flex;
+      flex: 0 0 auto;
+    }
+
+    .intelligence-control[hidden] {
+      display: none;
+    }
+
+    .intelligence-icon-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      border: 1px solid var(--vscode-input-border, var(--border));
+      border-radius: 6px;
+      color: var(--muted);
+      background: var(--vscode-input-background);
+      cursor: pointer;
+    }
+
+    .intelligence-icon-button:hover,
+    .intelligence-icon-button[aria-expanded="true"] {
+      border-color: var(--focus);
+      color: var(--vscode-foreground);
+      background: var(--vscode-list-hoverBackground);
+    }
+
+    .intelligence-icon-button span {
+      font-size: 12px;
+      line-height: 1;
+    }
+
+    .intelligence-menu {
+      position: absolute;
+      bottom: calc(100% + 7px);
+      left: 0;
+      z-index: 30;
+      display: grid;
+      gap: 3px;
+      width: 164px;
+      padding: 6px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.36);
+    }
+
+    .intelligence-menu[hidden] {
+      display: none;
+    }
+
+    .intelligence-menu-title {
+      padding: 3px 7px 5px;
+      color: var(--muted);
+      font-size: 9px;
+      font-weight: 650;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .intelligence-menu-options {
+      display: grid;
+      gap: 2px;
+    }
+
+    .intelligence-menu-option {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      min-height: 28px;
+      padding: 0 7px;
+      border: 0;
+      border-radius: 5px;
+      color: var(--vscode-foreground);
+      background: transparent;
+      font-size: 11px;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .intelligence-menu-option:hover {
+      background: var(--vscode-list-hoverBackground);
+    }
+
+    .intelligence-menu-option[aria-checked="true"] {
+      color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
+      background: var(--vscode-list-activeSelectionBackground);
+    }
+
+    .intelligence-menu-check {
+      width: 12px;
+      color: var(--vscode-list-activeSelectionForeground, var(--focus));
+      font-size: 10px;
+      text-align: center;
+    }
+
     .profile-dialog {
       width: min(520px, calc(100vw - 32px));
       max-height: calc(100vh - 32px);
@@ -4743,64 +4942,6 @@ class DevMateChatViewProvider {
       gap: 7px;
       max-height: min(440px, 58vh);
       overflow-y: auto;
-    }
-
-    .model-intelligence-panel {
-      display: grid;
-      gap: 9px;
-      padding: 11px;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      background: var(--surface-soft);
-    }
-
-    .model-intelligence-panel[hidden] {
-      display: none;
-    }
-
-    .model-intelligence-copy {
-      display: grid;
-      gap: 2px;
-    }
-
-    .model-intelligence-copy strong {
-      font-size: 12px;
-      font-weight: 650;
-    }
-
-    .model-intelligence-copy span {
-      color: var(--muted);
-      font-size: 10px;
-      line-height: 1.4;
-    }
-
-    .model-intelligence-options {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(66px, 1fr));
-      gap: 5px;
-    }
-
-    .model-intelligence-option {
-      min-height: 30px;
-      padding: 0 8px;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      color: var(--muted);
-      background: var(--vscode-input-background);
-      font-size: 10px;
-      font-weight: 600;
-      cursor: pointer;
-    }
-
-    .model-intelligence-option:hover {
-      color: var(--vscode-foreground);
-      background: var(--vscode-list-hoverBackground);
-    }
-
-    .model-intelligence-option[aria-pressed="true"] {
-      border-color: var(--focus);
-      color: var(--vscode-button-foreground);
-      background: var(--vscode-button-background);
     }
 
     .model-picker-option {
@@ -5305,6 +5446,21 @@ class DevMateChatViewProvider {
             <span id="llmProfileLabel" class="model-selector-label">Add model</span>
             <span class="model-selector-chevron" aria-hidden="true">▼</span>
           </button>
+          <div id="intelligenceControl" class="intelligence-control" hidden>
+            <button
+              id="intelligenceButton"
+              class="intelligence-icon-button"
+              type="button"
+              title="Model intelligence"
+              aria-label="Choose model intelligence"
+              aria-haspopup="menu"
+              aria-expanded="false"
+            ><span aria-hidden="true">✦</span></button>
+            <div id="intelligenceMenu" class="intelligence-menu" role="menu" hidden>
+              <span class="intelligence-menu-title">Intelligence</span>
+              <div id="intelligenceMenuOptions" class="intelligence-menu-options"></div>
+            </div>
+          </div>
           <span class="composer-actions-spacer"></span>
           <div class="composer-submit">
             <button
@@ -5334,13 +5490,6 @@ class DevMateChatViewProvider {
         <p>Select a model for this DevMate session or manage a saved profile.</p>
       </header>
       <div class="profile-form-body">
-        <section id="modelIntelligencePanel" class="model-intelligence-panel" hidden>
-          <span class="model-intelligence-copy">
-            <strong>Intelligence</strong>
-            <span>Choose how much reasoning the selected model should use.</span>
-          </span>
-          <div id="modelIntelligenceOptions" class="model-intelligence-options" role="group" aria-label="Model intelligence level"></div>
-        </section>
         <div id="llmProfilePickerList" class="model-picker-list" role="listbox" aria-label="Available model profiles"></div>
       </div>
       <footer class="profile-form-actions">
@@ -5569,6 +5718,11 @@ class DevMateChatViewProvider {
             <input id="settingsTerminalErrorsMaxResults" type="number" min="1" max="10" step="1" required>
             <p class="field-help">Default 5 recent terminal error groups.</p>
           </div>
+          <div class="profile-field">
+            <label for="settingsCodeNavigationMaxResults">Code navigation — maximum locations</label>
+            <input id="settingsCodeNavigationMaxResults" type="number" min="10" max="300" step="1" required>
+            <p class="field-help">Shared by symbols, definitions, and references. Default 100.</p>
+          </div>
         </div>
       </div>
       <footer class="profile-form-actions">
@@ -5607,7 +5761,8 @@ class DevMateChatViewProvider {
           listFilesMaxResults: 200,
           searchCodeMaxResults: 50,
           diagnosticsMaxResults: 100,
-          terminalErrorsMaxResults: 5
+          terminalErrorsMaxResults: 5,
+          codeNavigationMaxResults: 100
         },
         rememberedCommands: [],
         workspaceTrusted: true
@@ -5651,6 +5806,10 @@ class DevMateChatViewProvider {
     const attachmentToggleEl = document.getElementById('toggleAttachments');
     const llmProfileSelectorEl = document.getElementById('llmProfileSelector');
     const llmProfileLabelEl = document.getElementById('llmProfileLabel');
+    const intelligenceControlEl = document.getElementById('intelligenceControl');
+    const intelligenceButtonEl = document.getElementById('intelligenceButton');
+    const intelligenceMenuEl = document.getElementById('intelligenceMenu');
+    const intelligenceMenuOptionsEl = document.getElementById('intelligenceMenuOptions');
     const tokenEstimateEl = document.getElementById('tokenEstimate');
     const continueAgentEl = document.getElementById('continueAgent');
     const askEl = document.getElementById('ask');
@@ -5661,8 +5820,6 @@ class DevMateChatViewProvider {
     const newSessionOnHomeEl = document.getElementById('newSessionOnHome');
     const llmProfilePickerDialogEl = document.getElementById('llmProfilePickerDialog');
     const llmProfilePickerListEl = document.getElementById('llmProfilePickerList');
-    const modelIntelligencePanelEl = document.getElementById('modelIntelligencePanel');
-    const modelIntelligenceOptionsEl = document.getElementById('modelIntelligenceOptions');
     const llmProfileDialogEl = document.getElementById('llmProfileDialog');
     const llmProfileFormEl = document.getElementById('llmProfileForm');
     const llmProfileFormTitleEl = document.getElementById('llmProfileFormTitle');
@@ -5698,6 +5855,7 @@ class DevMateChatViewProvider {
     const settingsSearchCodeMaxResultsEl = document.getElementById('settingsSearchCodeMaxResults');
     const settingsDiagnosticsMaxResultsEl = document.getElementById('settingsDiagnosticsMaxResults');
     const settingsTerminalErrorsMaxResultsEl = document.getElementById('settingsTerminalErrorsMaxResults');
+    const settingsCodeNavigationMaxResultsEl = document.getElementById('settingsCodeNavigationMaxResults');
     const rememberedCommandListEl = document.getElementById('rememberedCommandList');
     const clearRememberedCommandsEl = document.getElementById('clearRememberedCommands');
     const workspaceTrustBadgeEl = document.getElementById('workspaceTrustBadge');
@@ -5776,7 +5934,34 @@ class DevMateChatViewProvider {
     });
 
     llmProfileSelectorEl.addEventListener('click', () => {
+      closeIntelligenceMenu();
       vscode.postMessage({ command: 'chooseLlmProfile' });
+    });
+
+    intelligenceButtonEl.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (intelligenceButtonEl.disabled) {
+        return;
+      }
+      const willOpen = intelligenceMenuEl.hidden;
+      intelligenceMenuEl.hidden = !willOpen;
+      intelligenceButtonEl.setAttribute('aria-expanded', String(willOpen));
+      if (willOpen) {
+        intelligenceMenuOptionsEl.querySelector('[aria-checked="true"]')?.focus();
+      }
+    });
+
+    document.addEventListener('click', (event) => {
+      if (!intelligenceControlEl.contains(event.target)) {
+        closeIntelligenceMenu();
+      }
+    });
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && !intelligenceMenuEl.hidden) {
+        closeIntelligenceMenu();
+        intelligenceButtonEl.focus();
+      }
     });
 
     document.getElementById('cancelLlmProfilePicker').addEventListener('click', () => {
@@ -5812,6 +5997,7 @@ class DevMateChatViewProvider {
       settingsSearchCodeMaxResultsEl.value = String(settings.searchCodeMaxResults);
       settingsDiagnosticsMaxResultsEl.value = String(settings.diagnosticsMaxResults);
       settingsTerminalErrorsMaxResultsEl.value = String(settings.terminalErrorsMaxResults);
+      settingsCodeNavigationMaxResultsEl.value = String(settings.codeNavigationMaxResults);
       permissionDialogEl.close();
       agentToolSettingsDialogEl.showModal();
       settingsReadFileMaxLinesEl.focus();
@@ -5829,7 +6015,8 @@ class DevMateChatViewProvider {
           listFilesMaxResults: Number(settingsListFilesMaxResultsEl.value),
           searchCodeMaxResults: Number(settingsSearchCodeMaxResultsEl.value),
           diagnosticsMaxResults: Number(settingsDiagnosticsMaxResultsEl.value),
-          terminalErrorsMaxResults: Number(settingsTerminalErrorsMaxResultsEl.value)
+          terminalErrorsMaxResults: Number(settingsTerminalErrorsMaxResultsEl.value),
+          codeNavigationMaxResults: Number(settingsCodeNavigationMaxResultsEl.value)
         }
       });
     });
@@ -6076,7 +6263,7 @@ class DevMateChatViewProvider {
       }
 
       if (message.command === 'showLlmProfilePicker') {
-        showLlmProfilePicker(message.profiles, message.intelligence);
+        showLlmProfilePicker(message.profiles);
       }
 
       if (message.command === 'showLlmProfileForm') {
@@ -7392,6 +7579,8 @@ class DevMateChatViewProvider {
       if (!state.activeProfile) {
         llmProfileLabelEl.textContent = 'Add model';
         llmProfileSelectorEl.title = 'Add a model profile';
+        intelligenceControlEl.hidden = true;
+        closeIntelligenceMenu();
         renderAskAvailability();
         return;
       }
@@ -7403,11 +7592,46 @@ class DevMateChatViewProvider {
       const selectedReasoning = reasoningOptions.find(
         (item) => item.value === state.activeProfile.reasoningEffort
       );
+      intelligenceMenuOptionsEl.replaceChildren();
+      intelligenceControlEl.hidden = reasoningOptions.length <= 1;
+      if (reasoningOptions.length <= 1) {
+        closeIntelligenceMenu();
+      }
+      reasoningOptions.forEach((item) => {
+        const option = document.createElement('button');
+        option.type = 'button';
+        option.className = 'intelligence-menu-option';
+        option.setAttribute('role', 'menuitemradio');
+        option.setAttribute('aria-checked', String(item.value === state.activeProfile.reasoningEffort));
+        const label = document.createElement('span');
+        label.textContent = item.label;
+        const check = document.createElement('span');
+        check.className = 'intelligence-menu-check';
+        check.setAttribute('aria-hidden', 'true');
+        check.textContent = item.value === state.activeProfile.reasoningEffort ? '✓' : '';
+        option.append(label, check);
+        option.addEventListener('click', (event) => {
+          event.stopPropagation();
+          state.activeProfile.reasoningEffort = item.value;
+          closeIntelligenceMenu();
+          renderLlmProfile();
+          vscode.postMessage({ command: 'setReasoningEffort', effort: item.value });
+        });
+        intelligenceMenuOptionsEl.appendChild(option);
+      });
+      const intelligenceLabel = selectedReasoning?.label || 'Auto';
+      intelligenceButtonEl.title = 'Intelligence: ' + intelligenceLabel;
+      intelligenceButtonEl.setAttribute('aria-label', 'Model intelligence: ' + intelligenceLabel);
       llmProfileSelectorEl.title = state.activeProfile.providerLabel
         + ' · ' + state.activeProfile.model
-        + (reasoningOptions.length > 1 ? ' · Intelligence: ' + (selectedReasoning?.label || 'Auto') : '')
+        + (reasoningOptions.length > 1 ? ' · Intelligence: ' + intelligenceLabel : '')
         + (state.profileCount > 1 ? ' · Select another model' : ' · Manage model');
       renderAskAvailability();
+    }
+
+    function closeIntelligenceMenu() {
+      intelligenceMenuEl.hidden = true;
+      intelligenceButtonEl.setAttribute('aria-expanded', 'false');
     }
 
     function renderAskAvailability() {
@@ -7417,6 +7641,10 @@ class DevMateChatViewProvider {
       });
       attachFilesEl.disabled = state.askPending;
       llmProfileSelectorEl.disabled = state.askPending;
+      intelligenceButtonEl.disabled = state.askPending;
+      if (state.askPending) {
+        closeIntelligenceMenu();
+      }
       continueAgentEl.hidden = !state.checkpointAvailable || state.askPending;
       continueAgentEl.disabled = state.askPending;
       sessionSelectorEl.disabled = state.askPending;
@@ -7453,28 +7681,8 @@ class DevMateChatViewProvider {
       restartBackendEl.disabled = state.askPending || !backend.canRestart;
     }
 
-    function showLlmProfilePicker(profiles, intelligence) {
+    function showLlmProfilePicker(profiles) {
       llmProfilePickerListEl.replaceChildren();
-      modelIntelligenceOptionsEl.replaceChildren();
-      const intelligenceOptions = Array.isArray(intelligence?.options)
-        ? intelligence.options
-        : [];
-      modelIntelligencePanelEl.hidden = intelligenceOptions.length <= 1;
-      intelligenceOptions.forEach((item) => {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'model-intelligence-option';
-        button.textContent = item.label;
-        button.dataset.value = item.value;
-        button.setAttribute('aria-pressed', String(item.value === intelligence.value));
-        button.addEventListener('click', () => {
-          modelIntelligenceOptionsEl.querySelectorAll('.model-intelligence-option').forEach(
-            (candidate) => candidate.setAttribute('aria-pressed', String(candidate === button))
-          );
-          vscode.postMessage({ command: 'setReasoningEffort', effort: item.value });
-        });
-        modelIntelligenceOptionsEl.appendChild(button);
-      });
       const availableProfiles = Array.isArray(profiles) ? profiles : [];
       availableProfiles.forEach((profile) => {
         const option = document.createElement('div');
@@ -7758,6 +7966,33 @@ function agentPathStartsWith(filePath, directoryPath) {
 function comparableWorkspacePath(value) {
     return process.platform === 'win32' ? value.toLocaleLowerCase() : value;
 }
+function isDocumentSymbol(symbol) {
+    return 'selectionRange' in symbol && Array.isArray(symbol.children);
+}
+function codeLocationFromProvider(location) {
+    if ('targetUri' in location) {
+        return {
+            uri: location.targetUri,
+            range: location.targetSelectionRange ?? location.targetRange
+        };
+    }
+    if ('uri' in location) {
+        return { uri: location.uri, range: location.range };
+    }
+    return undefined;
+}
+function formatSymbolResult(kind, name, filePath, position, container) {
+    const kindLabel = vscode.SymbolKind[kind] ?? 'Symbol';
+    const safeName = boundedCodeNavigationText(name, 160) || '(unnamed)';
+    const safeContainer = boundedCodeNavigationText(container, 160);
+    return `[${kindLabel}] ${safeName}${safeContainer ? ` · ${safeContainer}` : ''} — `
+        + `${filePath}:${position.line + 1}:${position.character + 1}`;
+}
+function boundedCodeNavigationText(value, maximum) {
+    return typeof value === 'string'
+        ? value.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maximum)
+        : '';
+}
 function describeAgentToolCall(call) {
     if (call.name === 'list_files') {
         return {
@@ -7775,6 +8010,24 @@ function describeAgentToolCall(call) {
         return {
             title: 'Reading workspace diagnostics',
             detail: call.arguments.path || 'All workspace Problems'
+        };
+    }
+    if (call.name === 'get_symbols') {
+        return {
+            title: 'Reading file symbols',
+            detail: call.arguments.path
+        };
+    }
+    if (call.name === 'find_definition') {
+        return {
+            title: 'Finding definition',
+            detail: `${call.arguments.path}:${call.arguments.line}:${call.arguments.column}`
+        };
+    }
+    if (call.name === 'find_references') {
+        return {
+            title: 'Finding references',
+            detail: `${call.arguments.path}:${call.arguments.line}:${call.arguments.column}`
         };
     }
     if (call.name === 'read_terminal_errors') {

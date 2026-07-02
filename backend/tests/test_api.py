@@ -394,11 +394,12 @@ class DevMateApiTests(unittest.TestCase):
                 }
             ],
         )
-        self.assertEqual(len(self.provider.requests[-1].tools), 5)
+        self.assertEqual(len(self.provider.requests[-1].tools), 8)
         self.assertEqual(
             [tool.name for tool in self.provider.requests[-1].tools],
             [
                 "list_files", "read_file", "search_code",
+                "get_symbols", "find_definition", "find_references",
                 "get_diagnostics", "read_terminal_errors",
             ],
         )

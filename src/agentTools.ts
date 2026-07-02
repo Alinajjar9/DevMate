@@ -22,6 +22,7 @@ export const MAX_AGENT_LIST_RESULTS = 500;
 export const MAX_AGENT_SEARCH_RESULTS = 200;
 export const MAX_AGENT_DIAGNOSTIC_RESULTS = 300;
 export const MAX_AGENT_TERMINAL_ERROR_RESULTS = 10;
+export const MAX_AGENT_CODE_NAVIGATION_RESULTS = 300;
 export const MAX_AGENT_READ_LINES = 1_000;
 export const MAX_AGENT_TOOL_RESULT_CHARACTERS = 10_000;
 export const MAX_AGENT_TOOL_HISTORY_CHARACTERS = 80_000;
@@ -75,6 +76,9 @@ export type AgentToolName =
   | 'list_files'
   | 'read_file'
   | 'search_code'
+  | 'get_symbols'
+  | 'find_definition'
+  | 'find_references'
   | 'get_diagnostics'
   | 'read_terminal_errors'
   | 'create_file'
@@ -118,6 +122,20 @@ export type GetDiagnosticsToolArguments = {
   maxResults: number;
 };
 
+export type GetSymbolsToolArguments = {
+  path: string;
+  maxResults: number;
+};
+
+export type FindDefinitionToolArguments = {
+  path: string;
+  line: number;
+  column: number;
+  maxResults: number;
+};
+
+export type FindReferencesToolArguments = FindDefinitionToolArguments;
+
 export type ReadTerminalErrorsToolArguments = {
   maxResults: number;
 };
@@ -147,6 +165,9 @@ export type ParsedAgentToolCall =
   | { id: string; name: 'list_files'; arguments: ListFilesToolArguments }
   | { id: string; name: 'read_file'; arguments: ReadFileToolArguments }
   | { id: string; name: 'search_code'; arguments: SearchCodeToolArguments }
+  | { id: string; name: 'get_symbols'; arguments: GetSymbolsToolArguments }
+  | { id: string; name: 'find_definition'; arguments: FindDefinitionToolArguments }
+  | { id: string; name: 'find_references'; arguments: FindReferencesToolArguments }
   | { id: string; name: 'get_diagnostics'; arguments: GetDiagnosticsToolArguments }
   | { id: string; name: 'read_terminal_errors'; arguments: ReadTerminalErrorsToolArguments }
   | { id: string; name: 'create_file'; arguments: CreateFileToolArguments }
@@ -229,6 +250,51 @@ export function parseAgentToolCall(call: AgentToolCall): ParsedAgentToolCall {
         )
       }
     };
+  }
+
+  if (call.name === 'get_symbols') {
+    return {
+      id: call.id,
+      name: call.name,
+      arguments: {
+        path: normalizeAgentToolPath(
+          requiredString(call.arguments.path, 'get_symbols requires a path.'),
+          false
+        ),
+        maxResults: boundedInteger(
+          call.arguments.maxResults,
+          100,
+          1,
+          MAX_AGENT_CODE_NAVIGATION_RESULTS
+        )
+      }
+    };
+  }
+
+  if (call.name === 'find_definition' || call.name === 'find_references') {
+    const commonArguments = {
+      path: normalizeAgentToolPath(
+        requiredString(call.arguments.path, `${call.name} requires a path.`),
+        false
+      ),
+      line: requiredPositiveInteger(
+        call.arguments.line,
+        `${call.name} requires a positive one-based line.`
+      ),
+      column: requiredPositiveInteger(
+        call.arguments.column,
+        `${call.name} requires a positive one-based column.`
+      ),
+      maxResults: boundedInteger(
+        call.arguments.maxResults,
+        call.name === 'find_definition' ? 20 : 100,
+        1,
+        MAX_AGENT_CODE_NAVIGATION_RESULTS
+      )
+    };
+    return call.name === 'find_definition'
+      ? { id: call.id, name: call.name, arguments: commonArguments }
+      : { id: call.id, name: call.name, arguments: commonArguments };
   }
 
   if (call.name === 'read_terminal_errors') {
@@ -318,6 +384,9 @@ export function normalizeAgentToolCallForWorkspace(
         'list_files',
         'read_file',
         'search_code',
+        'get_symbols',
+        'find_definition',
+        'find_references',
         'get_diagnostics',
         'create_file',
         'edit_file',
@@ -432,6 +501,9 @@ export function consecutiveAgentInspectionCalls(
       'list_files',
       'read_file',
       'search_code',
+      'get_symbols',
+      'find_definition',
+      'find_references',
       'get_diagnostics',
       'read_terminal_errors'
     ].includes(step.name)) {
@@ -618,6 +690,13 @@ function requiredString(value: unknown, message: string): string {
     throw new Error(message);
   }
   return value.trim();
+}
+
+function requiredPositiveInteger(value: unknown, message: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 10_000_000) {
+    throw new Error(message);
+  }
+  return value;
 }
 
 function boundedInteger(

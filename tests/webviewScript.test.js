@@ -34,6 +34,8 @@ test('working card has visible motion with a reduced-motion fallback', () => {
   assert.match(source, /\.working-card\[data-state="working"\][\s\S]+position:\s*sticky/);
   assert.match(source, /\.messages\s*>\s*\*\s*\{[\s\S]*?flex:\s*0\s+0\s+auto/);
   assert.match(source, /\.working-card\[data-state="working"\][\s\S]*?flex-shrink:\s*0/);
+  assert.doesNotMatch(source, /working-ellipsis/);
+  assert.doesNotMatch(source, /\.working-heading::after/);
 });
 
 test('narration compaction preserves letters while normalizing whitespace', () => {
@@ -218,16 +220,20 @@ test('model selection uses a DevMate-styled modal instead of a native Quick Pick
   assert.doesNotMatch(selectorImplementation, /showQuickPick/);
 });
 
-test('recognized reasoning models expose a styled intelligence control in the model picker', () => {
+test('recognized reasoning models expose a compact icon intelligence menu beside the model', () => {
   const source = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'extension.ts'),
     'utf8'
   );
-  assert.match(source, /id="modelIntelligencePanel"/);
-  assert.match(source, /className = 'model-intelligence-option'/);
+  assert.match(source, /id="intelligenceButton"/);
+  assert.match(source, /class="intelligence-icon-button"/);
+  assert.match(source, /id="intelligenceMenu"/);
+  assert.match(source, /className = 'intelligence-menu-option'/);
   assert.match(source, /command: 'setReasoningEffort'/);
   assert.match(source, /reasoningEffortOptionsForProfile/);
-  assert.match(source, /modelIntelligencePanelEl\.hidden = intelligenceOptions\.length <= 1/);
+  assert.match(source, /intelligenceControlEl\.hidden = reasoningOptions\.length <= 1/);
+  assert.match(source, /intelligenceButtonEl\.disabled = state\.askPending/);
+  assert.doesNotMatch(source, /id="modelIntelligencePanel"/);
   assert.doesNotMatch(source, /id="reasoningEffort"/);
 });
 
@@ -274,6 +280,24 @@ test('agent can inspect workspace diagnostics and captured terminal failures', (
   assert.match(source, /'read_terminal_errors'/);
   assert.match(backendSource, /name="get_diagnostics"/);
   assert.match(backendSource, /name="read_terminal_errors"/);
+});
+
+test('agent can navigate symbols, definitions, and references through VS Code providers', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'extension.ts'),
+    'utf8'
+  );
+  const backendSource = fs.readFileSync(
+    path.join(__dirname, '..', 'backend', 'app', 'main.py'),
+    'utf8'
+  );
+  assert.match(source, /'vscode\.executeDocumentSymbolProvider'/);
+  assert.match(source, /'vscode\.executeDefinitionProvider'/);
+  assert.match(source, /'vscode\.executeReferenceProvider'/);
+  assert.match(source, /codeNavigationMaxResults/);
+  assert.match(backendSource, /name="get_symbols"/);
+  assert.match(backendSource, /name="find_definition"/);
+  assert.match(backendSource, /name="find_references"/);
 });
 
 test('completed answers show persistent green and red file-change summaries', () => {

@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MAX_AGENT_CONSECUTIVE_INSPECTIONS = exports.MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = exports.MAX_AGENT_READ_LINES = exports.MAX_AGENT_TERMINAL_ERROR_RESULTS = exports.MAX_AGENT_DIAGNOSTIC_RESULTS = exports.MAX_AGENT_SEARCH_RESULTS = exports.MAX_AGENT_LIST_RESULTS = exports.MAX_AGENT_DEPENDENCY_INSTALLS = exports.MAX_AGENT_COMMAND_CALLS = exports.MAX_AGENT_FILE_MUTATIONS = exports.MAX_AGENT_TOOL_CALL_LIMIT = exports.MIN_AGENT_TOOL_CALL_LIMIT = exports.DEFAULT_AGENT_TOOL_CALL_LIMIT = void 0;
+exports.MAX_AGENT_CONSECUTIVE_INSPECTIONS = exports.MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = exports.MAX_AGENT_READ_LINES = exports.MAX_AGENT_CODE_NAVIGATION_RESULTS = exports.MAX_AGENT_TERMINAL_ERROR_RESULTS = exports.MAX_AGENT_DIAGNOSTIC_RESULTS = exports.MAX_AGENT_SEARCH_RESULTS = exports.MAX_AGENT_LIST_RESULTS = exports.MAX_AGENT_DEPENDENCY_INSTALLS = exports.MAX_AGENT_COMMAND_CALLS = exports.MAX_AGENT_FILE_MUTATIONS = exports.MAX_AGENT_TOOL_CALL_LIMIT = exports.MIN_AGENT_TOOL_CALL_LIMIT = exports.DEFAULT_AGENT_TOOL_CALL_LIMIT = void 0;
 exports.boundedAgentToolCallLimit = boundedAgentToolCallLimit;
 exports.isDeferredAgentPlanAnswer = isDeferredAgentPlanAnswer;
 exports.compactAgentToolHistory = compactAgentToolHistory;
@@ -28,6 +28,7 @@ exports.MAX_AGENT_LIST_RESULTS = 500;
 exports.MAX_AGENT_SEARCH_RESULTS = 200;
 exports.MAX_AGENT_DIAGNOSTIC_RESULTS = 300;
 exports.MAX_AGENT_TERMINAL_ERROR_RESULTS = 10;
+exports.MAX_AGENT_CODE_NAVIGATION_RESULTS = 300;
 exports.MAX_AGENT_READ_LINES = 1_000;
 exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = 10_000;
 exports.MAX_AGENT_TOOL_HISTORY_CHARACTERS = 80_000;
@@ -122,6 +123,27 @@ function parseAgentToolCall(call) {
             }
         };
     }
+    if (call.name === 'get_symbols') {
+        return {
+            id: call.id,
+            name: call.name,
+            arguments: {
+                path: normalizeAgentToolPath(requiredString(call.arguments.path, 'get_symbols requires a path.'), false),
+                maxResults: boundedInteger(call.arguments.maxResults, 100, 1, exports.MAX_AGENT_CODE_NAVIGATION_RESULTS)
+            }
+        };
+    }
+    if (call.name === 'find_definition' || call.name === 'find_references') {
+        const commonArguments = {
+            path: normalizeAgentToolPath(requiredString(call.arguments.path, `${call.name} requires a path.`), false),
+            line: requiredPositiveInteger(call.arguments.line, `${call.name} requires a positive one-based line.`),
+            column: requiredPositiveInteger(call.arguments.column, `${call.name} requires a positive one-based column.`),
+            maxResults: boundedInteger(call.arguments.maxResults, call.name === 'find_definition' ? 20 : 100, 1, exports.MAX_AGENT_CODE_NAVIGATION_RESULTS)
+        };
+        return call.name === 'find_definition'
+            ? { id: call.id, name: call.name, arguments: commonArguments }
+            : { id: call.id, name: call.name, arguments: commonArguments };
+    }
     if (call.name === 'read_terminal_errors') {
         return {
             id: call.id,
@@ -191,6 +213,9 @@ function normalizeAgentToolCallForWorkspace(call, workspace) {
                 'list_files',
                 'read_file',
                 'search_code',
+                'get_symbols',
+                'find_definition',
+                'find_references',
                 'get_diagnostics',
                 'create_file',
                 'edit_file',
@@ -279,6 +304,9 @@ function consecutiveAgentInspectionCalls(steps) {
             'list_files',
             'read_file',
             'search_code',
+            'get_symbols',
+            'find_definition',
+            'find_references',
             'get_diagnostics',
             'read_terminal_errors'
         ].includes(step.name)) {
@@ -434,6 +462,12 @@ function requiredString(value, message) {
         throw new Error(message);
     }
     return value.trim();
+}
+function requiredPositiveInteger(value, message) {
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 10_000_000) {
+        throw new Error(message);
+    }
+    return value;
 }
 function boundedInteger(value, fallback, minimum, maximum) {
     if (typeof value !== 'number' || !Number.isInteger(value)) {

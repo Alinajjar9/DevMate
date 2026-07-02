@@ -48,6 +48,9 @@ AgentToolName = Literal[
     "list_files",
     "read_file",
     "search_code",
+    "get_symbols",
+    "find_definition",
+    "find_references",
     "get_diagnostics",
     "read_terminal_errors",
     "create_file",
@@ -62,6 +65,9 @@ READ_ONLY_AGENT_TOOLS: tuple[AgentToolName, ...] = (
     "list_files",
     "read_file",
     "search_code",
+    "get_symbols",
+    "find_definition",
+    "find_references",
     "get_diagnostics",
     "read_terminal_errors",
 )
@@ -308,6 +314,79 @@ AGENT_TOOL_DEFINITIONS = (
                 },
             },
             "required": ["query"],
+            "additionalProperties": False,
+        },
+    ),
+    ChatToolDefinition(
+        name="get_symbols",
+        description=(
+            "Read the structural symbols declared in one workspace file through VS Code's language provider. "
+            "Returns symbol kinds, names, containers, and one-based source positions."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Workspace-relative source file path; never an absolute path.",
+                },
+                "maxResults": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 300,
+                },
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    ),
+    ChatToolDefinition(
+        name="find_definition",
+        description=(
+            "Find workspace definitions for the symbol at a one-based line and column using VS Code's language provider. "
+            "Use read_file or search_code first to identify the source position."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Workspace-relative source file path; never an absolute path.",
+                },
+                "line": {"type": "integer", "minimum": 1},
+                "column": {"type": "integer", "minimum": 1},
+                "maxResults": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 300,
+                },
+            },
+            "required": ["path", "line", "column"],
+            "additionalProperties": False,
+        },
+    ),
+    ChatToolDefinition(
+        name="find_references",
+        description=(
+            "Find workspace references for the symbol at a one-based line and column using VS Code's language provider. "
+            "Use read_file or search_code first to identify the source position."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Workspace-relative source file path; never an absolute path.",
+                },
+                "line": {"type": "integer", "minimum": 1},
+                "column": {"type": "integer", "minimum": 1},
+                "maxResults": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 300,
+                },
+            },
+            "required": ["path", "line", "column"],
             "additionalProperties": False,
         },
     ),
