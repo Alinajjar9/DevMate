@@ -697,6 +697,8 @@ class DevMateApiTests(unittest.TestCase):
         self.assertEqual(data["answer"], self.provider.answer)
         self.assertEqual(data["changes"], [])
         self.assertIn("Use create_file, edit_file, delete_file", self.provider.requests[-1].messages[0].content)
+        self.assertIn("Never use run_command for mkdir, move, mv", self.provider.requests[-1].messages[0].content)
+        self.assertIn("create missing destination directories automatically", self.provider.requests[-1].messages[0].content)
 
     @staticmethod
     def _ask_payload(

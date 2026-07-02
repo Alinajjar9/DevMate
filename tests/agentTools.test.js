@@ -26,7 +26,8 @@ test('bounds configurable agent tool-call limits', () => {
   assert.equal(boundedAgentToolCallLimit(undefined), DEFAULT_AGENT_TOOL_CALL_LIMIT);
   assert.equal(boundedAgentToolCallLimit(1), MIN_AGENT_TOOL_CALL_LIMIT);
   assert.equal(boundedAgentToolCallLimit(24), 24);
-  assert.equal(boundedAgentToolCallLimit(100), MAX_AGENT_TOOL_CALL_LIMIT);
+  assert.equal(boundedAgentToolCallLimit(100), 100);
+  assert.equal(boundedAgentToolCallLimit(101), MAX_AGENT_TOOL_CALL_LIMIT);
 });
 
 test('compacts oldest tool results when a higher call limit fills context', () => {

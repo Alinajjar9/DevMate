@@ -35,7 +35,9 @@ Retrieval is deterministic and runs entirely in the extension host using BM25-st
 
 ## Agent tools
 
-DevMate can ask the extension host to inspect and improve the open project before answering. Read-only tools support `list_files`, ranged `read_file`, and plain-text `search_code`. In trusted workspaces, Code and Debug additionally receive `create_file`, exact-replacement `edit_file`, `delete_file`, `rename_file`, `move_file`, approved `run_command` verification, and manifest-based `install_dependencies` tools. Tool activity appears as compact cards in the chat. The per-request tool limit defaults to 16 and is configurable from 4 through 32; older results are compacted first when a longer loop approaches the bounded context budget.
+DevMate can ask the extension host to inspect and improve the open project before answering. Read-only tools support `list_files`, ranged `read_file`, and plain-text `search_code`. In trusted workspaces, Code and Debug additionally receive `create_file`, exact-replacement `edit_file`, `delete_file`, `rename_file`, `move_file`, approved `run_command` verification, and manifest-based `install_dependencies` tools. Tool activity appears as compact cards in the chat. The per-request tool limit defaults to 16 and is configurable from 4 through 100; older results are compacted first when a longer loop approaches the bounded context budget.
+
+`run_command` is reserved for verification and never performs filesystem management. Rejected `mkdir`, move, rename, copy, and deletion commands return guidance naming the appropriate dedicated file tool. `create_file` and `move_file` create missing parent directories automatically, so agents do not need placeholder files or separate directory commands.
 
 Each request immediately creates a working card in the chat. It displays the selected model, elapsed time, actual lifecycle phases such as context collection and tool use, and a Cancel button. The active card remains pinned near the top of the chat viewport while tool and permission cards accumulate. Chat cards are non-shrinking flex items, so a long tool run scrolls normally instead of compressing and clipping the working card. Its deliberately restrained edge, sheen, indicator, and active-phase animations run on slower cycles and respect reduced-motion preferences. Routine progress no longer occupies the top status strip; that area is reserved for warnings and errors. The working card is removed when the final assistant message arrives, while completed tool activity remains visible.
 
@@ -152,7 +154,7 @@ Long-running `/ask/stream` calls use a bounded Node HTTP transport instead of th
 
 Verification commands default to a five-minute maximum. Configure `devMate.commandTimeoutSeconds` from the in-chat Settings dialog or VS Code Settings. A model-requested shorter timeout is honored; it cannot exceed the configured maximum.
 
-Agent requests default to 16 tool calls. Configure `devMate.toolCallLimit` from 4 through 32 in the same dialog. Raising this value does not raise the separate six-mutation, one-installation, or three-command limits.
+Agent requests default to 16 tool calls. Configure `devMate.toolCallLimit` from 4 through 100 in the same dialog. Raising this value does not raise the separate six-mutation, one-installation, or three-command limits; 100 is intended as an escape hatch for unusually large inspection loops, not the recommended everyday setting.
 
 Run the backend contract tests with:
 

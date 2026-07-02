@@ -41,7 +41,7 @@ test('settings expose the bounded tool-call limit', () => {
     path.join(__dirname, '..', 'src', 'extension.ts'),
     'utf8'
   );
-  assert.match(source, /id="settingsToolCallLimit"[^>]+min="4"[^>]+max="32"/);
+  assert.match(source, /id="settingsToolCallLimit"[^>]+min="4"[^>]+max="100"/);
   assert.match(source, /toolCallLimit:\s*16/);
 });
 

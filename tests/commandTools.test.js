@@ -64,6 +64,23 @@ test('rejects shell, install, write, watch, git, and arbitrary commands', () => 
   }
 });
 
+test('redirects filesystem commands to dedicated agent tools', () => {
+  const cases = [
+    [{ executable: 'mkdir', args: ['templates'] }, /create_file and move_file create destination directories/],
+    [{ executable: 'move', args: ['index.html', 'templates/index.html'] }, /Use move_file/],
+    [{ executable: 'mv', args: ['index.html', 'templates/index.html'] }, /Use move_file/],
+    [{ executable: 'rename', args: ['app.py', 'main.py'] }, /Use rename_file/],
+    [{ executable: 'rm', args: ['old.py'] }, /Use delete_file/],
+    [{ executable: 'rmdir', args: ['old'] }, /does not delete directories/],
+    [{ executable: 'copy', args: ['a.py', 'b.py'] }, /read_file and then create_file/],
+    [{ executable: 'touch', args: ['app.py'] }, /Use create_file/]
+  ];
+
+  for (const [command, expected] of cases) {
+    assert.throws(() => parseRunCommandArguments(command), expected);
+  }
+});
+
 test('normalizes exact command signatures by command, arguments, and cwd', () => {
   const first = parseRunCommandArguments({ executable: 'npm', args: ['test'], cwd: 'frontend' });
   const same = parseRunCommandArguments({ executable: 'npm', args: ['test'], cwd: 'frontend/' });

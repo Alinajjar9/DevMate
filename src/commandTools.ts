@@ -87,6 +87,10 @@ export function boundedModelCommandOutput(value: string): string {
 
 function validateVerificationCommand(executable: string, args: string[]): void {
   const name = commandName(executable);
+  const fileToolGuidance = filesystemCommandGuidance(name);
+  if (fileToolGuidance) {
+    throw new Error(fileToolGuidance);
+  }
   if (args.some((argument) => forbiddenArgumentPattern.test(argument))) {
     throw new Error('Verification command arguments cannot contain shell operators or control characters.');
   }
@@ -162,6 +166,31 @@ function validateVerificationCommand(executable: string, args: string[]): void {
   }
 
   throw new Error(`${executable} is not in DevMate's verification-command registry.`);
+}
+
+function filesystemCommandGuidance(name: string): string | undefined {
+  if (['mkdir', 'md'].includes(name)) {
+    return 'Do not use run_command to create directories. create_file and move_file create destination directories automatically.';
+  }
+  if (['move', 'mv'].includes(name)) {
+    return 'Use move_file with workspace-relative path and newPath arguments. It creates destination directories automatically.';
+  }
+  if (['ren', 'rename'].includes(name)) {
+    return 'Use rename_file with workspace-relative path and newPath arguments.';
+  }
+  if (['del', 'erase', 'rm', 'unlink'].includes(name)) {
+    return 'Use delete_file for one eligible workspace file. DevMate does not delete directories.';
+  }
+  if (['rmdir', 'rd'].includes(name)) {
+    return 'DevMate does not delete directories. Remove eligible files individually with delete_file.';
+  }
+  if (['copy', 'cp'].includes(name)) {
+    return 'Use read_file and then create_file when a workspace text file must be copied.';
+  }
+  if (name === 'touch') {
+    return 'Use create_file to create a new workspace text file.';
+  }
+  return undefined;
 }
 
 function validatePackageCommand(name: string, args: string[]): void {

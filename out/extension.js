@@ -4552,8 +4552,8 @@ class DevMateChatViewProvider {
             </div>
             <div class="profile-field">
               <label for="settingsToolCallLimit">Tool calls per request</label>
-              <input id="settingsToolCallLimit" type="number" min="4" max="32" step="1" required>
-              <p class="field-help">16 recommended. Too low can stop early; too high adds time, cost, and loop risk.</p>
+              <input id="settingsToolCallLimit" type="number" min="4" max="100" step="1" required>
+              <p class="field-help">16 recommended; 100 maximum. High limits add time, cost, context pressure, and loop risk.</p>
             </div>
             <div class="profile-field">
               <label for="settingsTemperature">Temperature</label>

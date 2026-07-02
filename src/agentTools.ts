@@ -13,7 +13,7 @@ import type { ExactTextReplacement, RelocateFileToolArguments } from './fileTool
 
 export const DEFAULT_AGENT_TOOL_CALL_LIMIT = 16;
 export const MIN_AGENT_TOOL_CALL_LIMIT = 4;
-export const MAX_AGENT_TOOL_CALL_LIMIT = 32;
+export const MAX_AGENT_TOOL_CALL_LIMIT = 100;
 export const MAX_AGENT_FILE_MUTATIONS = 6;
 export const MAX_AGENT_COMMAND_CALLS = 3;
 export const MAX_AGENT_DEPENDENCY_INSTALLS = 1;

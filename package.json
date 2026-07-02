@@ -97,7 +97,7 @@
           "type": "integer",
           "default": 16,
           "minimum": 4,
-          "maximum": 32,
+          "maximum": 100,
           "description": "Maximum project-tool calls in one DevMate request. Higher values can increase runtime, provider cost, and loop risk."
         }
       }

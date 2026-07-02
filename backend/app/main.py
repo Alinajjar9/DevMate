@@ -36,7 +36,7 @@ MAX_PROJECT_CONTEXT_CHARACTERS = 40_000
 MAX_ATTACHED_FILES = 5
 MAX_REQUEST_CONTEXT_ITEMS = 6
 MAX_REQUEST_CONTEXT_CHARACTERS = 40_000
-MAX_AGENT_TOOL_STEPS = 32
+MAX_AGENT_TOOL_STEPS = 100
 MAX_AGENT_TOOL_RESULT_CHARACTERS = 10_000
 MAX_AGENT_TOOL_HISTORY_CHARACTERS = 80_000
 MAX_CONVERSATION_TURNS = 6
@@ -298,7 +298,8 @@ AGENT_TOOL_DEFINITIONS = (
     ChatToolDefinition(
         name="create_file",
         description=(
-            "Create one new eligible workspace text file. Use complete file content and never use this for an existing file."
+            "Create one new eligible workspace text file, automatically creating missing parent directories. "
+            "Use complete file content and never use this for an existing file or create placeholder .gitkeep files."
         ),
         parameters={
             "type": "object",
@@ -388,7 +389,8 @@ AGENT_TOOL_DEFINITIONS = (
         name="move_file",
         description=(
             "Move one existing eligible workspace text file to a different workspace-relative path. "
-            "The destination must not exist and the extension always asks for one-time approval."
+            "Missing destination directories are created automatically. The destination must not exist and the "
+            "extension always asks for one-time approval. Never use run_command with move, mv, or mkdir."
         ),
         parameters={
             "type": "object",
