@@ -18,10 +18,11 @@ export const MAX_AGENT_TOOL_CALL_LIMIT = 100;
 export const MAX_AGENT_FILE_MUTATIONS = 6;
 export const MAX_AGENT_COMMAND_CALLS = 3;
 export const MAX_AGENT_DEPENDENCY_INSTALLS = 1;
-export const MAX_AGENT_LIST_RESULTS = 200;
-export const MAX_AGENT_SEARCH_RESULTS = 50;
-export const MAX_AGENT_DIAGNOSTIC_RESULTS = 100;
-export const MAX_AGENT_TERMINAL_ERROR_RESULTS = 5;
+export const MAX_AGENT_LIST_RESULTS = 500;
+export const MAX_AGENT_SEARCH_RESULTS = 200;
+export const MAX_AGENT_DIAGNOSTIC_RESULTS = 300;
+export const MAX_AGENT_TERMINAL_ERROR_RESULTS = 10;
+export const MAX_AGENT_READ_LINES = 1_000;
 export const MAX_AGENT_TOOL_RESULT_CHARACTERS = 10_000;
 export const MAX_AGENT_TOOL_HISTORY_CHARACTERS = 80_000;
 export const MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS = 3_500;
@@ -639,9 +640,12 @@ function parseLineRange(
     return {};
   }
   const startLine = boundedInteger(startValue, 1, 1, 1_000_000);
-  const endLine = boundedInteger(endValue, startLine + 399, startLine, 1_000_000);
-  if (endLine - startLine + 1 > 400) {
-    throw new Error('read_file can return at most 400 lines at once.');
+  if (endValue === undefined) {
+    return { startLine };
+  }
+  const endLine = boundedInteger(endValue, startLine, startLine, 1_000_000);
+  if (endLine - startLine + 1 > MAX_AGENT_READ_LINES) {
+    throw new Error(`read_file can return at most ${MAX_AGENT_READ_LINES} lines at once.`);
   }
   return { startLine, endLine };
 }

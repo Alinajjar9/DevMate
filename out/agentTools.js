@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MAX_AGENT_CONSECUTIVE_INSPECTIONS = exports.MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = exports.MAX_AGENT_TERMINAL_ERROR_RESULTS = exports.MAX_AGENT_DIAGNOSTIC_RESULTS = exports.MAX_AGENT_SEARCH_RESULTS = exports.MAX_AGENT_LIST_RESULTS = exports.MAX_AGENT_DEPENDENCY_INSTALLS = exports.MAX_AGENT_COMMAND_CALLS = exports.MAX_AGENT_FILE_MUTATIONS = exports.MAX_AGENT_TOOL_CALL_LIMIT = exports.MIN_AGENT_TOOL_CALL_LIMIT = exports.DEFAULT_AGENT_TOOL_CALL_LIMIT = void 0;
+exports.MAX_AGENT_CONSECUTIVE_INSPECTIONS = exports.MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = exports.MAX_AGENT_READ_LINES = exports.MAX_AGENT_TERMINAL_ERROR_RESULTS = exports.MAX_AGENT_DIAGNOSTIC_RESULTS = exports.MAX_AGENT_SEARCH_RESULTS = exports.MAX_AGENT_LIST_RESULTS = exports.MAX_AGENT_DEPENDENCY_INSTALLS = exports.MAX_AGENT_COMMAND_CALLS = exports.MAX_AGENT_FILE_MUTATIONS = exports.MAX_AGENT_TOOL_CALL_LIMIT = exports.MIN_AGENT_TOOL_CALL_LIMIT = exports.DEFAULT_AGENT_TOOL_CALL_LIMIT = void 0;
 exports.boundedAgentToolCallLimit = boundedAgentToolCallLimit;
 exports.isDeferredAgentPlanAnswer = isDeferredAgentPlanAnswer;
 exports.compactAgentToolHistory = compactAgentToolHistory;
@@ -24,10 +24,11 @@ exports.MAX_AGENT_TOOL_CALL_LIMIT = 100;
 exports.MAX_AGENT_FILE_MUTATIONS = 6;
 exports.MAX_AGENT_COMMAND_CALLS = 3;
 exports.MAX_AGENT_DEPENDENCY_INSTALLS = 1;
-exports.MAX_AGENT_LIST_RESULTS = 200;
-exports.MAX_AGENT_SEARCH_RESULTS = 50;
-exports.MAX_AGENT_DIAGNOSTIC_RESULTS = 100;
-exports.MAX_AGENT_TERMINAL_ERROR_RESULTS = 5;
+exports.MAX_AGENT_LIST_RESULTS = 500;
+exports.MAX_AGENT_SEARCH_RESULTS = 200;
+exports.MAX_AGENT_DIAGNOSTIC_RESULTS = 300;
+exports.MAX_AGENT_TERMINAL_ERROR_RESULTS = 10;
+exports.MAX_AGENT_READ_LINES = 1_000;
 exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = 10_000;
 exports.MAX_AGENT_TOOL_HISTORY_CHARACTERS = 80_000;
 exports.MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS = 3_500;
@@ -445,9 +446,12 @@ function parseLineRange(startValue, endValue) {
         return {};
     }
     const startLine = boundedInteger(startValue, 1, 1, 1_000_000);
-    const endLine = boundedInteger(endValue, startLine + 399, startLine, 1_000_000);
-    if (endLine - startLine + 1 > 400) {
-        throw new Error('read_file can return at most 400 lines at once.');
+    if (endValue === undefined) {
+        return { startLine };
+    }
+    const endLine = boundedInteger(endValue, startLine, startLine, 1_000_000);
+    if (endLine - startLine + 1 > exports.MAX_AGENT_READ_LINES) {
+        throw new Error(`read_file can return at most ${exports.MAX_AGENT_READ_LINES} lines at once.`);
     }
     return { startLine, endLine };
 }

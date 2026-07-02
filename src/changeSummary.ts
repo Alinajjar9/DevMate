@@ -13,6 +13,7 @@ export type FileChangeSummaryItem = {
   kind: FileChangeSummaryKind;
   path: string;
   previousPath?: string;
+  diffId?: string;
 };
 
 type FileChangeToolStep = {
@@ -93,16 +94,24 @@ export function parseFileChangeSummary(value: unknown): FileChangeSummaryItem[] 
     }
     const path = safePath(candidate.path);
     const previousPath = safePath(candidate.previousPath);
+    const diffId = safeDiffId(candidate.diffId);
     if (!path || (candidate.kind === 'renamed' || candidate.kind === 'moved') && !previousPath) {
       continue;
     }
     parsed.push({
       kind: candidate.kind,
       path,
-      ...(previousPath ? { previousPath } : {})
+      ...(previousPath ? { previousPath } : {}),
+      ...(diffId ? { diffId } : {})
     });
   }
   return parsed;
+}
+
+function safeDiffId(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[a-zA-Z0-9_-]{1,120}$/.test(value)
+    ? value
+    : undefined;
 }
 
 function applyCreated(changes: Map<string, FileChangeSummaryItem>, path: string): void {

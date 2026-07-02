@@ -267,7 +267,7 @@ AGENT_TOOL_DEFINITIONS = (
                 "maxResults": {
                     "type": "integer",
                     "minimum": 1,
-                    "maximum": 200,
+                    "maximum": 500,
                 },
             },
             "additionalProperties": False,
@@ -304,7 +304,7 @@ AGENT_TOOL_DEFINITIONS = (
                 "maxResults": {
                     "type": "integer",
                     "minimum": 1,
-                    "maximum": 50,
+                    "maximum": 200,
                 },
             },
             "required": ["query"],
@@ -327,7 +327,7 @@ AGENT_TOOL_DEFINITIONS = (
                 "maxResults": {
                     "type": "integer",
                     "minimum": 1,
-                    "maximum": 100,
+                    "maximum": 300,
                 },
             },
             "additionalProperties": False,
@@ -345,7 +345,7 @@ AGENT_TOOL_DEFINITIONS = (
                 "maxResults": {
                     "type": "integer",
                     "minimum": 1,
-                    "maximum": 5,
+                    "maximum": 10,
                 },
             },
             "additionalProperties": False,

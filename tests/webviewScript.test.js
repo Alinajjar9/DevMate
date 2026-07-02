@@ -218,16 +218,29 @@ test('model selection uses a DevMate-styled modal instead of a native Quick Pick
   assert.doesNotMatch(selectorImplementation, /showQuickPick/);
 });
 
-test('recognized reasoning models expose a compact intelligence selector', () => {
+test('recognized reasoning models expose a styled intelligence control in the model picker', () => {
   const source = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'extension.ts'),
     'utf8'
   );
-  assert.match(source, /id="reasoningEffort"/);
+  assert.match(source, /id="modelIntelligencePanel"/);
+  assert.match(source, /className = 'model-intelligence-option'/);
   assert.match(source, /command: 'setReasoningEffort'/);
   assert.match(source, /reasoningEffortOptionsForProfile/);
-  assert.match(source, /reasoningOptions\.length <= 1/);
-  assert.match(source, /reasoningEffortEl\.disabled = state\.askPending/);
+  assert.match(source, /modelIntelligencePanelEl\.hidden = intelligenceOptions\.length <= 1/);
+  assert.doesNotMatch(source, /id="reasoningEffort"/);
+});
+
+test('settings expose a separate bounded agent-tool limits dialog', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'extension.ts'),
+    'utf8'
+  );
+  assert.match(source, /id="openAgentToolSettings"/);
+  assert.match(source, /id="agentToolSettingsDialog"/);
+  assert.match(source, /id="settingsReadFileMaxLines"[^>]*max="1000"/);
+  assert.match(source, /command: 'saveAgentToolSettings'/);
+  assert.match(source, /agentTools: this\.getAgentToolSettings\(\)/);
 });
 
 test('working UI exposes tool usage and resumable agent checkpoints', () => {
@@ -275,6 +288,9 @@ test('completed answers show persistent green and red file-change summaries', ()
   assert.match(source, /appendFileChangeSummary\(narration, fileChanges\)/);
   assert.match(source, /fileChanges: turn\.fileChanges \?\? \[\]/);
   assert.match(source, /collectFileChangeSummary\(toolHistory, appliedResponseChanges\)/);
+  assert.match(source, /command: 'openFileChangeDiff'/);
+  assert.match(source, /'vscode\.diff'/);
+  assert.match(source, /rememberCompletedFileDiff/);
 });
 
 test('project-bound sessions open from a dedicated landing screen', () => {

@@ -24,6 +24,25 @@ import {
 } from './agentTools';
 import type { AgentToolCall, AgentToolName, ParsedAgentToolCall } from './agentTools';
 import {
+  DEFAULT_DIAGNOSTICS_MAX_RESULTS,
+  DEFAULT_LIST_FILES_MAX_RESULTS,
+  DEFAULT_READ_FILE_MAX_LINES,
+  DEFAULT_SEARCH_CODE_MAX_RESULTS,
+  DEFAULT_TERMINAL_ERRORS_MAX_RESULTS,
+  MAX_DIAGNOSTICS_MAX_RESULTS,
+  MAX_LIST_FILES_MAX_RESULTS,
+  MAX_READ_FILE_MAX_LINES,
+  MAX_SEARCH_CODE_MAX_RESULTS,
+  MAX_TERMINAL_ERRORS_MAX_RESULTS,
+  MIN_DIAGNOSTICS_MAX_RESULTS,
+  MIN_LIST_FILES_MAX_RESULTS,
+  MIN_READ_FILE_MAX_LINES,
+  MIN_SEARCH_CODE_MAX_RESULTS,
+  MIN_TERMINAL_ERRORS_MAX_RESULTS,
+  normalizeAgentToolSettings
+} from './agentToolSettings';
+import type { AgentToolSettings } from './agentToolSettings';
+import {
   AGENT_CHECKPOINT_STORAGE_KEY,
   parseAgentRunCheckpoint
 } from './agentCheckpoint';
@@ -209,6 +228,8 @@ type DevMateSettingsSubmission = {
   policy: FilePermissionPolicy;
 };
 
+type AgentToolSettingsSubmission = AgentToolSettings;
+
 type PendingCommandPermission = {
   id: string;
   signature: string;
@@ -229,6 +250,14 @@ type PendingFileDiff = {
   path: string;
   originalContent: string;
   proposedContent: string;
+  originalUri: vscode.Uri;
+  proposedUri: vscode.Uri;
+};
+
+type CompletedFileDiff = {
+  id: string;
+  path: string;
+  previousPath?: string;
   originalUri: vscode.Uri;
   proposedUri: vscode.Uri;
 };
@@ -290,6 +319,7 @@ type WebviewMessage =
   | { command: 'deleteLlmProfile'; profileId: string }
   | { command: 'saveLlmProfile'; profile: LlmProfileFormSubmission }
   | { command: 'saveSettings'; settings: DevMateSettingsSubmission }
+  | { command: 'saveAgentToolSettings'; settings: AgentToolSettingsSubmission }
   | { command: 'reviewPermissionDiff'; requestId: string; path: string }
   | { command: 'revokeRememberedCommand'; signature: string }
   | { command: 'clearRememberedCommands' }
@@ -301,6 +331,7 @@ type WebviewMessage =
   | { command: 'deleteSession'; sessionId: string }
   | { command: 'copyText'; text: string }
   | { command: 'openWorkspaceFile'; path: string; line?: number }
+  | { command: 'openFileChangeDiff'; diffId: string; path: string }
   | { command: 'openExternalLink'; url: string }
   | {
       command: 'commandPermissionDecision';
@@ -415,6 +446,8 @@ class DevMateChatViewProvider implements
   private activeRequest?: AbortController;
   private projectIndexCache?: ProjectIndex;
   private readonly diffDocuments = new Map<string, string>();
+  private readonly completedFileDiffs = new Map<string, CompletedFileDiff>();
+  private readonly activeRequestDiffs = new Map<string, string>();
   private readonly commandTerminals = new Map<string, vscode.Terminal>();
   private readonly activeTerminalCaptures = new Map<vscode.TerminalShellExecution, ActiveTerminalCapture>();
   private readonly recentTerminalErrors: CapturedTerminalError[] = [];
@@ -519,6 +552,9 @@ class DevMateChatViewProvider implements
     this.view = undefined;
     this.disposeViewDisposables();
     this.activeTerminalCaptures.clear();
+    this.diffDocuments.clear();
+    this.completedFileDiffs.clear();
+    this.activeRequestDiffs.clear();
     while (this.lifetimeDisposables.length > 0) {
       this.lifetimeDisposables.pop()?.dispose();
     }
@@ -527,11 +563,12 @@ class DevMateChatViewProvider implements
   private disposeViewDisposables(): void {
     this.activeRequest?.abort();
     this.activeRequest = undefined;
-    this.pendingPermission?.resolve(false);
+    const pendingPermission = this.pendingPermission;
+    pendingPermission?.resolve(false);
+    this.clearPendingDiffDocuments(pendingPermission);
     this.pendingPermission = undefined;
     this.pendingCommandPermission?.resolve(false);
     this.pendingCommandPermission = undefined;
-    this.diffDocuments.clear();
     this.disposeCommandTerminals();
     while (this.viewDisposables.length > 0) {
       this.viewDisposables.pop()?.dispose();
@@ -644,6 +681,9 @@ class DevMateChatViewProvider implements
       case 'saveSettings':
         await this.saveSettings(message.settings);
         return;
+      case 'saveAgentToolSettings':
+        await this.saveAgentToolSettings(message.settings);
+        return;
       case 'reviewPermissionDiff':
         await this.reviewPermissionDiff(message.requestId, message.path);
         return;
@@ -687,6 +727,9 @@ class DevMateChatViewProvider implements
         return;
       case 'openWorkspaceFile':
         await this.openWorkspaceFile(message.path, message.line);
+        return;
+      case 'openFileChangeDiff':
+        await this.openCompletedFileDiff(message.diffId, message.path);
         return;
       case 'openExternalLink':
         await this.openExternalLink(message.url);
@@ -788,6 +831,75 @@ class DevMateChatViewProvider implements
     } catch {
       this.postStatus(`Could not open ${value}.`, 'warning');
     }
+  }
+
+  private async openCompletedFileDiff(diffId: string, requestedPath: string): Promise<void> {
+    const diff = typeof diffId === 'string' ? this.completedFileDiffs.get(diffId) : undefined;
+    if (!diff) {
+      this.postStatus('That change snapshot is no longer available. Opening the current file instead.', 'warning');
+      await this.openWorkspaceFile(requestedPath);
+      return;
+    }
+    const title = diff.previousPath
+      ? `${diff.previousPath} → ${diff.path} (DevMate changes)`
+      : `${diff.path} (DevMate changes)`;
+    await vscode.commands.executeCommand(
+      'vscode.diff',
+      diff.originalUri,
+      diff.proposedUri,
+      title,
+      { preview: true }
+    );
+  }
+
+  private rememberCompletedFileDiff(
+    filePath: string,
+    originalContent: string,
+    proposedContent: string,
+    previousPath?: string
+  ): string {
+    const id = randomUUID();
+    const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
+    const originalUri = vscode.Uri.parse(
+      `${DevMateChatViewProvider.diffScheme}:/completed/${id}/before/${encodedPath}`
+    );
+    const proposedUri = vscode.Uri.parse(
+      `${DevMateChatViewProvider.diffScheme}:/completed/${id}/after/${encodedPath}`
+    );
+    this.diffDocuments.set(originalUri.toString(), originalContent);
+    this.diffDocuments.set(proposedUri.toString(), proposedContent);
+    this.completedFileDiffs.set(id, {
+      id,
+      path: filePath,
+      ...(previousPath ? { previousPath } : {}),
+      originalUri,
+      proposedUri
+    });
+    this.activeRequestDiffs.set(this.fileChangePathKey(filePath), id);
+
+    while (this.completedFileDiffs.size > 40) {
+      const oldestId = this.completedFileDiffs.keys().next().value as string | undefined;
+      if (!oldestId) {
+        break;
+      }
+      const oldest = this.completedFileDiffs.get(oldestId);
+      if (oldest) {
+        this.diffDocuments.delete(oldest.originalUri.toString());
+        this.diffDocuments.delete(oldest.proposedUri.toString());
+      }
+      this.completedFileDiffs.delete(oldestId);
+      for (const [key, value] of this.activeRequestDiffs) {
+        if (value === oldestId) {
+          this.activeRequestDiffs.delete(key);
+        }
+      }
+    }
+    return id;
+  }
+
+  private fileChangePathKey(filePath: string): string {
+    const normalized = filePath.replace(/\\/g, '/');
+    return process.platform === 'win32' ? normalized.toLocaleLowerCase() : normalized;
   }
 
   private async openExternalLink(value: string): Promise<void> {
@@ -1614,6 +1726,15 @@ class DevMateChatViewProvider implements
     const reasoningPreferences = this.getReasoningEffortPreferences();
     this.postMessage({
       command: 'showLlmProfilePicker',
+      intelligence: activeProfile
+        ? {
+            value: reasoningEffortForProfile(activeProfile, reasoningPreferences),
+            options: reasoningEffortOptionsForProfile(activeProfile).map((value) => ({
+              value,
+              label: REASONING_EFFORT_LABELS[value]
+            }))
+          }
+        : undefined,
       profiles: profiles.map((profile) => ({
         id: profile.id,
         name: profile.name,
@@ -1659,11 +1780,12 @@ class DevMateChatViewProvider implements
       return;
     }
     this.activeRequest.abort();
-    this.pendingPermission?.resolve(false);
+    const pendingPermission = this.pendingPermission;
+    pendingPermission?.resolve(false);
+    this.clearPendingDiffDocuments(pendingPermission);
     this.pendingPermission = undefined;
     this.pendingCommandPermission?.resolve(false);
     this.pendingCommandPermission = undefined;
-    this.diffDocuments.clear();
     this.disposeCommandTerminals();
     this.postMessage({ command: 'requestCancelling' });
   }
@@ -2007,6 +2129,69 @@ class DevMateChatViewProvider implements
     this.postMessage({ command: 'settingsSaved' });
   }
 
+  private getAgentToolSettings(): AgentToolSettings {
+    const config = vscode.workspace.getConfiguration('devMate');
+    return normalizeAgentToolSettings({
+      readFileMaxLines: config.get<number>('readFileMaxLines', DEFAULT_READ_FILE_MAX_LINES),
+      listFilesMaxResults: config.get<number>(
+        'listFilesMaxResults',
+        DEFAULT_LIST_FILES_MAX_RESULTS
+      ),
+      searchCodeMaxResults: config.get<number>(
+        'searchCodeMaxResults',
+        DEFAULT_SEARCH_CODE_MAX_RESULTS
+      ),
+      diagnosticsMaxResults: config.get<number>(
+        'diagnosticsMaxResults',
+        DEFAULT_DIAGNOSTICS_MAX_RESULTS
+      ),
+      terminalErrorsMaxResults: config.get<number>(
+        'terminalErrorsMaxResults',
+        DEFAULT_TERMINAL_ERRORS_MAX_RESULTS
+      )
+    });
+  }
+
+  private async saveAgentToolSettings(settings: AgentToolSettingsSubmission): Promise<void> {
+    const normalized = normalizeAgentToolSettings(settings);
+    if (Object.entries(normalized).some(([key, value]) => settings[key as keyof AgentToolSettings] !== value)) {
+      this.postStatus('The agent-tool settings contain an invalid value.', 'warning');
+      return;
+    }
+    const config = vscode.workspace.getConfiguration('devMate');
+    try {
+      await Promise.all([
+        config.update('readFileMaxLines', normalized.readFileMaxLines, vscode.ConfigurationTarget.Global),
+        config.update(
+          'listFilesMaxResults',
+          normalized.listFilesMaxResults,
+          vscode.ConfigurationTarget.Global
+        ),
+        config.update(
+          'searchCodeMaxResults',
+          normalized.searchCodeMaxResults,
+          vscode.ConfigurationTarget.Global
+        ),
+        config.update(
+          'diagnosticsMaxResults',
+          normalized.diagnosticsMaxResults,
+          vscode.ConfigurationTarget.Global
+        ),
+        config.update(
+          'terminalErrorsMaxResults',
+          normalized.terminalErrorsMaxResults,
+          vscode.ConfigurationTarget.Global
+        )
+      ]);
+    } catch {
+      this.postStatus('DevMate could not save the agent-tool settings.', 'error');
+      return;
+    }
+    this.postSettingsState();
+    this.postMessage({ command: 'agentToolSettingsSaved' });
+    this.postStatus('Ready');
+  }
+
   private postPermissionPolicyState(): void {
     const policy = this.getPermissionPolicy();
     this.postMessage({
@@ -2042,6 +2227,7 @@ class DevMateChatViewProvider implements
           2,
           Math.max(0, config.get<number>('temperature', 0.2))
         ),
+        agentTools: this.getAgentToolSettings(),
         rememberedCommands: this.getRememberedCommands(),
         workspaceTrusted: vscode.workspace.isTrusted
       }
@@ -2084,6 +2270,13 @@ class DevMateChatViewProvider implements
     }
 
     pending.resolve(decision !== 'deny');
+    this.clearPendingDiffDocuments(pending);
+  }
+
+  private clearPendingDiffDocuments(pending?: PendingPermissionRequest): void {
+    if (!pending) {
+      return;
+    }
     for (const diff of pending.diffs.values()) {
       this.diffDocuments.delete(diff.originalUri.toString());
       this.diffDocuments.delete(diff.proposedUri.toString());
@@ -2099,8 +2292,9 @@ class DevMateChatViewProvider implements
       proposedContent: string;
     }>
   ): Promise<boolean> {
-    this.pendingPermission?.resolve(false);
-    this.diffDocuments.clear();
+    const previousPermission = this.pendingPermission;
+    previousPermission?.resolve(false);
+    this.clearPendingDiffDocuments(previousPermission);
     const requestId = randomUUID();
     const actions = new Set(files.map((file) => file.operation));
     const rememberable = [...actions].every(
@@ -2344,6 +2538,7 @@ class DevMateChatViewProvider implements
     if (!folder) {
       throw new Error('Open a workspace folder before using project tools.');
     }
+    const toolSettings = this.getAgentToolSettings();
 
     if (call.name === 'create_file') {
       await this.assertNoWorkspaceSymlink(folder, call.arguments.path, true);
@@ -2430,7 +2625,7 @@ class DevMateChatViewProvider implements
       const relativePaths = uris
         .map((uri) => normalizeRelativeWorkspacePath(vscode.workspace.asRelativePath(uri, false)))
         .sort((left, right) => left.localeCompare(right))
-        .slice(0, call.arguments.maxResults);
+        .slice(0, Math.min(call.arguments.maxResults, toolSettings.listFilesMaxResults));
       const result = relativePaths.length > 0
         ? `Eligible files (${relativePaths.length}):\n${relativePaths.join('\n')}`
         : 'No eligible files were found at that path.';
@@ -2456,7 +2651,14 @@ class DevMateChatViewProvider implements
       }
       const lines = candidate.content.split(/\r?\n/);
       const startLine = call.arguments.startLine ?? 1;
-      const endLine = Math.min(call.arguments.endLine ?? lines.length, lines.length);
+      const requestedEndLine = call.arguments.endLine
+        ?? startLine + toolSettings.readFileMaxLines - 1;
+      if (requestedEndLine - startLine + 1 > toolSettings.readFileMaxLines) {
+        throw new Error(
+          `read_file is configured to return at most ${toolSettings.readFileMaxLines} lines per call.`
+        );
+      }
+      const endLine = Math.min(requestedEndLine, lines.length);
       if (startLine > lines.length && lines.length > 0) {
         throw new Error(`${call.arguments.path} has only ${lines.length} lines.`);
       }
@@ -2481,11 +2683,15 @@ class DevMateChatViewProvider implements
     }
 
     if (call.name === 'read_terminal_errors') {
-      const available = Math.min(call.arguments.maxResults, this.recentTerminalErrors.length);
+      const maxResults = Math.min(
+        call.arguments.maxResults,
+        toolSettings.terminalErrorsMaxResults
+      );
+      const available = Math.min(maxResults, this.recentTerminalErrors.length);
       return {
         result: formatCapturedTerminalErrors(
           this.recentTerminalErrors,
-          call.arguments.maxResults
+          maxResults
         ),
         resultSummary: `${available} recent terminal ${available === 1 ? 'failure' : 'failures'}`,
         usedFiles: [],
@@ -2505,8 +2711,12 @@ class DevMateChatViewProvider implements
     const query = call.arguments.query.toLocaleLowerCase();
     const matches: string[] = [];
     const usedFiles = new Set<string>();
+    const maxSearchResults = Math.min(
+      call.arguments.maxResults,
+      toolSettings.searchCodeMaxResults
+    );
     const batchSize = 20;
-    for (let offset = 0; offset < uris.length && matches.length < call.arguments.maxResults; offset += batchSize) {
+    for (let offset = 0; offset < uris.length && matches.length < maxSearchResults; offset += batchSize) {
       const candidates = await Promise.all(
         uris.slice(offset, offset + batchSize).map((uri) => this.readProjectCandidate(uri))
       );
@@ -2523,11 +2733,11 @@ class DevMateChatViewProvider implements
           const snippet = lines[lineIndex].trim().slice(0, 240);
           matches.push(`${relativePath}:${lineIndex + 1}: ${snippet}`);
           usedFiles.add(candidate.filePath);
-          if (matches.length >= call.arguments.maxResults) {
+          if (matches.length >= maxSearchResults) {
             break;
           }
         }
-        if (matches.length >= call.arguments.maxResults) {
+        if (matches.length >= maxSearchResults) {
           break;
         }
       }
@@ -2553,6 +2763,10 @@ class DevMateChatViewProvider implements
     usedFiles: string[];
     mutationCharacters: number;
   } {
+    const maxResults = Math.min(
+      call.arguments.maxResults,
+      this.getAgentToolSettings().diagnosticsMaxResults
+    );
     const diagnostics: Array<{
       severity: vscode.DiagnosticSeverity;
       path: string;
@@ -2611,7 +2825,7 @@ class DevMateChatViewProvider implements
       || left.path.localeCompare(right.path)
       || left.line - right.line
       || left.column - right.column);
-    const selected = diagnostics.slice(0, call.arguments.maxResults);
+    const selected = diagnostics.slice(0, maxResults);
     const errors = selected.filter((item) => item.severity === vscode.DiagnosticSeverity.Error).length;
     const warnings = selected.length - errors;
     const result = selected.length === 0
@@ -2675,6 +2889,7 @@ class DevMateChatViewProvider implements
     if (!await vscode.workspace.applyEdit(workspaceEdit)) {
       throw new Error('VS Code could not delete the approved file.');
     }
+    this.rememberCompletedFileDiff(call.arguments.path, source.content, '');
     return {
       result: `Applied file changes:\n- Deleted ${call.arguments.path}`,
       resultSummary: `Deleted ${call.arguments.path}`,
@@ -2738,6 +2953,12 @@ class DevMateChatViewProvider implements
     if (!await vscode.workspace.applyEdit(workspaceEdit)) {
       throw new Error(`VS Code could not ${operation} the approved file.`);
     }
+    this.rememberCompletedFileDiff(
+      call.arguments.newPath,
+      source.content,
+      source.content,
+      call.arguments.path
+    );
 
     let openNote = '';
     try {
@@ -3674,6 +3895,9 @@ class DevMateChatViewProvider implements
       this.postRequestFailure('Enter a question before asking.', { level: 'warning' });
       return;
     }
+    if (!resumedCheckpoint) {
+      this.activeRequestDiffs.clear();
+    }
 
     const activeSession = activeConversationSession(this.sessionStore);
     if (!activeSession || !sessionBelongsToWorkspace(activeSession, this.getConversationWorkspace())) {
@@ -4178,7 +4402,11 @@ class DevMateChatViewProvider implements
     }
 
     const appliedResponseChanges = parseAppliedFileChangeOutcome(changeOutcome);
-    const fileChangeSummary = collectFileChangeSummary(toolHistory, appliedResponseChanges);
+    const fileChangeSummary = collectFileChangeSummary(toolHistory, appliedResponseChanges)
+      .map((change) => {
+        const diffId = this.activeRequestDiffs.get(this.fileChangePathKey(change.path));
+        return diffId ? { ...change, diffId } : change;
+      });
     const changeNotice = changeOutcome.startsWith('Applied file changes:')
       ? changeOutcome.split('\n\n').slice(1).join('\n\n')
       : changeOutcome;
@@ -4329,6 +4557,13 @@ class DevMateChatViewProvider implements
     }));
     if (saved.some((didSave) => !didSave)) {
       throw new Error('DevMate applied the changes, but VS Code could not save every file.');
+    }
+    for (const change of plannedChanges) {
+      this.rememberCompletedFileDiff(
+        change.path,
+        change.originalContent,
+        change.content
+      );
     }
 
     let openNote = '';
@@ -5629,38 +5864,6 @@ class DevMateChatViewProvider implements
       font-size: 9px;
     }
 
-    .reasoning-effort-control {
-      display: inline-flex;
-      align-items: center;
-      height: 26px;
-      padding-left: 6px;
-      border: 1px solid var(--vscode-input-border, var(--border));
-      border-radius: 6px;
-      color: var(--muted);
-      background: var(--vscode-input-background);
-    }
-
-    .reasoning-effort-icon {
-      font-size: 10px;
-      line-height: 1;
-    }
-
-    .reasoning-effort-selector {
-      max-width: 92px;
-      height: 24px;
-      padding: 0 5px 0 4px;
-      border: 0;
-      color: var(--vscode-input-foreground);
-      background: transparent;
-      font-size: 10px;
-      cursor: pointer;
-    }
-
-    .reasoning-effort-selector:focus-visible {
-      outline: 1px solid var(--focus);
-      outline-offset: -1px;
-    }
-
     .profile-dialog {
       width: min(520px, calc(100vw - 32px));
       max-height: calc(100vh - 32px);
@@ -5776,6 +5979,64 @@ class DevMateChatViewProvider implements
       gap: 7px;
       max-height: min(440px, 58vh);
       overflow-y: auto;
+    }
+
+    .model-intelligence-panel {
+      display: grid;
+      gap: 9px;
+      padding: 11px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface-soft);
+    }
+
+    .model-intelligence-panel[hidden] {
+      display: none;
+    }
+
+    .model-intelligence-copy {
+      display: grid;
+      gap: 2px;
+    }
+
+    .model-intelligence-copy strong {
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .model-intelligence-copy span {
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.4;
+    }
+
+    .model-intelligence-options {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(66px, 1fr));
+      gap: 5px;
+    }
+
+    .model-intelligence-option {
+      min-height: 30px;
+      padding: 0 8px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--muted);
+      background: var(--vscode-input-background);
+      font-size: 10px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .model-intelligence-option:hover {
+      color: var(--vscode-foreground);
+      background: var(--vscode-list-hoverBackground);
+    }
+
+    .model-intelligence-option[aria-pressed="true"] {
+      border-color: var(--focus);
+      color: var(--vscode-button-foreground);
+      background: var(--vscode-button-background);
     }
 
     .model-picker-option {
@@ -5993,6 +6254,48 @@ class DevMateChatViewProvider implements
 
     .settings-value-grid .profile-field:last-child {
       grid-column: 1 / -1;
+    }
+
+    .settings-subdialog-button {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      width: 100%;
+      margin-top: 10px;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--vscode-foreground);
+      background: var(--surface-soft);
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .settings-subdialog-button:hover {
+      border-color: var(--focus);
+      background: var(--vscode-list-hoverBackground);
+    }
+
+    .settings-subdialog-copy {
+      display: grid;
+      gap: 2px;
+    }
+
+    .settings-subdialog-copy strong {
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .settings-subdialog-copy span,
+    .settings-subdialog-chevron {
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.4;
+    }
+
+    .agent-tool-limit-grid .profile-field:last-child {
+      grid-column: auto;
     }
 
     .permission-setting-list {
@@ -6238,19 +6541,6 @@ class DevMateChatViewProvider implements
             <span id="llmProfileLabel" class="model-selector-label">Add model</span>
             <span class="model-selector-chevron" aria-hidden="true">▼</span>
           </button>
-          <label
-            id="reasoningEffortControl"
-            class="reasoning-effort-control"
-            title="Model intelligence"
-            hidden
-          >
-            <span class="reasoning-effort-icon" aria-hidden="true">✦</span>
-            <select
-              id="reasoningEffort"
-              class="reasoning-effort-selector"
-              aria-label="Model intelligence level"
-            ></select>
-          </label>
           <span class="composer-actions-spacer"></span>
           <div class="composer-submit">
             <button
@@ -6280,6 +6570,13 @@ class DevMateChatViewProvider implements
         <p>Select a model for this DevMate session or manage a saved profile.</p>
       </header>
       <div class="profile-form-body">
+        <section id="modelIntelligencePanel" class="model-intelligence-panel" hidden>
+          <span class="model-intelligence-copy">
+            <strong>Intelligence</strong>
+            <span>Choose how much reasoning the selected model should use.</span>
+          </span>
+          <div id="modelIntelligenceOptions" class="model-intelligence-options" role="group" aria-label="Model intelligence level"></div>
+        </section>
         <div id="llmProfilePickerList" class="model-picker-list" role="listbox" aria-label="Available model profiles"></div>
       </div>
       <footer class="profile-form-actions">
@@ -6394,6 +6691,13 @@ class DevMateChatViewProvider implements
               <p class="field-help">Lower values are more deterministic.</p>
             </div>
           </div>
+          <button id="openAgentToolSettings" class="settings-subdialog-button" type="button">
+            <span class="settings-subdialog-copy">
+              <strong>Agent tools</strong>
+              <span>Configure read ranges and result limits for project tools.</span>
+            </span>
+            <span class="settings-subdialog-chevron" aria-hidden="true">›</span>
+          </button>
         </section>
         <section class="settings-section" aria-labelledby="backendSettingsTitle">
           <h3 id="backendSettingsTitle" class="settings-section-title">Local backend</h3>
@@ -6468,6 +6772,48 @@ class DevMateChatViewProvider implements
     </form>
   </dialog>
 
+  <dialog id="agentToolSettingsDialog" class="profile-dialog" aria-labelledby="agentToolSettingsTitle">
+    <form id="agentToolSettingsForm" class="profile-form">
+      <header class="profile-form-header">
+        <h2 id="agentToolSettingsTitle">Agent tools</h2>
+        <p>Set how much information each tool may return in one call. Higher values use more model context.</p>
+      </header>
+      <div class="profile-form-body">
+        <div class="settings-value-grid agent-tool-limit-grid">
+          <div class="profile-field">
+            <label for="settingsReadFileMaxLines">Read file — maximum lines</label>
+            <input id="settingsReadFileMaxLines" type="number" min="100" max="1000" step="1" required>
+            <p class="field-help">Default 400. You can raise this to 600 or 700 for larger files.</p>
+          </div>
+          <div class="profile-field">
+            <label for="settingsListFilesMaxResults">List files — maximum results</label>
+            <input id="settingsListFilesMaxResults" type="number" min="20" max="500" step="1" required>
+            <p class="field-help">Default 200 files per call.</p>
+          </div>
+          <div class="profile-field">
+            <label for="settingsSearchCodeMaxResults">Search code — maximum matches</label>
+            <input id="settingsSearchCodeMaxResults" type="number" min="10" max="200" step="1" required>
+            <p class="field-help">Default 50 matches per call.</p>
+          </div>
+          <div class="profile-field">
+            <label for="settingsDiagnosticsMaxResults">Diagnostics — maximum errors</label>
+            <input id="settingsDiagnosticsMaxResults" type="number" min="10" max="300" step="1" required>
+            <p class="field-help">Default 100 diagnostics per call.</p>
+          </div>
+          <div class="profile-field">
+            <label for="settingsTerminalErrorsMaxResults">Terminal errors — recent entries</label>
+            <input id="settingsTerminalErrorsMaxResults" type="number" min="1" max="10" step="1" required>
+            <p class="field-help">Default 5 recent terminal error groups.</p>
+          </div>
+        </div>
+      </div>
+      <footer class="profile-form-actions">
+        <button id="cancelAgentToolSettings" class="action-button secondary" type="button">Back</button>
+        <button class="action-button primary" type="submit">Save tool settings</button>
+      </footer>
+    </form>
+  </dialog>
+
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const MAX_INTERMEDIATE_NARRATION_CHARACTERS = 220;
@@ -6492,6 +6838,13 @@ class DevMateChatViewProvider implements
         toolCallLimit: 16,
         maxTokens: 16384,
         temperature: 0.2,
+        agentTools: {
+          readFileMaxLines: 400,
+          listFilesMaxResults: 200,
+          searchCodeMaxResults: 50,
+          diagnosticsMaxResults: 100,
+          terminalErrorsMaxResults: 5
+        },
         rememberedCommands: [],
         workspaceTrusted: true
       },
@@ -6534,8 +6887,6 @@ class DevMateChatViewProvider implements
     const attachmentToggleEl = document.getElementById('toggleAttachments');
     const llmProfileSelectorEl = document.getElementById('llmProfileSelector');
     const llmProfileLabelEl = document.getElementById('llmProfileLabel');
-    const reasoningEffortControlEl = document.getElementById('reasoningEffortControl');
-    const reasoningEffortEl = document.getElementById('reasoningEffort');
     const tokenEstimateEl = document.getElementById('tokenEstimate');
     const continueAgentEl = document.getElementById('continueAgent');
     const askEl = document.getElementById('ask');
@@ -6546,6 +6897,8 @@ class DevMateChatViewProvider implements
     const newSessionOnHomeEl = document.getElementById('newSessionOnHome');
     const llmProfilePickerDialogEl = document.getElementById('llmProfilePickerDialog');
     const llmProfilePickerListEl = document.getElementById('llmProfilePickerList');
+    const modelIntelligencePanelEl = document.getElementById('modelIntelligencePanel');
+    const modelIntelligenceOptionsEl = document.getElementById('modelIntelligenceOptions');
     const llmProfileDialogEl = document.getElementById('llmProfileDialog');
     const llmProfileFormEl = document.getElementById('llmProfileForm');
     const llmProfileFormTitleEl = document.getElementById('llmProfileFormTitle');
@@ -6574,6 +6927,13 @@ class DevMateChatViewProvider implements
     const settingsToolCallLimitEl = document.getElementById('settingsToolCallLimit');
     const settingsMaxTokensEl = document.getElementById('settingsMaxTokens');
     const settingsTemperatureEl = document.getElementById('settingsTemperature');
+    const agentToolSettingsDialogEl = document.getElementById('agentToolSettingsDialog');
+    const agentToolSettingsFormEl = document.getElementById('agentToolSettingsForm');
+    const settingsReadFileMaxLinesEl = document.getElementById('settingsReadFileMaxLines');
+    const settingsListFilesMaxResultsEl = document.getElementById('settingsListFilesMaxResults');
+    const settingsSearchCodeMaxResultsEl = document.getElementById('settingsSearchCodeMaxResults');
+    const settingsDiagnosticsMaxResultsEl = document.getElementById('settingsDiagnosticsMaxResults');
+    const settingsTerminalErrorsMaxResultsEl = document.getElementById('settingsTerminalErrorsMaxResults');
     const rememberedCommandListEl = document.getElementById('rememberedCommandList');
     const clearRememberedCommandsEl = document.getElementById('clearRememberedCommands');
     const workspaceTrustBadgeEl = document.getElementById('workspaceTrustBadge');
@@ -6655,13 +7015,6 @@ class DevMateChatViewProvider implements
       vscode.postMessage({ command: 'chooseLlmProfile' });
     });
 
-    reasoningEffortEl.addEventListener('change', () => {
-      vscode.postMessage({
-        command: 'setReasoningEffort',
-        effort: reasoningEffortEl.value
-      });
-    });
-
     document.getElementById('cancelLlmProfilePicker').addEventListener('click', () => {
       closeLlmProfilePicker();
     });
@@ -6688,6 +7041,34 @@ class DevMateChatViewProvider implements
     };
 
     settingsButtonEl.addEventListener('click', openSettingsDialog);
+    document.getElementById('openAgentToolSettings').addEventListener('click', () => {
+      const settings = state.settings.agentTools;
+      settingsReadFileMaxLinesEl.value = String(settings.readFileMaxLines);
+      settingsListFilesMaxResultsEl.value = String(settings.listFilesMaxResults);
+      settingsSearchCodeMaxResultsEl.value = String(settings.searchCodeMaxResults);
+      settingsDiagnosticsMaxResultsEl.value = String(settings.diagnosticsMaxResults);
+      settingsTerminalErrorsMaxResultsEl.value = String(settings.terminalErrorsMaxResults);
+      permissionDialogEl.close();
+      agentToolSettingsDialogEl.showModal();
+      settingsReadFileMaxLinesEl.focus();
+    });
+    document.getElementById('cancelAgentToolSettings').addEventListener('click', () => {
+      agentToolSettingsDialogEl.close();
+      openSettingsDialog();
+    });
+    agentToolSettingsFormEl.addEventListener('submit', (event) => {
+      event.preventDefault();
+      vscode.postMessage({
+        command: 'saveAgentToolSettings',
+        settings: {
+          readFileMaxLines: Number(settingsReadFileMaxLinesEl.value),
+          listFilesMaxResults: Number(settingsListFilesMaxResultsEl.value),
+          searchCodeMaxResults: Number(settingsSearchCodeMaxResultsEl.value),
+          diagnosticsMaxResults: Number(settingsDiagnosticsMaxResultsEl.value),
+          terminalErrorsMaxResults: Number(settingsTerminalErrorsMaxResultsEl.value)
+        }
+      });
+    });
     sessionSelectorEl.addEventListener('click', () => {
       showSessionHome();
     });
@@ -6931,7 +7312,7 @@ class DevMateChatViewProvider implements
       }
 
       if (message.command === 'showLlmProfilePicker') {
-        showLlmProfilePicker(message.profiles);
+        showLlmProfilePicker(message.profiles, message.intelligence);
       }
 
       if (message.command === 'showLlmProfileForm') {
@@ -6964,6 +7345,11 @@ class DevMateChatViewProvider implements
           settingsTemperatureEl.value = String(state.settings.temperature);
           renderTimeoutApproximation();
         }
+      }
+
+      if (message.command === 'agentToolSettingsSaved' && agentToolSettingsDialogEl.open) {
+        agentToolSettingsDialogEl.close();
+        openSettingsDialog();
       }
 
       if (message.command === 'settingsSaved' && permissionDialogEl.open) {
@@ -7226,14 +7612,17 @@ class DevMateChatViewProvider implements
           && typeof change.previousPath === 'string'
           ? change.previousPath + ' → ' + change.path
           : change.path;
-        const pathElement = document.createElement(change.kind === 'deleted' ? 'span' : 'button');
+        const hasDiff = typeof change.diffId === 'string' && change.diffId.length > 0;
+        const pathElement = document.createElement(hasDiff || change.kind !== 'deleted' ? 'button' : 'span');
         pathElement.className = 'file-change-path';
         pathElement.textContent = pathText;
-        pathElement.title = pathText;
-        if (change.kind !== 'deleted') {
+        pathElement.title = hasDiff ? pathText + ' · Open DevMate diff' : pathText;
+        if (hasDiff || change.kind !== 'deleted') {
           pathElement.type = 'button';
           pathElement.addEventListener('click', () => {
-            vscode.postMessage({ command: 'openWorkspaceFile', path: change.path });
+            vscode.postMessage(hasDiff
+              ? { command: 'openFileChangeDiff', diffId: change.diffId, path: change.path }
+              : { command: 'openWorkspaceFile', path: change.path });
           });
         }
         row.appendChild(pathElement);
@@ -8239,31 +8628,21 @@ class DevMateChatViewProvider implements
       if (!state.activeProfile) {
         llmProfileLabelEl.textContent = 'Add model';
         llmProfileSelectorEl.title = 'Add a model profile';
-        reasoningEffortControlEl.hidden = true;
         renderAskAvailability();
         return;
       }
 
       llmProfileLabelEl.textContent = state.activeProfile.name;
-      llmProfileSelectorEl.title = state.activeProfile.providerLabel
-        + ' · ' + state.activeProfile.model
-        + (state.profileCount > 1 ? ' · Select another model' : ' · Manage model');
       const reasoningOptions = Array.isArray(state.activeProfile.reasoningEffortOptions)
         ? state.activeProfile.reasoningEffortOptions
         : [];
-      reasoningEffortEl.replaceChildren();
-      reasoningOptions.forEach((item) => {
-        const option = document.createElement('option');
-        option.value = item.value;
-        option.textContent = item.label;
-        reasoningEffortEl.appendChild(option);
-      });
-      reasoningEffortEl.value = state.activeProfile.reasoningEffort || 'auto';
-      reasoningEffortControlEl.hidden = reasoningOptions.length <= 1;
-      const selectedLabel = reasoningOptions.find(
-        (item) => item.value === reasoningEffortEl.value
-      )?.label || 'Auto';
-      reasoningEffortControlEl.title = 'Model intelligence: ' + selectedLabel;
+      const selectedReasoning = reasoningOptions.find(
+        (item) => item.value === state.activeProfile.reasoningEffort
+      );
+      llmProfileSelectorEl.title = state.activeProfile.providerLabel
+        + ' · ' + state.activeProfile.model
+        + (reasoningOptions.length > 1 ? ' · Intelligence: ' + (selectedReasoning?.label || 'Auto') : '')
+        + (state.profileCount > 1 ? ' · Select another model' : ' · Manage model');
       renderAskAvailability();
     }
 
@@ -8274,7 +8653,6 @@ class DevMateChatViewProvider implements
       });
       attachFilesEl.disabled = state.askPending;
       llmProfileSelectorEl.disabled = state.askPending;
-      reasoningEffortEl.disabled = state.askPending;
       continueAgentEl.hidden = !state.checkpointAvailable || state.askPending;
       continueAgentEl.disabled = state.askPending;
       sessionSelectorEl.disabled = state.askPending;
@@ -8311,8 +8689,28 @@ class DevMateChatViewProvider implements
       restartBackendEl.disabled = state.askPending || !backend.canRestart;
     }
 
-    function showLlmProfilePicker(profiles) {
+    function showLlmProfilePicker(profiles, intelligence) {
       llmProfilePickerListEl.replaceChildren();
+      modelIntelligenceOptionsEl.replaceChildren();
+      const intelligenceOptions = Array.isArray(intelligence?.options)
+        ? intelligence.options
+        : [];
+      modelIntelligencePanelEl.hidden = intelligenceOptions.length <= 1;
+      intelligenceOptions.forEach((item) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'model-intelligence-option';
+        button.textContent = item.label;
+        button.dataset.value = item.value;
+        button.setAttribute('aria-pressed', String(item.value === intelligence.value));
+        button.addEventListener('click', () => {
+          modelIntelligenceOptionsEl.querySelectorAll('.model-intelligence-option').forEach(
+            (candidate) => candidate.setAttribute('aria-pressed', String(candidate === button))
+          );
+          vscode.postMessage({ command: 'setReasoningEffort', effort: item.value });
+        });
+        modelIntelligenceOptionsEl.appendChild(button);
+      });
       const availableProfiles = Array.isArray(profiles) ? profiles : [];
       availableProfiles.forEach((profile) => {
         const option = document.createElement('div');

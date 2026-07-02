@@ -41,12 +41,14 @@ test('parses applied legacy changes without recording denied proposals', () => {
 
 test('keeps only bounded safe persisted summary items', () => {
   assert.deepEqual(parseFileChangeSummary([
-    { kind: 'updated', path: 'src/app.ts' },
+    { kind: 'updated', path: 'src/app.ts', diffId: 'change_123-abc' },
+    { kind: 'created', path: 'src/new.ts', diffId: '../unsafe' },
     { kind: 'deleted', path: '../secret.txt' },
     { kind: 'moved', path: 'src/new.ts' },
     { kind: 'unknown', path: 'src/no.ts' }
   ]), [
-    { kind: 'updated', path: 'src/app.ts' }
+    { kind: 'updated', path: 'src/app.ts', diffId: 'change_123-abc' },
+    { kind: 'created', path: 'src/new.ts' }
   ]);
 });
 

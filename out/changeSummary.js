@@ -79,16 +79,23 @@ function parseFileChangeSummary(value) {
         }
         const path = safePath(candidate.path);
         const previousPath = safePath(candidate.previousPath);
+        const diffId = safeDiffId(candidate.diffId);
         if (!path || (candidate.kind === 'renamed' || candidate.kind === 'moved') && !previousPath) {
             continue;
         }
         parsed.push({
             kind: candidate.kind,
             path,
-            ...(previousPath ? { previousPath } : {})
+            ...(previousPath ? { previousPath } : {}),
+            ...(diffId ? { diffId } : {})
         });
     }
     return parsed;
+}
+function safeDiffId(value) {
+    return typeof value === 'string' && /^[a-zA-Z0-9_-]{1,120}$/.test(value)
+        ? value
+        : undefined;
 }
 function applyCreated(changes, path) {
     changes.set(key(path), { kind: 'created', path });

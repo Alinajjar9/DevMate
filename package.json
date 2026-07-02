@@ -99,6 +99,41 @@
           "minimum": 4,
           "maximum": 100,
           "description": "Maximum project-tool calls in one DevMate request. Higher values can increase runtime, provider cost, and loop risk."
+        },
+        "devMate.readFileMaxLines": {
+          "type": "integer",
+          "default": 400,
+          "minimum": 100,
+          "maximum": 1000,
+          "description": "Maximum lines returned by one read_file agent-tool call."
+        },
+        "devMate.listFilesMaxResults": {
+          "type": "integer",
+          "default": 200,
+          "minimum": 20,
+          "maximum": 500,
+          "description": "Maximum file paths returned by one list_files call."
+        },
+        "devMate.searchCodeMaxResults": {
+          "type": "integer",
+          "default": 50,
+          "minimum": 10,
+          "maximum": 200,
+          "description": "Maximum matches returned by one search_code call."
+        },
+        "devMate.diagnosticsMaxResults": {
+          "type": "integer",
+          "default": 100,
+          "minimum": 10,
+          "maximum": 300,
+          "description": "Maximum Problems entries returned by one get_diagnostics call."
+        },
+        "devMate.terminalErrorsMaxResults": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Maximum failed terminal commands returned by read_terminal_errors."
         }
       }
     }
@@ -106,7 +141,7 @@
   "scripts": {
     "compile": "tsc -p ./ --listEmittedFiles",
     "check": "tsc -p ./ --noEmit",
-    "test": "npm run compile && node --test --test-isolation=none tests/agentCheckpoint.test.js tests/agentTools.test.js tests/apiClient.test.js tests/backendManager.test.js tests/changeSummary.test.js tests/commandTools.test.js tests/context.test.js tests/conversation.test.js tests/dependencyTools.test.js tests/errorContext.test.js tests/fileChanges.test.js tests/fileTools.test.js tests/llmProfiles.test.js tests/permissions.test.js tests/projectContext.test.js tests/projectIndex.test.js tests/pythonEnvironment.test.js tests/retryPolicy.test.js tests/sessions.test.js tests/webviewScript.test.js",
+    "test": "npm run compile && node --test --test-isolation=none tests/agentCheckpoint.test.js tests/agentToolSettings.test.js tests/agentTools.test.js tests/apiClient.test.js tests/backendManager.test.js tests/changeSummary.test.js tests/commandTools.test.js tests/context.test.js tests/conversation.test.js tests/dependencyTools.test.js tests/errorContext.test.js tests/fileChanges.test.js tests/fileTools.test.js tests/llmProfiles.test.js tests/permissions.test.js tests/projectContext.test.js tests/projectIndex.test.js tests/pythonEnvironment.test.js tests/retryPolicy.test.js tests/sessions.test.js tests/webviewScript.test.js",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile"
   },

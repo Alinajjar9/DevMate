@@ -92,11 +92,20 @@ test('parses bounded ranged reads', () => {
     startLine: 20,
     endLine: 40
   });
+  assert.deepEqual(parseAgentToolCall({
+    id: 'range-configurable',
+    name: 'read_file',
+    arguments: { path: 'src/large.ts', startLine: 1, endLine: 700 }
+  }).arguments, {
+    path: 'src/large.ts',
+    startLine: 1,
+    endLine: 700
+  });
   assert.throws(() => parseAgentToolCall({
     id: 'range-large',
     name: 'read_file',
-    arguments: { path: 'src/app.ts', startLine: 1, endLine: 401 }
-  }), /at most 400 lines/);
+    arguments: { path: 'src/app.ts', startLine: 1, endLine: 1001 }
+  }), /at most 1000 lines/);
 });
 
 test('normalizes harmless workspace-qualified model paths', () => {
@@ -299,7 +308,7 @@ test('parses bounded read-only tool calls', () => {
   }), {
     id: 'call-1',
     name: 'list_files',
-    arguments: { path: 'src', maxResults: 200 }
+    arguments: { path: 'src', maxResults: 500 }
   });
 
   assert.deepEqual(parseAgentToolCall({
@@ -318,7 +327,7 @@ test('parses bounded read-only tool calls', () => {
     arguments: { path: 'src\\api', maxResults: 999 }
   }).arguments, {
     path: 'src/api',
-    maxResults: 100
+    maxResults: 300
   });
 
   assert.deepEqual(parseAgentToolCall({
@@ -326,7 +335,7 @@ test('parses bounded read-only tool calls', () => {
     name: 'read_terminal_errors',
     arguments: { maxResults: 999 }
   }).arguments, {
-    maxResults: 5
+    maxResults: 10
   });
 });
 
