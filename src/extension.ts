@@ -18,6 +18,11 @@ import {
   truncateAgentToolResult
 } from './agentTools';
 import type { AgentToolCall, AgentToolName, ParsedAgentToolCall } from './agentTools';
+import {
+  AGENT_CHECKPOINT_STORAGE_KEY,
+  parseAgentRunCheckpoint
+} from './agentCheckpoint';
+import type { AgentRunCheckpoint } from './agentCheckpoint';
 import { ask, askStream, health } from './api/client';
 import { backendStatusLabel, LocalBackendManager } from './backendManager';
 import type { ManagedBackendStatus } from './backendManager';
@@ -235,6 +240,7 @@ class StartedDependencyInstallError extends Error {
 
 type WebviewMessage =
   | { command: 'ask'; mode: AssistantMode; question: string; scope: ScopeInfo }
+  | { command: 'continueAgentRun' }
   | { command: 'cancelRequest' }
   | { command: 'setScope'; scope: ScopeKind }
   | { command: 'pickFiles' }
@@ -368,6 +374,7 @@ class DevMateChatViewProvider implements
   private readonly diffDocuments = new Map<string, string>();
   private readonly commandTerminals = new Map<string, vscode.Terminal>();
   private sessionStore: ConversationSessionStore;
+  private agentCheckpoint?: AgentRunCheckpoint;
 
   constructor(
     private readonly extensionContext: vscode.ExtensionContext,
@@ -375,6 +382,9 @@ class DevMateChatViewProvider implements
     private readonly backendOutput: vscode.OutputChannel
   ) {
     this.extensionUri = extensionContext.extensionUri;
+    this.agentCheckpoint = parseAgentRunCheckpoint(
+      extensionContext.workspaceState.get<unknown>(AGENT_CHECKPOINT_STORAGE_KEY)
+    );
     const parsedStoredSessions = parseConversationSessionStore(
       extensionContext.globalState.get<unknown>(CONVERSATION_SESSIONS_STORAGE_KEY)
     );
@@ -498,6 +508,51 @@ class DevMateChatViewProvider implements
           }
         }
         return;
+      case 'continueAgentRun': {
+        if (this.activeRequest) {
+          this.postStatus('DevMate is already working on a request.', 'warning');
+          return;
+        }
+        const checkpoint = this.currentAgentCheckpoint();
+        if (!checkpoint) {
+          this.postRequestFailure('There is no unfinished DevMate run for this session.', {
+            level: 'warning'
+          });
+          this.postAgentCheckpointState();
+          return;
+        }
+        const requestController = new AbortController();
+        this.disposeCommandTerminals();
+        this.activeRequest = requestController;
+        const scopeLabel = checkpoint.scopeKind === 'project'
+          ? 'Project'
+          : checkpoint.scopeKind === 'activeFile'
+            ? 'File'
+            : 'Selection';
+        try {
+          await this.answerQuestion({
+            command: 'ask',
+            mode: checkpoint.mode,
+            question: checkpoint.question,
+            scope: {
+              kind: checkpoint.scopeKind,
+              label: scopeLabel,
+              detail: ''
+            }
+          }, requestController.signal, checkpoint);
+        } catch (error) {
+          if (!this.finishCancelledRequest(requestController.signal)) {
+            this.postRequestFailure(
+              error instanceof Error ? error.message : 'DevMate could not continue the request.'
+            );
+          }
+        } finally {
+          if (this.activeRequest === requestController) {
+            this.activeRequest = undefined;
+          }
+        }
+        return;
+      }
       case 'cancelRequest':
         this.cancelActiveRequest();
         return;
@@ -736,6 +791,9 @@ class DevMateChatViewProvider implements
     }
     this.sessionStore = deleteConversationSession(this.sessionStore, sessionId);
     await this.persistSessionStore();
+    if (this.agentCheckpoint?.sessionId === sessionId) {
+      await this.clearAgentCheckpoint();
+    }
     this.postSessionState(false);
   }
 
@@ -789,6 +847,61 @@ class DevMateChatViewProvider implements
         }
         : {})
     });
+    this.postAgentCheckpointState();
+  }
+
+  private currentAgentCheckpoint(): AgentRunCheckpoint | undefined {
+    const workspace = this.getConversationWorkspace();
+    const activeSession = activeConversationSession(this.sessionStore);
+    if (!workspace
+      || !activeSession
+      || this.agentCheckpoint?.workspaceId !== workspace.id
+      || this.agentCheckpoint.sessionId !== activeSession.id) {
+      return undefined;
+    }
+    return this.agentCheckpoint;
+  }
+
+  private postAgentCheckpointState(): void {
+    const checkpoint = this.currentAgentCheckpoint();
+    const limit = boundedAgentToolCallLimit(
+      vscode.workspace.getConfiguration('devMate').get<number>(
+        'toolCallLimit',
+        DEFAULT_AGENT_TOOL_CALL_LIMIT
+      )
+    );
+    this.postMessage({
+      command: 'agentCheckpointUpdated',
+      available: Boolean(checkpoint),
+      used: checkpoint?.toolHistory.length ?? 0,
+      limit
+    });
+  }
+
+  private async saveAgentCheckpoint(checkpoint: AgentRunCheckpoint): Promise<void> {
+    this.agentCheckpoint = checkpoint;
+    try {
+      await this.extensionContext.workspaceState.update(
+        AGENT_CHECKPOINT_STORAGE_KEY,
+        checkpoint
+      );
+    } catch {
+      this.postStatus('DevMate could not persist the unfinished agent checkpoint.', 'warning');
+    }
+    this.postAgentCheckpointState();
+  }
+
+  private async clearAgentCheckpoint(): Promise<void> {
+    this.agentCheckpoint = undefined;
+    try {
+      await this.extensionContext.workspaceState.update(
+        AGENT_CHECKPOINT_STORAGE_KEY,
+        undefined
+      );
+    } catch {
+      this.postStatus('DevMate could not remove the completed agent checkpoint.', 'warning');
+    }
+    this.postAgentCheckpointState();
   }
 
   private postSessionWarning(message: string): void {
@@ -3310,7 +3423,8 @@ class DevMateChatViewProvider implements
 
   private async answerQuestion(
     message: Extract<WebviewMessage, { command: 'ask' }>,
-    signal: AbortSignal
+    signal: AbortSignal,
+    resumedCheckpoint?: AgentRunCheckpoint
   ): Promise<void> {
     const question = message.question.trim();
     if (!question) {
@@ -3352,6 +3466,9 @@ class DevMateChatViewProvider implements
       );
       return;
     }
+    if (!resumedCheckpoint && this.currentAgentCheckpoint()) {
+      await this.clearAgentCheckpoint();
+    }
 
     this.postMessage({ command: 'scopeUpdated', scope: collectedScope.info });
     await wait(250);
@@ -3387,17 +3504,65 @@ class DevMateChatViewProvider implements
       return;
     }
 
-    const toolHistory: AgentToolStep[] = [];
-    const toolUsedFiles = new Set<string>();
-    const toolSignatures = new Map<string, { revision: number; executions: number }>();
-    let fileMutationCalls = 0;
-    let mutationCharacters = 0;
-    let commandCalls = 0;
-    let dependencyInstallCalls = 0;
-    let workspaceRevision = 0;
-    let forceFinalAnswer = false;
-    let emptyResponseRecoveryAttempted = false;
+    const toolHistory: AgentToolStep[] = resumedCheckpoint
+      ? [...resumedCheckpoint.toolHistory]
+      : [];
+    const toolUsedFiles = new Set<string>(resumedCheckpoint?.toolUsedFiles ?? []);
+    const toolSignatures = new Map<string, { revision: number; executions: number }>(
+      resumedCheckpoint?.toolSignatures.map((item) => [
+        item.signature,
+        { revision: item.revision, executions: item.executions }
+      ]) ?? []
+    );
+    let fileMutationCalls = resumedCheckpoint?.fileMutationCalls ?? 0;
+    let mutationCharacters = resumedCheckpoint?.mutationCharacters ?? 0;
+    let commandCalls = resumedCheckpoint?.commandCalls ?? 0;
+    let dependencyInstallCalls = resumedCheckpoint?.dependencyInstallCalls ?? 0;
+    let workspaceRevision = resumedCheckpoint
+      ? Math.min(200, resumedCheckpoint.workspaceRevision + 1)
+      : 0;
+    let forceFinalAnswer = resumedCheckpoint?.forceFinalAnswer ?? false;
+    let disableThinking = resumedCheckpoint?.disableThinking ?? false;
+    let emptyResponseRecoveryAttempted = resumedCheckpoint?.emptyResponseRecoveryAttempted ?? false;
+    const checkpointCreatedAt = resumedCheckpoint?.createdAt ?? Date.now();
+    const persistCheckpoint = async () => {
+      const workspace = this.getConversationWorkspace();
+      if (!workspace) {
+        return;
+      }
+      await this.saveAgentCheckpoint({
+        version: 1,
+        workspaceId: workspace.id,
+        sessionId: activeSession.id,
+        question,
+        mode: message.mode,
+        scopeKind: message.scope.kind,
+        toolHistory: compactAgentToolHistory(toolHistory),
+        toolUsedFiles: [...toolUsedFiles].slice(-100),
+        toolSignatures: [...toolSignatures].slice(-100).map(([signature, value]) => ({
+          signature,
+          revision: value.revision,
+          executions: value.executions
+        })),
+        fileMutationCalls,
+        mutationCharacters,
+        commandCalls,
+        dependencyInstallCalls,
+        workspaceRevision,
+        forceFinalAnswer,
+        disableThinking,
+        emptyResponseRecoveryAttempted,
+        createdAt: checkpointCreatedAt,
+        updatedAt: Date.now()
+      });
+    };
     let finalData: AskResponse | undefined;
+    this.postMessage({
+      command: 'toolUsageUpdated',
+      used: toolHistory.length,
+      limit: toolCallLimit
+    });
+    await persistCheckpoint();
 
     while (!finalData) {
       if (this.finishCancelledRequest(signal)) {
@@ -3429,6 +3594,7 @@ class DevMateChatViewProvider implements
         enabledTools,
         agentEditsEnabled: message.mode === 'code' || message.mode === 'debug',
         forceFinalAnswer: forceFinalThisTurn,
+        disableThinking: disableThinking || forceFinalThisTurn,
         toolHistory: compactAgentToolHistory(toolHistory),
         conversationHistory: activeSessionModelHistory(this.sessionStore)
       };
@@ -3457,8 +3623,9 @@ class DevMateChatViewProvider implements
           && isRecoverableEmptyModelResponse(errorMessage)
         ) {
           emptyResponseRecoveryAttempted = true;
-          forceFinalAnswer = true;
-          this.postStatus('Model returned no final answer — retrying without tools');
+          disableThinking = true;
+          this.postStatus('Model returned no final answer — retrying with reasoning disabled');
+          await persistCheckpoint();
           continue;
         }
         const backendDropped = result.errorKind === 'network';
@@ -3617,7 +3784,13 @@ class DevMateChatViewProvider implements
           return;
         }
         toolHistory.push(execution.step);
+        this.postMessage({
+          command: 'toolUsageUpdated',
+          used: toolHistory.length,
+          limit: toolCallLimit
+        });
         execution.usedFiles.forEach((file) => toolUsedFiles.add(file));
+        await persistCheckpoint();
         executedCalls += 1;
       }
 
@@ -3670,6 +3843,7 @@ class DevMateChatViewProvider implements
       Date.now()
     );
     await this.persistSessionStore();
+    await this.clearAgentCheckpoint();
 
     this.postMessage({
       command: 'assistantResponse',
@@ -4574,6 +4748,17 @@ class DevMateChatViewProvider implements
       font-size: 10px;
     }
 
+    .working-tool-usage {
+      flex: 0 0 auto;
+      padding: 2px 5px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 9px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
     .working-phases {
       display: grid;
       gap: 5px;
@@ -4976,6 +5161,14 @@ class DevMateChatViewProvider implements
       padding: 0 9px;
       border-radius: 6px;
       font-size: 11px;
+      font-weight: 600;
+    }
+
+    .continue-agent-button {
+      height: 26px;
+      border-color: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      background: color-mix(in srgb, var(--vscode-button-background) 72%, transparent);
       font-weight: 600;
     }
 
@@ -5463,6 +5656,13 @@ class DevMateChatViewProvider implements
           </button>
           <span class="composer-actions-spacer"></span>
           <div class="composer-submit">
+            <button
+              id="continueAgent"
+              class="scope-button continue-agent-button"
+              type="button"
+              title="Continue the unfinished DevMate run with its saved tool history"
+              hidden
+            >Continue</button>
             <span
               id="tokenEstimate"
               class="token-estimate"
@@ -5699,6 +5899,8 @@ class DevMateChatViewProvider implements
       streamQueue: '',
       streamPumpTimer: undefined,
       pendingAssistantResponse: undefined,
+      toolUsage: { used: 0, limit: 16 },
+      checkpointAvailable: false,
       lastRequest: undefined,
       askPending: false
     };
@@ -5719,6 +5921,7 @@ class DevMateChatViewProvider implements
     const llmProfileSelectorEl = document.getElementById('llmProfileSelector');
     const llmProfileLabelEl = document.getElementById('llmProfileLabel');
     const tokenEstimateEl = document.getElementById('tokenEstimate');
+    const continueAgentEl = document.getElementById('continueAgent');
     const askEl = document.getElementById('ask');
     const sessionSelectorEl = document.getElementById('sessionSelector');
     const activeSessionTitleEl = document.getElementById('activeSessionTitle');
@@ -5811,6 +6014,17 @@ class DevMateChatViewProvider implements
     });
 
     questionEl.addEventListener('input', renderTokenEstimate);
+
+    continueAgentEl.addEventListener('click', () => {
+      if (!state.checkpointAvailable || state.askPending) {
+        return;
+      }
+      state.askPending = true;
+      setStatus('Ready');
+      startWorkingTurn();
+      renderAskAvailability();
+      vscode.postMessage({ command: 'continueAgentRun' });
+    });
 
     attachFilesEl.addEventListener('click', () => {
       vscode.postMessage({ command: 'pickFiles' });
@@ -6123,6 +6337,25 @@ class DevMateChatViewProvider implements
 
       if (message.command === 'providerStreamDelta') {
         appendProviderStreamDelta(message.text);
+      }
+
+      if (message.command === 'toolUsageUpdated') {
+        state.toolUsage = {
+          used: Number(message.used) || 0,
+          limit: Number(message.limit) || 16
+        };
+        renderToolUsage();
+      }
+
+      if (message.command === 'agentCheckpointUpdated') {
+        state.checkpointAvailable = message.available === true;
+        if (state.checkpointAvailable) {
+          state.toolUsage = {
+            used: Number(message.used) || 0,
+            limit: Number(message.limit) || 16
+          };
+        }
+        renderAskAvailability();
       }
     });
 
@@ -6614,6 +6847,9 @@ class DevMateChatViewProvider implements
         ? state.activeProfile.providerLabel + ' · ' + state.activeProfile.model
         : '';
       header.appendChild(model);
+      const toolUsage = document.createElement('span');
+      toolUsage.className = 'working-tool-usage';
+      header.appendChild(toolUsage);
       card.appendChild(header);
 
       const phases = document.createElement('ul');
@@ -6666,6 +6902,7 @@ class DevMateChatViewProvider implements
       messagesEl.appendChild(card);
 
       updateWorkingElapsed();
+      renderToolUsage();
       state.workingTimer = setInterval(updateWorkingElapsed, 1000);
       updateWorkingTurn('Preparing request');
       messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -6744,6 +6981,16 @@ class DevMateChatViewProvider implements
       finishWorkingTurn(response);
       state.askPending = false;
       renderAskAvailability();
+    }
+
+    function renderToolUsage() {
+      const usage = document.querySelector('#workingTurn .working-tool-usage');
+      if (!usage) {
+        return;
+      }
+      usage.textContent = 'Tools ' + state.toolUsage.used + ' / ' + state.toolUsage.limit;
+      usage.title = state.toolUsage.used + ' of ' + state.toolUsage.limit
+        + ' project tool calls used in this request';
     }
 
     function updateWorkingTurn(text) {
@@ -7129,6 +7376,8 @@ class DevMateChatViewProvider implements
       });
       attachFilesEl.disabled = state.askPending;
       llmProfileSelectorEl.disabled = state.askPending;
+      continueAgentEl.hidden = !state.checkpointAvailable || state.askPending;
+      continueAgentEl.disabled = state.askPending;
       sessionSelectorEl.disabled = state.askPending;
       newSessionButtonEl.disabled = state.askPending;
       newSessionOnHomeEl.disabled = state.askPending;

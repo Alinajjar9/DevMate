@@ -80,6 +80,7 @@ class ChatCompletionRequest:
     timeout_seconds: float | None = None
     tools: tuple[ChatToolDefinition, ...] = ()
     force_final_answer: bool = False
+    disable_thinking: bool = False
 
 
 @dataclass(frozen=True)
@@ -132,11 +133,12 @@ def _provider_request_parts(
         ]
         payload["tool_choice"] = "auto"
     if request.model.casefold().startswith("nvidia/nemotron-3-"):
+        thinking_enabled = not request.force_final_answer and not request.disable_thinking
         payload["chat_template_kwargs"] = {
-            "enable_thinking": not request.force_final_answer,
+            "enable_thinking": thinking_enabled,
             "force_nonempty_content": True,
         }
-        if not request.force_final_answer:
+        if thinking_enabled:
             payload["reasoning_budget"] = _nemotron_reasoning_budget(request.max_tokens)
     if request.provider == "openai" and request.base_url is None:
         payload["max_completion_tokens"] = request.max_tokens

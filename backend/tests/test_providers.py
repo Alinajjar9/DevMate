@@ -249,6 +249,35 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(completion.content, "Concise final answer")
 
+    async def test_disables_nemotron_reasoning_without_removing_tools(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            self.assertEqual(
+                payload["chat_template_kwargs"],
+                {"enable_thinking": False, "force_nonempty_content": True},
+            )
+            self.assertNotIn("reasoning_budget", payload)
+            self.assertEqual(payload["tools"][0]["function"]["name"], "read_file")
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "Recovered answer"}}]},
+            )
+
+        provider = OpenAICompatibleProvider(transport=httpx.MockTransport(handler))
+        completion = await provider.complete(
+            self._request(
+                model="nvidia/nemotron-3-ultra-550b-a55b",
+                disable_thinking=True,
+                tools=(ChatToolDefinition(
+                    name="read_file",
+                    description="Read one file.",
+                    parameters={"type": "object"},
+                ),),
+            )
+        )
+
+        self.assertEqual(completion.content, "Recovered answer")
+
     async def test_preserves_reasoning_only_completion_metadata(self) -> None:
         provider = OpenAICompatibleProvider(
             transport=httpx.MockTransport(
@@ -366,6 +395,7 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
         tools: tuple[ChatToolDefinition, ...] = (),
         messages: tuple[ChatMessage, ...] | None = None,
         force_final_answer: bool = False,
+        disable_thinking: bool = False,
         timeout_seconds: float | None = None,
     ) -> ChatCompletionRequest:
         return ChatCompletionRequest(
@@ -382,6 +412,7 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
             timeout_seconds=timeout_seconds,
             tools=tools,
             force_final_answer=force_final_answer,
+            disable_thinking=disable_thinking,
         )
 
 

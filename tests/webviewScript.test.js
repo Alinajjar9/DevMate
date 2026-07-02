@@ -166,6 +166,19 @@ test('built-in Nemotron setup locks provider fields while keeping the API key co
   assert.match(source, /The built-in Nemotron profile cannot be deleted/);
 });
 
+test('working UI exposes tool usage and resumable agent checkpoints', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'extension.ts'),
+    'utf8'
+  );
+  assert.match(source, /className = 'working-tool-usage'/);
+  assert.match(source, /Tools ' \+ state\.toolUsage\.used \+ ' \/ '/);
+  assert.match(source, /id="continueAgent"/);
+  assert.match(source, /command: 'continueAgentRun'/);
+  assert.match(source, /message\.command === 'agentCheckpointUpdated'/);
+  assert.match(source, /retrying with reasoning disabled/);
+});
+
 test('project-bound sessions open from a dedicated landing screen', () => {
   const source = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'extension.ts'),

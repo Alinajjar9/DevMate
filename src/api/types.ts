@@ -58,6 +58,7 @@ export type AskRequest = {
   toolsEnabled?: boolean;
   agentEditsEnabled?: boolean;
   forceFinalAnswer?: boolean;
+  disableThinking?: boolean;
   toolHistory?: AgentToolStep[];
   conversationHistory?: ConversationTurn[];
 };

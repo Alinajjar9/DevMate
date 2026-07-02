@@ -40,6 +40,7 @@ const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const agentTools_1 = require("./agentTools");
+const agentCheckpoint_1 = require("./agentCheckpoint");
 const client_1 = require("./api/client");
 const backendManager_1 = require("./backendManager");
 const context_1 = require("./context");
@@ -134,11 +135,13 @@ class DevMateChatViewProvider {
     diffDocuments = new Map();
     commandTerminals = new Map();
     sessionStore;
+    agentCheckpoint;
     constructor(extensionContext, backendManager, backendOutput) {
         this.extensionContext = extensionContext;
         this.backendManager = backendManager;
         this.backendOutput = backendOutput;
         this.extensionUri = extensionContext.extensionUri;
+        this.agentCheckpoint = (0, agentCheckpoint_1.parseAgentRunCheckpoint)(extensionContext.workspaceState.get(agentCheckpoint_1.AGENT_CHECKPOINT_STORAGE_KEY));
         const parsedStoredSessions = (0, sessions_1.parseConversationSessionStore)(extensionContext.globalState.get(sessions_1.CONVERSATION_SESSIONS_STORAGE_KEY));
         const storedSessions = parsedStoredSessions ?? (0, sessions_1.createEmptyConversationSessionStore)();
         const workspace = this.getConversationWorkspace();
@@ -238,6 +241,51 @@ class DevMateChatViewProvider {
                     }
                 }
                 return;
+            case 'continueAgentRun': {
+                if (this.activeRequest) {
+                    this.postStatus('DevMate is already working on a request.', 'warning');
+                    return;
+                }
+                const checkpoint = this.currentAgentCheckpoint();
+                if (!checkpoint) {
+                    this.postRequestFailure('There is no unfinished DevMate run for this session.', {
+                        level: 'warning'
+                    });
+                    this.postAgentCheckpointState();
+                    return;
+                }
+                const requestController = new AbortController();
+                this.disposeCommandTerminals();
+                this.activeRequest = requestController;
+                const scopeLabel = checkpoint.scopeKind === 'project'
+                    ? 'Project'
+                    : checkpoint.scopeKind === 'activeFile'
+                        ? 'File'
+                        : 'Selection';
+                try {
+                    await this.answerQuestion({
+                        command: 'ask',
+                        mode: checkpoint.mode,
+                        question: checkpoint.question,
+                        scope: {
+                            kind: checkpoint.scopeKind,
+                            label: scopeLabel,
+                            detail: ''
+                        }
+                    }, requestController.signal, checkpoint);
+                }
+                catch (error) {
+                    if (!this.finishCancelledRequest(requestController.signal)) {
+                        this.postRequestFailure(error instanceof Error ? error.message : 'DevMate could not continue the request.');
+                    }
+                }
+                finally {
+                    if (this.activeRequest === requestController) {
+                        this.activeRequest = undefined;
+                    }
+                }
+                return;
+            }
             case 'cancelRequest':
                 this.cancelActiveRequest();
                 return;
@@ -446,6 +494,9 @@ class DevMateChatViewProvider {
         }
         this.sessionStore = (0, sessions_1.deleteConversationSession)(this.sessionStore, sessionId);
         await this.persistSessionStore();
+        if (this.agentCheckpoint?.sessionId === sessionId) {
+            await this.clearAgentCheckpoint();
+        }
         this.postSessionState(false);
     }
     canChangeSession() {
@@ -491,6 +542,48 @@ class DevMateChatViewProvider {
                 }
                 : {})
         });
+        this.postAgentCheckpointState();
+    }
+    currentAgentCheckpoint() {
+        const workspace = this.getConversationWorkspace();
+        const activeSession = (0, sessions_1.activeConversationSession)(this.sessionStore);
+        if (!workspace
+            || !activeSession
+            || this.agentCheckpoint?.workspaceId !== workspace.id
+            || this.agentCheckpoint.sessionId !== activeSession.id) {
+            return undefined;
+        }
+        return this.agentCheckpoint;
+    }
+    postAgentCheckpointState() {
+        const checkpoint = this.currentAgentCheckpoint();
+        const limit = (0, agentTools_1.boundedAgentToolCallLimit)(vscode.workspace.getConfiguration('devMate').get('toolCallLimit', agentTools_1.DEFAULT_AGENT_TOOL_CALL_LIMIT));
+        this.postMessage({
+            command: 'agentCheckpointUpdated',
+            available: Boolean(checkpoint),
+            used: checkpoint?.toolHistory.length ?? 0,
+            limit
+        });
+    }
+    async saveAgentCheckpoint(checkpoint) {
+        this.agentCheckpoint = checkpoint;
+        try {
+            await this.extensionContext.workspaceState.update(agentCheckpoint_1.AGENT_CHECKPOINT_STORAGE_KEY, checkpoint);
+        }
+        catch {
+            this.postStatus('DevMate could not persist the unfinished agent checkpoint.', 'warning');
+        }
+        this.postAgentCheckpointState();
+    }
+    async clearAgentCheckpoint() {
+        this.agentCheckpoint = undefined;
+        try {
+            await this.extensionContext.workspaceState.update(agentCheckpoint_1.AGENT_CHECKPOINT_STORAGE_KEY, undefined);
+        }
+        catch {
+            this.postStatus('DevMate could not remove the completed agent checkpoint.', 'warning');
+        }
+        this.postAgentCheckpointState();
     }
     postSessionWarning(message) {
         this.postMessage({ command: 'sessionProjectWarning', message });
@@ -2390,7 +2483,7 @@ class DevMateChatViewProvider {
             }
         }
     }
-    async answerQuestion(message, signal) {
+    async answerQuestion(message, signal, resumedCheckpoint) {
         const question = message.question.trim();
         if (!question) {
             this.postRequestFailure('Enter a question before asking.', { level: 'warning' });
@@ -2421,6 +2514,9 @@ class DevMateChatViewProvider {
             this.postRequestFailure(message.scope.kind === 'selection' ? 'Select code first.' : 'Open a file first.', { level: 'warning' });
             return;
         }
+        if (!resumedCheckpoint && this.currentAgentCheckpoint()) {
+            await this.clearAgentCheckpoint();
+        }
         this.postMessage({ command: 'scopeUpdated', scope: collectedScope.info });
         await wait(250);
         if (this.finishCancelledRequest(signal)) {
@@ -2447,17 +2543,63 @@ class DevMateChatViewProvider {
             await this.showLlmProfileForm(activeProfile);
             return;
         }
-        const toolHistory = [];
-        const toolUsedFiles = new Set();
-        const toolSignatures = new Map();
-        let fileMutationCalls = 0;
-        let mutationCharacters = 0;
-        let commandCalls = 0;
-        let dependencyInstallCalls = 0;
-        let workspaceRevision = 0;
-        let forceFinalAnswer = false;
-        let emptyResponseRecoveryAttempted = false;
+        const toolHistory = resumedCheckpoint
+            ? [...resumedCheckpoint.toolHistory]
+            : [];
+        const toolUsedFiles = new Set(resumedCheckpoint?.toolUsedFiles ?? []);
+        const toolSignatures = new Map(resumedCheckpoint?.toolSignatures.map((item) => [
+            item.signature,
+            { revision: item.revision, executions: item.executions }
+        ]) ?? []);
+        let fileMutationCalls = resumedCheckpoint?.fileMutationCalls ?? 0;
+        let mutationCharacters = resumedCheckpoint?.mutationCharacters ?? 0;
+        let commandCalls = resumedCheckpoint?.commandCalls ?? 0;
+        let dependencyInstallCalls = resumedCheckpoint?.dependencyInstallCalls ?? 0;
+        let workspaceRevision = resumedCheckpoint
+            ? Math.min(200, resumedCheckpoint.workspaceRevision + 1)
+            : 0;
+        let forceFinalAnswer = resumedCheckpoint?.forceFinalAnswer ?? false;
+        let disableThinking = resumedCheckpoint?.disableThinking ?? false;
+        let emptyResponseRecoveryAttempted = resumedCheckpoint?.emptyResponseRecoveryAttempted ?? false;
+        const checkpointCreatedAt = resumedCheckpoint?.createdAt ?? Date.now();
+        const persistCheckpoint = async () => {
+            const workspace = this.getConversationWorkspace();
+            if (!workspace) {
+                return;
+            }
+            await this.saveAgentCheckpoint({
+                version: 1,
+                workspaceId: workspace.id,
+                sessionId: activeSession.id,
+                question,
+                mode: message.mode,
+                scopeKind: message.scope.kind,
+                toolHistory: (0, agentTools_1.compactAgentToolHistory)(toolHistory),
+                toolUsedFiles: [...toolUsedFiles].slice(-100),
+                toolSignatures: [...toolSignatures].slice(-100).map(([signature, value]) => ({
+                    signature,
+                    revision: value.revision,
+                    executions: value.executions
+                })),
+                fileMutationCalls,
+                mutationCharacters,
+                commandCalls,
+                dependencyInstallCalls,
+                workspaceRevision,
+                forceFinalAnswer,
+                disableThinking,
+                emptyResponseRecoveryAttempted,
+                createdAt: checkpointCreatedAt,
+                updatedAt: Date.now()
+            });
+        };
         let finalData;
+        this.postMessage({
+            command: 'toolUsageUpdated',
+            used: toolHistory.length,
+            limit: toolCallLimit
+        });
+        await persistCheckpoint();
         while (!finalData) {
             if (this.finishCancelledRequest(signal)) {
                 return;
@@ -2483,6 +2625,7 @@ class DevMateChatViewProvider {
                 enabledTools,
                 agentEditsEnabled: message.mode === 'code' || message.mode === 'debug',
                 forceFinalAnswer: forceFinalThisTurn,
+                disableThinking: disableThinking || forceFinalThisTurn,
                 toolHistory: (0, agentTools_1.compactAgentToolHistory)(toolHistory),
                 conversationHistory: (0, sessions_1.activeSessionModelHistory)(this.sessionStore)
             };
@@ -2502,8 +2645,9 @@ class DevMateChatViewProvider {
                     && !emptyResponseRecoveryAttempted
                     && isRecoverableEmptyModelResponse(errorMessage)) {
                     emptyResponseRecoveryAttempted = true;
-                    forceFinalAnswer = true;
-                    this.postStatus('Model returned no final answer — retrying without tools');
+                    disableThinking = true;
+                    this.postStatus('Model returned no final answer — retrying with reasoning disabled');
+                    await persistCheckpoint();
                     continue;
                 }
                 const backendDropped = result.errorKind === 'network';
@@ -2637,7 +2781,13 @@ class DevMateChatViewProvider {
                     return;
                 }
                 toolHistory.push(execution.step);
+                this.postMessage({
+                    command: 'toolUsageUpdated',
+                    used: toolHistory.length,
+                    limit: toolCallLimit
+                });
                 execution.usedFiles.forEach((file) => toolUsedFiles.add(file));
+                await persistCheckpoint();
                 executedCalls += 1;
             }
             if (executedCalls === 0) {
@@ -2672,6 +2822,7 @@ class DevMateChatViewProvider {
         ].filter(Boolean).join('\n\n');
         this.sessionStore = (0, sessions_1.appendConversationSessionTurn)(this.sessionStore, question, response, Date.now());
         await this.persistSessionStore();
+        await this.clearAgentCheckpoint();
         this.postMessage({
             command: 'assistantResponse',
             response
@@ -3552,6 +3703,17 @@ class DevMateChatViewProvider {
       font-size: 10px;
     }
 
+    .working-tool-usage {
+      flex: 0 0 auto;
+      padding: 2px 5px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 9px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
     .working-phases {
       display: grid;
       gap: 5px;
@@ -3954,6 +4116,14 @@ class DevMateChatViewProvider {
       padding: 0 9px;
       border-radius: 6px;
       font-size: 11px;
+      font-weight: 600;
+    }
+
+    .continue-agent-button {
+      height: 26px;
+      border-color: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      background: color-mix(in srgb, var(--vscode-button-background) 72%, transparent);
       font-weight: 600;
     }
 
@@ -4441,6 +4611,13 @@ class DevMateChatViewProvider {
           </button>
           <span class="composer-actions-spacer"></span>
           <div class="composer-submit">
+            <button
+              id="continueAgent"
+              class="scope-button continue-agent-button"
+              type="button"
+              title="Continue the unfinished DevMate run with its saved tool history"
+              hidden
+            >Continue</button>
             <span
               id="tokenEstimate"
               class="token-estimate"
@@ -4677,6 +4854,8 @@ class DevMateChatViewProvider {
       streamQueue: '',
       streamPumpTimer: undefined,
       pendingAssistantResponse: undefined,
+      toolUsage: { used: 0, limit: 16 },
+      checkpointAvailable: false,
       lastRequest: undefined,
       askPending: false
     };
@@ -4697,6 +4876,7 @@ class DevMateChatViewProvider {
     const llmProfileSelectorEl = document.getElementById('llmProfileSelector');
     const llmProfileLabelEl = document.getElementById('llmProfileLabel');
     const tokenEstimateEl = document.getElementById('tokenEstimate');
+    const continueAgentEl = document.getElementById('continueAgent');
     const askEl = document.getElementById('ask');
     const sessionSelectorEl = document.getElementById('sessionSelector');
     const activeSessionTitleEl = document.getElementById('activeSessionTitle');
@@ -4789,6 +4969,17 @@ class DevMateChatViewProvider {
     });
 
     questionEl.addEventListener('input', renderTokenEstimate);
+
+    continueAgentEl.addEventListener('click', () => {
+      if (!state.checkpointAvailable || state.askPending) {
+        return;
+      }
+      state.askPending = true;
+      setStatus('Ready');
+      startWorkingTurn();
+      renderAskAvailability();
+      vscode.postMessage({ command: 'continueAgentRun' });
+    });
 
     attachFilesEl.addEventListener('click', () => {
       vscode.postMessage({ command: 'pickFiles' });
@@ -5101,6 +5292,25 @@ class DevMateChatViewProvider {
 
       if (message.command === 'providerStreamDelta') {
         appendProviderStreamDelta(message.text);
+      }
+
+      if (message.command === 'toolUsageUpdated') {
+        state.toolUsage = {
+          used: Number(message.used) || 0,
+          limit: Number(message.limit) || 16
+        };
+        renderToolUsage();
+      }
+
+      if (message.command === 'agentCheckpointUpdated') {
+        state.checkpointAvailable = message.available === true;
+        if (state.checkpointAvailable) {
+          state.toolUsage = {
+            used: Number(message.used) || 0,
+            limit: Number(message.limit) || 16
+          };
+        }
+        renderAskAvailability();
       }
     });
 
@@ -5592,6 +5802,9 @@ class DevMateChatViewProvider {
         ? state.activeProfile.providerLabel + ' · ' + state.activeProfile.model
         : '';
       header.appendChild(model);
+      const toolUsage = document.createElement('span');
+      toolUsage.className = 'working-tool-usage';
+      header.appendChild(toolUsage);
       card.appendChild(header);
 
       const phases = document.createElement('ul');
@@ -5644,6 +5857,7 @@ class DevMateChatViewProvider {
       messagesEl.appendChild(card);
 
       updateWorkingElapsed();
+      renderToolUsage();
       state.workingTimer = setInterval(updateWorkingElapsed, 1000);
       updateWorkingTurn('Preparing request');
       messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -5722,6 +5936,16 @@ class DevMateChatViewProvider {
       finishWorkingTurn(response);
       state.askPending = false;
       renderAskAvailability();
+    }
+
+    function renderToolUsage() {
+      const usage = document.querySelector('#workingTurn .working-tool-usage');
+      if (!usage) {
+        return;
+      }
+      usage.textContent = 'Tools ' + state.toolUsage.used + ' / ' + state.toolUsage.limit;
+      usage.title = state.toolUsage.used + ' of ' + state.toolUsage.limit
+        + ' project tool calls used in this request';
     }
 
     function updateWorkingTurn(text) {
@@ -6107,6 +6331,8 @@ class DevMateChatViewProvider {
       });
       attachFilesEl.disabled = state.askPending;
       llmProfileSelectorEl.disabled = state.askPending;
+      continueAgentEl.hidden = !state.checkpointAvailable || state.askPending;
+      continueAgentEl.disabled = state.askPending;
       sessionSelectorEl.disabled = state.askPending;
       newSessionButtonEl.disabled = state.askPending;
       newSessionOnHomeEl.disabled = state.askPending;

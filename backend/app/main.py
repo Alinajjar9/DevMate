@@ -178,6 +178,7 @@ class AskRequest(BaseModel):
     enabledTools: list[AgentToolName] | None = None
     agentEditsEnabled: bool = False
     forceFinalAnswer: bool = False
+    disableThinking: bool = False
     toolHistory: list[AgentToolStep] = Field(
         default_factory=list,
         max_length=MAX_AGENT_TOOL_STEPS,
@@ -640,6 +641,7 @@ def _build_completion_request(
         tool_steps=request.toolHistory,
         tools_enabled=tools_enabled,
         force_final_answer=request.forceFinalAnswer,
+        disable_thinking=request.disableThinking,
         agent_edits_enabled=request.agentEditsEnabled,
         conversation_turns=request.conversationHistory,
     )
@@ -658,6 +660,7 @@ def _build_completion_request(
             if definition.name in enabled_tools
         ),
         force_final_answer=request.forceFinalAnswer,
+        disable_thinking=request.disableThinking,
     ), enabled_tools, used_files
 
 
@@ -671,7 +674,10 @@ def _ask_result_from_completion(
     tools_enabled = bool(enabled_tools)
     if completion.tool_calls:
         if not tools_enabled:
-            raise HTTPException(status_code=502, detail="The model requested a tool after the tool limit was reached.")
+            raise HTTPException(
+                status_code=502,
+                detail="The model requested another tool when DevMate required a final answer.",
+            )
         tool_calls = _parse_agent_tool_calls(completion.tool_calls, set(enabled_tools))
         history_call_ids = {step.callId for step in request.toolHistory}
         if any(tool_call.id in history_call_ids for tool_call in tool_calls):

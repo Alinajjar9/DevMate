@@ -39,7 +39,7 @@ test('retries only transient provider HTTP failures', () => {
     status: 'error',
     statusCode: 502,
     errorKind: 'http',
-    message: 'The model requested a tool after the tool limit was reached.'
+    message: 'The model requested another tool when DevMate required a final answer.'
   }), false);
   assert.equal(isRetryableProviderFailure({
     status: 'error',

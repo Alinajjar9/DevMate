@@ -524,6 +524,21 @@ class DevMateApiTests(unittest.TestCase):
         self.assertEqual(provider_request.messages[-1].role, "tool")
         self.assertIn("answer = 42", provider_request.messages[-1].content)
 
+    def test_reasoning_recovery_keeps_requested_tools_available(self) -> None:
+        payload = self._ask_payload(scope_type="project", items=[], mode="code")
+        payload["enabledTools"] = ["read_file", "edit_file"]
+        payload["agentEditsEnabled"] = True
+        payload["disableThinking"] = True
+
+        response = self.client.post("/ask", json=payload)
+
+        self.assertEqual(response.status_code, 200)
+        provider_request = self.provider.requests[-1]
+        self.assertTrue(provider_request.disable_thinking)
+        self.assertFalse(provider_request.force_final_answer)
+        self.assertEqual([tool.name for tool in provider_request.tools], ["read_file", "edit_file"])
+        self.assertIn("Thinking is disabled for recovery", provider_request.messages[0].content)
+
     def test_ask_accepts_the_configurable_tool_history_ceiling(self) -> None:
         payload = self._ask_payload(scope_type="project", items=[])
         payload["forceFinalAnswer"] = True

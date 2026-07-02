@@ -16,6 +16,7 @@ function isRetryableProviderFailure(result) {
         || /invalid tool/i.test(message)
         || /tool (?:after|call).*tool limit/i.test(message)
         || /tool limit was reached/i.test(message)
+        || /tool when DevMate required a final answer/i.test(message)
         || /non-json response/i.test(message)
         || /returned a redirect/i.test(message)) {
         return false;
