@@ -5,13 +5,16 @@ const {
   DEFAULT_AGENT_TOOL_CALL_LIMIT,
   MAX_AGENT_CONSECUTIVE_INSPECTIONS,
   MAX_AGENT_TOOL_CALL_LIMIT,
+  MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS,
   MIN_AGENT_TOOL_CALL_LIMIT,
   MAX_AGENT_TOOL_HISTORY_CHARACTERS,
   MAX_AGENT_TOOL_RESULT_CHARACTERS,
   agentToolCallSignature,
   boundedAgentToolCallLimit,
+  boundedAgentToolHistoryArguments,
   compactAgentToolHistory,
   consecutiveAgentInspectionCalls,
+  isDeferredAgentPlanAnswer,
   normalizeAgentToolCallForWorkspace,
   normalizeAgentToolPath,
   parseAgentToolCall,
@@ -31,6 +34,24 @@ test('bounds configurable agent tool-call limits', () => {
   assert.equal(boundedAgentToolCallLimit(24), 24);
   assert.equal(boundedAgentToolCallLimit(100), 100);
   assert.equal(boundedAgentToolCallLimit(101), MAX_AGENT_TOOL_CALL_LIMIT);
+});
+
+test('recognizes short future-action preambles as unfinished agent answers', () => {
+  for (const answer of [
+    "I'll start by reading the key files, then build the login modal.",
+    'I will first inspect the project structure.',
+    'Let me examine the current backend before implementing authentication.',
+    'Sure, I’ll now reorganize the frontend assets.'
+  ]) {
+    assert.equal(isDeferredAgentPlanAnswer(answer), true);
+  }
+  for (const answer of [
+    'Created the login modal and added the authentication endpoint.',
+    'I could not edit the project because the workspace is untrusted.',
+    'The issue is caused by a missing route registration.'
+  ]) {
+    assert.equal(isDeferredAgentPlanAnswer(answer), false);
+  }
 });
 
 test('compacts oldest tool results when a higher call limit fills context', () => {
@@ -153,6 +174,28 @@ test('parses mutation tools and summarizes large history arguments', () => {
     agentToolCallSignature({ ...create, arguments: { path: 'src/new.ts', content: 'one' } }),
     agentToolCallSignature({ ...create, arguments: { path: 'src/new.ts', content: 'two' } })
   );
+
+  const largeEdit = parseAgentToolCall({
+    id: 'large-edit',
+    name: 'edit_file',
+    arguments: {
+      path: 'src/large.ts',
+      replacements: Array.from({ length: 20 }, (_, index) => ({
+        oldText: `old-${index}-${'x'.repeat(100)}`,
+        newText: `new-${index}-${'y'.repeat(100)}`
+      }))
+    }
+  });
+  const editHistory = summarizedAgentToolArguments(largeEdit);
+  assert.equal(editHistory.replacementCount, 20);
+  assert.match(editHistory.replacements, /omitted after execution/);
+  assert.ok(JSON.stringify(editHistory).length <= MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS);
+
+  const invalidHistory = boundedAgentToolHistoryArguments('invalid', {
+    value: 'z'.repeat(MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS + 1)
+  });
+  assert.match(invalidHistory.summary, /omitted after execution/);
+  assert.ok(JSON.stringify(invalidHistory).length <= MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS);
 });
 
 test('bounds consecutive inspection loops until meaningful progress', () => {
@@ -164,8 +207,9 @@ test('bounds consecutive inspection loops until meaningful progress', () => {
   assert.equal(consecutiveAgentInspectionCalls([
     ...inspections,
     { name: 'edit_file', isError: false },
-    { name: 'read_file', isError: false }
-  ]), 1);
+    { name: 'get_diagnostics', isError: false },
+    { name: 'read_terminal_errors', isError: false }
+  ]), 2);
 });
 
 test('builds an honest local summary when a model cannot finalize tool work', () => {
@@ -266,6 +310,23 @@ test('parses bounded read-only tool calls', () => {
     id: 'call-2',
     name: 'search_code',
     arguments: { query: 'permission', path: 'src/api', maxResults: 20 }
+  });
+
+  assert.deepEqual(parseAgentToolCall({
+    id: 'diagnostics',
+    name: 'get_diagnostics',
+    arguments: { path: 'src\\api', maxResults: 999 }
+  }).arguments, {
+    path: 'src/api',
+    maxResults: 100
+  });
+
+  assert.deepEqual(parseAgentToolCall({
+    id: 'terminal-errors',
+    name: 'read_terminal_errors',
+    arguments: { maxResults: 999 }
+  }).arguments, {
+    maxResults: 5
   });
 });
 

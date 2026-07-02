@@ -116,11 +116,13 @@ class DevMateApiTests(unittest.TestCase):
     def test_ask_passes_a_bounded_provider_timeout(self) -> None:
         payload = self._ask_payload(scope_type="project", items=[])
         payload["settings"]["timeoutSeconds"] = 1_200
+        payload["settings"]["reasoningEffort"] = "high"
 
         response = self.client.post("/ask", json=payload)
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.provider.requests[-1].timeout_seconds, 1_200)
+        self.assertEqual(self.provider.requests[-1].reasoning_effort, "high")
 
         payload["settings"]["timeoutSeconds"] = 1_801
         self.assertEqual(self.client.post("/ask", json=payload).status_code, 422)
@@ -392,7 +394,14 @@ class DevMateApiTests(unittest.TestCase):
                 }
             ],
         )
-        self.assertEqual(len(self.provider.requests[-1].tools), 3)
+        self.assertEqual(len(self.provider.requests[-1].tools), 5)
+        self.assertEqual(
+            [tool.name for tool in self.provider.requests[-1].tools],
+            [
+                "list_files", "read_file", "search_code",
+                "get_diagnostics", "read_terminal_errors",
+            ],
+        )
         self.assertGreater(data["tokenUsage"]["inputTokens"], 0)
 
     def test_ask_prefers_provider_reported_token_usage(self) -> None:
@@ -592,6 +601,24 @@ class DevMateApiTests(unittest.TestCase):
         })
         self.assertEqual(self.client.post("/ask", json=payload).status_code, 422)
 
+    def test_validation_errors_identify_fields_without_echoing_request_input(self) -> None:
+        payload = self._ask_payload(scope_type="project", items=[])
+        payload["toolHistory"] = [{
+            "callId": "oversized",
+            "name": "edit_file",
+            "arguments": {"secretContent": "private-value-" * 400},
+            "result": "Edit completed.",
+            "isError": False,
+        }]
+
+        response = self.client.post("/ask/stream", json=payload)
+
+        self.assertEqual(response.status_code, 422)
+        body = response.json()
+        self.assertIn("toolHistory", str(body["detail"][0]["loc"]))
+        self.assertIn("tool arguments are too large", body["detail"][0]["msg"])
+        self.assertNotIn("private-value", response.text)
+
     def test_ask_exposes_only_requested_mode_tools(self) -> None:
         payload = self._ask_payload(scope_type="project", items=[], mode="debug")
         payload["enabledTools"] = [
@@ -614,13 +641,14 @@ class DevMateApiTests(unittest.TestCase):
 
         ideas_payload = self._ask_payload(scope_type="project", items=[], mode="ideas")
         ideas_payload["enabledTools"] = [
-            "read_file", "edit_file", "install_dependencies", "run_command"
+            "read_file", "get_diagnostics", "read_terminal_errors",
+            "edit_file", "install_dependencies", "run_command"
         ]
         response = self.client.post("/ask", json=ideas_payload)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             [tool.name for tool in self.provider.requests[-1].tools],
-            ["read_file"],
+            ["read_file", "get_diagnostics", "read_terminal_errors"],
         )
 
     def test_ask_replays_bounded_conversation_history(self) -> None:

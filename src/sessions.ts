@@ -1,4 +1,6 @@
 import type { ConversationTurn } from './api/types';
+import { parseFileChangeSummary } from './changeSummary';
+import type { FileChangeSummaryItem } from './changeSummary';
 import { boundConversationHistory, MAX_CONVERSATION_TURN_CHARACTERS } from './conversation';
 
 export const CONVERSATION_SESSIONS_STORAGE_KEY = 'devMate.conversationSessions.v2';
@@ -21,7 +23,11 @@ export type ConversationSession = {
   workspaceName: string;
   createdAt: number;
   updatedAt: number;
-  turns: ConversationTurn[];
+  turns: StoredConversationTurn[];
+};
+
+export type StoredConversationTurn = ConversationTurn & {
+  fileChanges?: FileChangeSummaryItem[];
 };
 
 export type ConversationSessionStore = {
@@ -149,9 +155,10 @@ export function appendConversationSessionTurn(
   store: ConversationSessionStore,
   user: string,
   assistant: string,
-  now: number
+  now: number,
+  fileChanges: FileChangeSummaryItem[] = []
 ): ConversationSessionStore {
-  const turn = normalizeTurn({ user, assistant });
+  const turn = normalizeTurn({ user, assistant, fileChanges });
   if (!turn || !turn.assistant || !activeConversationSession(store)) {
     return store;
   }
@@ -208,7 +215,12 @@ export function activeConversationSession(
 }
 
 export function activeSessionModelHistory(store: ConversationSessionStore): ConversationTurn[] {
-  return boundConversationHistory(activeConversationSession(store)?.turns ?? []);
+  return boundConversationHistory(
+    (activeConversationSession(store)?.turns ?? []).map((turn) => ({
+      user: turn.user,
+      assistant: turn.assistant
+    }))
+  );
 }
 
 export function sessionBelongsToWorkspace(
@@ -306,15 +318,15 @@ function boundStoreSessions(sessions: ConversationSession[]): ConversationSessio
   });
 }
 
-function boundSessionTurns(value: unknown[], maximumCharacters = MAX_SESSION_CHARACTERS): ConversationTurn[] {
-  const turns: ConversationTurn[] = [];
+function boundSessionTurns(value: unknown[], maximumCharacters = MAX_SESSION_CHARACTERS): StoredConversationTurn[] {
+  const turns: StoredConversationTurn[] = [];
   let characters = 0;
   for (const candidate of value.slice(-MAX_SESSION_TURNS).reverse()) {
     const turn = normalizeTurn(candidate);
     if (!turn) {
       continue;
     }
-    const turnCharacters = turn.user.length + turn.assistant.length;
+    const turnCharacters = turn.user.length + turn.assistant.length + fileChangeCharacters(turn.fileChanges);
     if (characters + turnCharacters > maximumCharacters) {
       continue;
     }
@@ -324,13 +336,20 @@ function boundSessionTurns(value: unknown[], maximumCharacters = MAX_SESSION_CHA
   return turns.reverse();
 }
 
-function normalizeTurn(value: unknown): ConversationTurn | undefined {
+function normalizeTurn(value: unknown): StoredConversationTurn | undefined {
   if (!isRecord(value) || typeof value.user !== 'string' || typeof value.assistant !== 'string') {
     return undefined;
   }
   const user = normalizeUserMessage(value.user);
   const assistant = value.assistant.trim().slice(0, MAX_CONVERSATION_TURN_CHARACTERS);
-  return user ? { user, assistant } : undefined;
+  const fileChanges = parseFileChangeSummary(value.fileChanges);
+  return user
+    ? {
+      user,
+      assistant,
+      ...(fileChanges.length > 0 ? { fileChanges } : {})
+    }
+    : undefined;
 }
 
 function normalizeUserMessage(value: string): string {
@@ -357,8 +376,16 @@ function normalizeWorkspaceName(value: string): string {
     || 'Unknown project';
 }
 
-function conversationCharacters(turns: ConversationTurn[]): number {
-  return turns.reduce((total, turn) => total + turn.user.length + turn.assistant.length, 0);
+function conversationCharacters(turns: StoredConversationTurn[]): number {
+  return turns.reduce((total, turn) => total + turn.user.length + turn.assistant.length
+    + fileChangeCharacters(turn.fileChanges), 0);
+}
+
+function fileChangeCharacters(fileChanges: FileChangeSummaryItem[] | undefined): number {
+  return fileChanges?.reduce(
+    (total, change) => total + change.path.length + (change.previousPath?.length ?? 0) + 16,
+    0
+  ) ?? 0;
 }
 
 function isSessionId(value: string): boolean {

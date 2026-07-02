@@ -8,8 +8,11 @@ const {
   isEquivalentNemotronProfile,
   normalizeProfileDraft,
   parseStoredProfiles,
+  parseReasoningEffortPreferences,
   profilesWithBuiltInNemotron,
   providerLabelForProfile,
+  reasoningEffortForProfile,
+  reasoningEffortOptionsForProfile,
   secretKeyForProfile,
   validateProfileDraft
 } = require('../out/llmProfiles');
@@ -116,6 +119,46 @@ test('recognizes a manually configured profile equivalent to built-in Nemotron',
   assert.equal(
     isEquivalentNemotronProfile(profile('other', 'Other', 'openai', 'gpt-4.1-mini')),
     false
+  );
+});
+
+test('exposes intelligence levels only for recognized reasoning models', () => {
+  assert.deepEqual(reasoningEffortOptionsForProfile(BUILT_IN_NEMOTRON_PROFILE), [
+    'auto', 'low', 'medium', 'high'
+  ]);
+  assert.deepEqual(
+    reasoningEffortOptionsForProfile(profile('gpt', 'GPT', 'openai', 'gpt-5.4-nano')),
+    ['auto', 'low', 'medium', 'high', 'xhigh']
+  );
+  assert.deepEqual(
+    reasoningEffortOptionsForProfile(profile('pro', 'Pro', 'openai', 'gpt-5-pro')),
+    ['auto', 'high']
+  );
+  assert.deepEqual(
+    reasoningEffortOptionsForProfile(profile('ordinary', 'Ordinary', 'openai', 'gpt-4.1-mini')),
+    ['auto']
+  );
+  assert.deepEqual(reasoningEffortOptionsForProfile({
+    ...profile('compatible', 'Compatible', 'openai', 'gpt-5.4-nano'),
+    baseUrl: 'https://example.com/v1'
+  }), ['auto']);
+});
+
+test('parses and clamps per-profile intelligence preferences', () => {
+  const preferences = parseReasoningEffortPreferences({
+    gpt: 'xhigh',
+    ordinary: 'high',
+    invalid: 'extreme',
+    '../unsafe': 'low'
+  });
+  assert.deepEqual(preferences, { gpt: 'xhigh', ordinary: 'high' });
+  assert.equal(
+    reasoningEffortForProfile(profile('gpt', 'GPT', 'openai', 'gpt-5.4-nano'), preferences),
+    'xhigh'
+  );
+  assert.equal(
+    reasoningEffortForProfile(profile('ordinary', 'Ordinary', 'openai', 'gpt-4.1-mini'), preferences),
+    'auto'
   );
 });
 

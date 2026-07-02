@@ -1,7 +1,17 @@
 export const LLM_PROFILES_STORAGE_KEY = 'devMate.llmProfiles.v1';
 export const ACTIVE_LLM_PROFILE_STORAGE_KEY = 'devMate.activeLlmProfileId.v1';
+export const LLM_REASONING_EFFORT_STORAGE_KEY = 'devMate.reasoningEffortByProfile.v1';
 
 export type LlmProvider = 'openai' | 'ollama';
+export type ReasoningEffort = 'auto' | 'low' | 'medium' | 'high' | 'xhigh';
+
+export const REASONING_EFFORT_LABELS: Record<ReasoningEffort, string> = {
+  auto: 'Auto',
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'Extra high'
+};
 
 export type LlmProfile = {
   id: string;
@@ -30,6 +40,7 @@ export const BUILT_IN_NEMOTRON_PROFILE: LlmProfile = Object.freeze({
 });
 
 const supportedProviders = new Set<LlmProvider>(['openai', 'ollama']);
+const reasoningEfforts = new Set<ReasoningEffort>(['auto', 'low', 'medium', 'high', 'xhigh']);
 
 export function normalizeProfileDraft(draft: LlmProfileDraft): LlmProfileDraft {
   const baseUrl = draft.baseUrl?.trim().replace(/\/+$/, '');
@@ -161,8 +172,61 @@ export function providerLabelForProfile(profile: LlmProfile): string {
   return isBuiltInLlmProfile(profile) ? 'NVIDIA' : PROVIDER_LABELS[profile.provider];
 }
 
+export function reasoningEffortOptionsForProfile(profile: LlmProfile): ReasoningEffort[] {
+  const model = profile.model.trim().toLocaleLowerCase();
+  if (/^(?:nvidia\/)?nemotron-3-ultra(?:-|$)/.test(model)) {
+    return ['auto', 'low', 'medium', 'high'];
+  }
+  if (!isOfficialOpenAiProfile(profile)) {
+    return ['auto'];
+  }
+  if (!/^gpt-5(?:[.-]|$)/.test(model) && !/^o(?:1|3|4)(?:-|$)/.test(model)) {
+    return ['auto'];
+  }
+  if (/(?:^|-)pro(?:-|$)/.test(model)) {
+    return ['auto', 'high'];
+  }
+  const version = /^gpt-5\.(\d+)(?:-|$)/.exec(model)?.[1];
+  return version && Number(version) >= 2
+    ? ['auto', 'low', 'medium', 'high', 'xhigh']
+    : ['auto', 'low', 'medium', 'high'];
+}
+
+export function parseReasoningEffortPreferences(value: unknown): Record<string, ReasoningEffort> {
+  if (!isRecord(value)) {
+    return {};
+  }
+  const entries = Object.entries(value)
+    .filter(([id, effort]) => /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(id)
+      && reasoningEfforts.has(effort as ReasoningEffort))
+    .slice(0, 100) as Array<[string, ReasoningEffort]>;
+  return Object.fromEntries(entries);
+}
+
+export function reasoningEffortForProfile(
+  profile: LlmProfile,
+  preferences: Record<string, ReasoningEffort>
+): ReasoningEffort {
+  const preferred = preferences[profile.id] ?? 'auto';
+  return reasoningEffortOptionsForProfile(profile).includes(preferred) ? preferred : 'auto';
+}
+
 export function secretKeyForProfile(profileId: string): string {
   return `devMate.llmProfile.${profileId}.apiKey`;
+}
+
+function isOfficialOpenAiProfile(profile: LlmProfile): boolean {
+  if (profile.provider !== 'openai') {
+    return false;
+  }
+  if (!profile.baseUrl) {
+    return true;
+  }
+  try {
+    return new URL(profile.baseUrl).hostname.toLocaleLowerCase() === 'api.openai.com';
+  } catch {
+    return false;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -44,8 +44,10 @@ const agentCheckpoint_1 = require("./agentCheckpoint");
 const client_1 = require("./api/client");
 const backendManager_1 = require("./backendManager");
 const context_1 = require("./context");
+const changeSummary_1 = require("./changeSummary");
 const sessions_1 = require("./sessions");
 const commandTools_1 = require("./commandTools");
+const errorContext_1 = require("./errorContext");
 const dependencyTools_1 = require("./dependencyTools");
 const pythonEnvironment_1 = require("./pythonEnvironment");
 const fileChanges_1 = require("./fileChanges");
@@ -127,6 +129,7 @@ class DevMateChatViewProvider {
     view;
     attachedFiles = new Map();
     viewDisposables = [];
+    lifetimeDisposables = [];
     extensionUri;
     pendingPermission;
     pendingCommandPermission;
@@ -134,6 +137,8 @@ class DevMateChatViewProvider {
     projectIndexCache;
     diffDocuments = new Map();
     commandTerminals = new Map();
+    activeTerminalCaptures = new Map();
+    recentTerminalErrors = [];
     sessionStore;
     agentCheckpoint;
     constructor(extensionContext, backendManager, backendOutput) {
@@ -162,6 +167,11 @@ class DevMateChatViewProvider {
         else if (!parsedStoredSessions) {
             void this.persistSessionStore();
         }
+        this.lifetimeDisposables.push(vscode.window.onDidStartTerminalShellExecution((event) => {
+            this.captureWorkspaceTerminalExecution(event);
+        }), vscode.window.onDidEndTerminalShellExecution((event) => {
+            void this.finishWorkspaceTerminalExecution(event);
+        }));
     }
     resolveWebviewView(webviewView) {
         this.disposeViewDisposables();
@@ -200,6 +210,10 @@ class DevMateChatViewProvider {
     dispose() {
         this.view = undefined;
         this.disposeViewDisposables();
+        this.activeTerminalCaptures.clear();
+        while (this.lifetimeDisposables.length > 0) {
+            this.lifetimeDisposables.pop()?.dispose();
+        }
     }
     disposeViewDisposables() {
         this.activeRequest?.abort();
@@ -297,7 +311,22 @@ class DevMateChatViewProvider {
                 this.postAttachmentState();
                 return;
             case 'chooseLlmProfile':
-                await this.chooseLlmProfile();
+                this.chooseLlmProfile();
+                return;
+            case 'selectLlmProfile':
+                await this.selectLlmProfile(message.profileId);
+                return;
+            case 'setReasoningEffort':
+                await this.setActiveReasoningEffort(message.effort);
+                return;
+            case 'addLlmProfile':
+                await this.showLlmProfileForm();
+                return;
+            case 'editLlmProfile':
+                await this.editLlmProfile(message.profileId);
+                return;
+            case 'deleteLlmProfile':
+                await this.deleteLlmProfileById(message.profileId);
                 return;
             case 'saveLlmProfile':
                 await this.saveLlmProfile(message.profile);
@@ -537,7 +566,13 @@ class DevMateChatViewProvider {
                 ? {
                     messages: activeSession.turns.flatMap((turn) => [
                         { role: 'user', text: turn.user },
-                        ...(turn.assistant ? [{ role: 'assistant', text: turn.assistant }] : [])
+                        ...(turn.assistant
+                            ? [{
+                                    role: 'assistant',
+                                    text: turn.assistant,
+                                    fileChanges: turn.fileChanges ?? []
+                                }]
+                            : [])
                     ])
                 }
                 : {})
@@ -972,6 +1007,31 @@ class DevMateChatViewProvider {
         const activeProfileId = this.extensionContext.globalState.get(llmProfiles_1.ACTIVE_LLM_PROFILE_STORAGE_KEY);
         return profiles.find((profile) => profile.id === activeProfileId) ?? profiles[0];
     }
+    getReasoningEffortPreferences() {
+        return (0, llmProfiles_1.parseReasoningEffortPreferences)(this.extensionContext.globalState.get(llmProfiles_1.LLM_REASONING_EFFORT_STORAGE_KEY));
+    }
+    async setActiveReasoningEffort(effort) {
+        if (this.activeRequest) {
+            this.postStatus('Wait for the active request to finish before changing intelligence.', 'warning');
+            return;
+        }
+        const profile = this.getActiveLlmProfile();
+        if (!profile || !(0, llmProfiles_1.reasoningEffortOptionsForProfile)(profile).includes(effort)) {
+            this.postStatus('The selected model does not support that intelligence level.', 'warning');
+            await this.postLlmProfileState();
+            return;
+        }
+        const preferences = { ...this.getReasoningEffortPreferences() };
+        if (effort === 'auto') {
+            delete preferences[profile.id];
+        }
+        else {
+            preferences[profile.id] = effort;
+        }
+        await this.extensionContext.globalState.update(llmProfiles_1.LLM_REASONING_EFFORT_STORAGE_KEY, preferences);
+        await this.postLlmProfileState();
+        this.postStatus('Ready');
+    }
     async migrateBuiltInNemotronProfile() {
         const storedProfiles = this.getStoredLlmProfiles();
         const equivalentProfiles = storedProfiles.filter(llmProfiles_1.isEquivalentNemotronProfile);
@@ -1016,57 +1076,45 @@ class DevMateChatViewProvider {
             await this.showLlmProfileForm(activeProfile);
         }
     }
-    async chooseLlmProfile() {
+    chooseLlmProfile() {
         const profiles = this.getLlmProfiles();
-        if (profiles.length === 0) {
-            await this.showLlmProfileForm();
-            return;
-        }
         const activeProfile = this.getActiveLlmProfile(profiles);
-        const choices = profiles.map((profile) => ({
-            label: (0, llmProfiles_1.isBuiltInLlmProfile)(profile) ? `$(sparkle) ${profile.name}` : profile.name,
-            description: [
-                profile.id === activeProfile?.id ? 'Selected' : undefined,
-                (0, llmProfiles_1.isBuiltInLlmProfile)(profile) ? 'Built-in' : undefined,
-                (0, llmProfiles_1.providerLabelForProfile)(profile),
-                profile.model
-            ].filter(Boolean).join(' · '),
-            detail: profile.baseUrl,
-            action: 'select',
-            profileId: profile.id
-        }));
-        choices.push({
-            label: '$(add) Add model profile',
-            description: 'Save another provider and model',
-            action: 'add'
-        }, {
-            label: '$(gear) Manage model profiles',
-            description: 'Configure Nemotron or edit and delete custom profiles',
-            action: 'manage'
+        const reasoningPreferences = this.getReasoningEffortPreferences();
+        this.postMessage({
+            command: 'showLlmProfilePicker',
+            profiles: profiles.map((profile) => ({
+                id: profile.id,
+                name: profile.name,
+                providerLabel: (0, llmProfiles_1.providerLabelForProfile)(profile),
+                model: profile.model,
+                baseUrl: profile.baseUrl,
+                intelligence: (0, llmProfiles_1.reasoningEffortOptionsForProfile)(profile).length > 1
+                    ? llmProfiles_1.REASONING_EFFORT_LABELS[(0, llmProfiles_1.reasoningEffortForProfile)(profile, reasoningPreferences)]
+                    : undefined,
+                builtIn: (0, llmProfiles_1.isBuiltInLlmProfile)(profile),
+                selected: profile.id === activeProfile?.id
+            }))
         });
-        const selected = await vscode.window.showQuickPick(choices, {
-            matchOnDescription: true,
-            matchOnDetail: true,
-            placeHolder: 'Choose the model DevMate should use',
-            title: 'DevMate: Select model'
-        });
-        if (!selected) {
+    }
+    async selectLlmProfile(profileId) {
+        const profiles = this.getLlmProfiles();
+        const profile = profiles.find((candidate) => candidate.id === profileId);
+        if (!profile) {
+            this.postStatus('That model profile no longer exists.', 'warning');
             return;
         }
-        if (selected.action === 'add') {
-            await this.showLlmProfileForm();
+        await this.extensionContext.globalState.update(llmProfiles_1.ACTIVE_LLM_PROFILE_STORAGE_KEY, profile.id);
+        await this.postLlmProfileState();
+        await this.promptForBuiltInNemotronKey();
+        this.postStatus('Ready');
+    }
+    async editLlmProfile(profileId) {
+        const profile = this.getLlmProfiles().find((candidate) => candidate.id === profileId);
+        if (!profile) {
+            this.postStatus('That model profile no longer exists.', 'warning');
             return;
         }
-        if (selected.action === 'manage') {
-            await this.manageLlmProfiles();
-            return;
-        }
-        if (selected.profileId) {
-            await this.extensionContext.globalState.update(llmProfiles_1.ACTIVE_LLM_PROFILE_STORAGE_KEY, selected.profileId);
-            await this.postLlmProfileState();
-            await this.promptForBuiltInNemotronKey();
-            this.postStatus('Ready');
-        }
+        await this.showLlmProfileForm(profile);
     }
     cancelActiveRequest() {
         if (!this.activeRequest || this.activeRequest.signal.aborted) {
@@ -1228,76 +1276,29 @@ class DevMateChatViewProvider {
         this.postMessage({ command: 'closeLlmProfileForm' });
         this.postStatus(`${llmProfiles_1.BUILT_IN_NEMOTRON_PROFILE.name} is ready.`);
     }
-    async manageLlmProfiles() {
-        const profiles = this.getLlmProfiles();
-        if (profiles.length === 0) {
-            await this.showLlmProfileForm();
-            return;
-        }
-        const selected = await vscode.window.showQuickPick(profiles.map((profile) => ({
-            label: (0, llmProfiles_1.isBuiltInLlmProfile)(profile) ? `$(sparkle) ${profile.name}` : profile.name,
-            description: [
-                (0, llmProfiles_1.isBuiltInLlmProfile)(profile) ? 'Built-in' : undefined,
-                (0, llmProfiles_1.providerLabelForProfile)(profile),
-                profile.model
-            ].filter(Boolean).join(' · '),
-            detail: profile.baseUrl,
-            profile
-        })), {
-            matchOnDescription: true,
-            matchOnDetail: true,
-            placeHolder: 'Choose a profile to manage',
-            title: 'DevMate: Manage model profiles'
-        });
-        if (!selected) {
-            return;
-        }
-        const activeProfile = this.getActiveLlmProfile(profiles);
-        const actions = [];
-        if (selected.profile.id !== activeProfile?.id) {
-            actions.push({
-                label: '$(check) Set as selected model',
-                action: 'select'
+    async deleteLlmProfileById(profileId) {
+        const profile = this.getLlmProfiles().find((candidate) => candidate.id === profileId);
+        if (!profile) {
+            this.postMessage({
+                command: 'llmProfileFormError',
+                message: 'That model profile no longer exists.'
             });
-        }
-        if ((0, llmProfiles_1.isBuiltInLlmProfile)(selected.profile)) {
-            actions.push({ label: '$(key) Configure NVIDIA API key', action: 'configure' });
-        }
-        else {
-            actions.push({ label: '$(edit) Edit profile', action: 'edit' }, { label: '$(trash) Delete profile', action: 'delete' });
-        }
-        const action = await vscode.window.showQuickPick(actions, {
-            placeHolder: `Manage ${selected.profile.name}`,
-            title: 'DevMate: Manage model profile'
-        });
-        if (!action) {
             return;
         }
-        if (action.action === 'select') {
-            await this.extensionContext.globalState.update(llmProfiles_1.ACTIVE_LLM_PROFILE_STORAGE_KEY, selected.profile.id);
-            await this.postLlmProfileState();
-            await this.promptForBuiltInNemotronKey();
-            return;
-        }
-        if (action.action === 'edit' || action.action === 'configure') {
-            await this.showLlmProfileForm(selected.profile);
-            return;
-        }
-        await this.deleteLlmProfile(selected.profile);
-    }
-    async deleteLlmProfile(profile) {
         if ((0, llmProfiles_1.isBuiltInLlmProfile)(profile)) {
-            this.postStatus('The built-in Nemotron profile cannot be deleted.', 'warning');
-            return;
-        }
-        const confirmation = await vscode.window.showWarningMessage(`Delete the model profile "${profile.name}"?`, { modal: true }, 'Delete');
-        if (confirmation !== 'Delete') {
+            this.postMessage({
+                command: 'llmProfileFormError',
+                message: 'The built-in Nemotron profile cannot be deleted.'
+            });
             return;
         }
         const profiles = this.getLlmProfiles();
         const remainingProfiles = this.getStoredLlmProfiles().filter((candidate) => candidate.id !== profile.id);
+        const remainingReasoningPreferences = { ...this.getReasoningEffortPreferences() };
+        delete remainingReasoningPreferences[profile.id];
         try {
             await this.extensionContext.globalState.update(llmProfiles_1.LLM_PROFILES_STORAGE_KEY, remainingProfiles);
+            await this.extensionContext.globalState.update(llmProfiles_1.LLM_REASONING_EFFORT_STORAGE_KEY, remainingReasoningPreferences);
             await this.extensionContext.secrets.delete((0, llmProfiles_1.secretKeyForProfile)(profile.id));
             const activeProfile = this.getActiveLlmProfile(profiles);
             if (activeProfile?.id === profile.id) {
@@ -1305,10 +1306,14 @@ class DevMateChatViewProvider {
             }
         }
         catch {
-            this.postStatus('Could not delete the model profile.', 'error');
+            this.postMessage({
+                command: 'llmProfileFormError',
+                message: 'Could not delete the model profile.'
+            });
             return;
         }
         await this.postLlmProfileState();
+        this.postMessage({ command: 'closeLlmProfileForm' });
         this.postStatus(`${profile.name} deleted.`);
     }
     async postLlmProfileState() {
@@ -1318,6 +1323,12 @@ class DevMateChatViewProvider {
             && this.extensionContext.globalState.get(llmProfiles_1.ACTIVE_LLM_PROFILE_STORAGE_KEY) !== activeProfile.id) {
             await this.extensionContext.globalState.update(llmProfiles_1.ACTIVE_LLM_PROFILE_STORAGE_KEY, activeProfile.id);
         }
+        const reasoningOptions = activeProfile
+            ? (0, llmProfiles_1.reasoningEffortOptionsForProfile)(activeProfile)
+            : ['auto'];
+        const reasoningEffort = activeProfile
+            ? (0, llmProfiles_1.reasoningEffortForProfile)(activeProfile, this.getReasoningEffortPreferences())
+            : 'auto';
         this.postMessage({
             command: 'llmProfilesUpdated',
             profileCount: profiles.length,
@@ -1327,7 +1338,12 @@ class DevMateChatViewProvider {
                     name: activeProfile.name,
                     provider: activeProfile.provider,
                     providerLabel: (0, llmProfiles_1.providerLabelForProfile)(activeProfile),
-                    model: activeProfile.model
+                    model: activeProfile.model,
+                    reasoningEffort,
+                    reasoningEffortOptions: reasoningOptions.map((value) => ({
+                        value,
+                        label: llmProfiles_1.REASONING_EFFORT_LABELS[value]
+                    }))
                 }
                 : undefined
         });
@@ -1554,7 +1570,7 @@ class DevMateChatViewProvider {
                 step: {
                     callId: call.id,
                     name: call.name,
-                    arguments: call.arguments,
+                    arguments: (0, agentTools_1.boundedAgentToolHistoryArguments)(call.name, call.arguments),
                     result: (0, agentTools_1.truncateAgentToolResult)(result),
                     isError: true
                 },
@@ -1727,6 +1743,18 @@ class DevMateChatViewProvider {
                 mutationCharacters: 0
             };
         }
+        if (call.name === 'get_diagnostics') {
+            return this.readWorkspaceDiagnostics(call, folder);
+        }
+        if (call.name === 'read_terminal_errors') {
+            const available = Math.min(call.arguments.maxResults, this.recentTerminalErrors.length);
+            return {
+                result: (0, errorContext_1.formatCapturedTerminalErrors)(this.recentTerminalErrors, call.arguments.maxResults),
+                resultSummary: `${available} recent terminal ${available === 1 ? 'failure' : 'failures'}`,
+                usedFiles: [],
+                mutationCharacters: 0
+            };
+        }
         if (call.name === 'install_dependencies') {
             return this.runDependencyInstallation(call, folder);
         }
@@ -1769,6 +1797,69 @@ class DevMateChatViewProvider {
             result,
             resultSummary: `${matches.length} ${matches.length === 1 ? 'match' : 'matches'}`,
             usedFiles: [...usedFiles],
+            mutationCharacters: 0
+        };
+    }
+    readWorkspaceDiagnostics(call, folder) {
+        const diagnostics = [];
+        for (const [uri, fileDiagnostics] of vscode.languages.getDiagnostics()) {
+            const diagnosticFolder = vscode.workspace.getWorkspaceFolder(uri);
+            if (!diagnosticFolder || diagnosticFolder.uri.toString() !== folder.uri.toString()) {
+                continue;
+            }
+            const relativePath = normalizeRelativeWorkspacePath(vscode.workspace.asRelativePath(uri, false));
+            if ((0, projectContext_1.shouldSkipProjectFile)(relativePath)) {
+                continue;
+            }
+            if (call.arguments.path
+                && !agentPathMatches(relativePath, call.arguments.path)
+                && !agentPathStartsWith(relativePath, call.arguments.path)) {
+                continue;
+            }
+            for (const diagnostic of fileDiagnostics) {
+                if (diagnostic.severity !== vscode.DiagnosticSeverity.Error
+                    && diagnostic.severity !== vscode.DiagnosticSeverity.Warning) {
+                    continue;
+                }
+                const rawCode = typeof diagnostic.code === 'object'
+                    ? diagnostic.code.value
+                    : diagnostic.code;
+                diagnostics.push({
+                    severity: diagnostic.severity,
+                    path: relativePath,
+                    line: diagnostic.range.start.line + 1,
+                    column: diagnostic.range.start.character + 1,
+                    source: diagnostic.source,
+                    code: rawCode === undefined ? undefined : String(rawCode),
+                    message: diagnostic.message
+                        .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+                        .replace(/\s+/g, ' ')
+                        .trim()
+                        .slice(0, 500)
+                });
+            }
+        }
+        diagnostics.sort((left, right) => left.severity - right.severity
+            || left.path.localeCompare(right.path)
+            || left.line - right.line
+            || left.column - right.column);
+        const selected = diagnostics.slice(0, call.arguments.maxResults);
+        const errors = selected.filter((item) => item.severity === vscode.DiagnosticSeverity.Error).length;
+        const warnings = selected.length - errors;
+        const result = selected.length === 0
+            ? `No VS Code errors or warnings were found${call.arguments.path ? ` under ${call.arguments.path}` : ' in the workspace'}.`
+            : [
+                `VS Code Problems (${selected.length}${diagnostics.length > selected.length ? ` of ${diagnostics.length}` : ''}):`,
+                ...selected.map((item) => {
+                    const severity = item.severity === vscode.DiagnosticSeverity.Error ? 'error' : 'warning';
+                    const owner = [item.source, item.code].filter(Boolean).join(' ');
+                    return `[${severity}] ${item.path}:${item.line}:${item.column}${owner ? ` (${owner})` : ''} ${item.message}`;
+                })
+            ].join('\n');
+        return {
+            result: (0, agentTools_1.truncateAgentToolResult)(result),
+            resultSummary: `${errors} ${errors === 1 ? 'error' : 'errors'}, ${warnings} ${warnings === 1 ? 'warning' : 'warnings'}`,
+            usedFiles: [],
             mutationCharacters: 0
         };
     }
@@ -2308,6 +2399,59 @@ class DevMateChatViewProvider {
         }
         return { command };
     }
+    captureWorkspaceTerminalExecution(event) {
+        if (event.terminal.name.startsWith('DevMate:')) {
+            return;
+        }
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        const cwd = event.execution.cwd;
+        if (!folder || !cwd) {
+            return;
+        }
+        const cwdWorkspace = vscode.workspace.getWorkspaceFolder(cwd);
+        if (!cwdWorkspace || cwdWorkspace.uri.toString() !== folder.uri.toString()) {
+            return;
+        }
+        const capture = {
+            command: (0, errorContext_1.sanitizeCapturedTerminalText)(event.execution.commandLine.value),
+            cwd: normalizeRelativeWorkspacePath(vscode.workspace.asRelativePath(cwd, false)),
+            terminalName: (0, errorContext_1.sanitizeCapturedTerminalText)(event.terminal.name),
+            output: ''
+        };
+        this.activeTerminalCaptures.set(event.execution, capture);
+        capture.reader = (async () => {
+            try {
+                for await (const data of event.execution.read()) {
+                    capture.output = (0, errorContext_1.sanitizeCapturedTerminalText)(capture.output + data);
+                }
+            }
+            catch {
+                // Terminal output is optional context. Failed capture must not affect the terminal.
+            }
+        })();
+    }
+    async finishWorkspaceTerminalExecution(event) {
+        const capture = this.activeTerminalCaptures.get(event.execution);
+        if (!capture) {
+            return;
+        }
+        this.activeTerminalCaptures.delete(event.execution);
+        if (capture.reader) {
+            await Promise.race([capture.reader, wait(250)]);
+        }
+        if (event.exitCode === undefined || event.exitCode === 0) {
+            return;
+        }
+        this.recentTerminalErrors.unshift({
+            command: (0, errorContext_1.sanitizeCapturedTerminalText)(event.execution.commandLine.value) || capture.command,
+            cwd: capture.cwd,
+            terminalName: capture.terminalName,
+            exitCode: event.exitCode,
+            output: (0, errorContext_1.sanitizeCapturedTerminalText)(capture.output),
+            capturedAt: Date.now()
+        });
+        this.recentTerminalErrors.splice(errorContext_1.MAX_CAPTURED_TERMINAL_ERRORS);
+    }
     waitForShellIntegration(terminal, signal) {
         if (terminal.shellIntegration) {
             return Promise.resolve(terminal.shellIntegration);
@@ -2373,7 +2517,13 @@ class DevMateChatViewProvider {
         });
     }
     enabledAgentTools(mode, fileMutationCalls, commandCalls, dependencyInstallCalls) {
-        const tools = ['list_files', 'read_file', 'search_code'];
+        const tools = [
+            'list_files',
+            'read_file',
+            'search_code',
+            'get_diagnostics',
+            'read_terminal_errors'
+        ];
         if (mode === 'ideas' || !vscode.workspace.isTrusted) {
             return tools;
         }
@@ -2389,7 +2539,7 @@ class DevMateChatViewProvider {
         return tools;
     }
     rejectedToolExecution(call, result) {
-        let historyArguments = call.arguments;
+        let historyArguments = (0, agentTools_1.boundedAgentToolHistoryArguments)(call.name, call.arguments);
         try {
             historyArguments = (0, agentTools_1.summarizedAgentToolArguments)((0, agentTools_1.parseAgentToolCall)(call));
         }
@@ -2661,6 +2811,7 @@ class DevMateChatViewProvider {
                     baseUrl: activeProfile.baseUrl,
                     maxTokens,
                     temperature,
+                    reasoningEffort: (0, llmProfiles_1.reasoningEffortForProfile)(activeProfile, this.getReasoningEffortPreferences()),
                     timeoutSeconds: modelTimeoutSeconds
                 },
                 enabledTools,
@@ -2731,6 +2882,36 @@ class DevMateChatViewProvider {
                 this.postMessage({ command: 'tokenUsageUpdated', usage: completedTokenUsage });
             }
             const toolCalls = result.data.toolCalls ?? [];
+            if (toolCalls.length === 0
+                && message.mode !== 'ideas'
+                && (0, agentTools_1.isDeferredAgentPlanAnswer)(result.data.answer)) {
+                const deferredMessage = 'The model described future work without performing it.';
+                if (forceFinalThisTurn && toolHistory.length > 0) {
+                    this.postStatus('Finalizing from completed project-tool work');
+                    finalData = {
+                        answer: (0, agentTools_1.summarizeAgentToolHistory)(toolHistory, deferredMessage),
+                        usedFiles: [...toolUsedFiles],
+                        changes: [],
+                        toolCalls: []
+                    };
+                    break;
+                }
+                if (!forceFinalThisTurn && !emptyResponseRecoveryAttempted) {
+                    emptyResponseRecoveryAttempted = true;
+                    disableThinking = true;
+                    this.postStatus('Model stopped before acting — retrying with project tools');
+                    await persistCheckpoint();
+                    continue;
+                }
+                if (!forceFinalThisTurn && toolHistory.length > 0) {
+                    forceFinalAnswer = true;
+                    this.postStatus('Model stopped before summarizing — requesting final answer without tools');
+                    await persistCheckpoint();
+                    continue;
+                }
+                this.postRequestFailure('The selected model described what it would do but did not call a project tool. Try another model or verify that this endpoint supports tool calling.');
+                return;
+            }
             if (toolCalls.length === 0) {
                 finalData = result.data;
                 break;
@@ -2772,7 +2953,9 @@ class DevMateChatViewProvider {
                 const isDependencyInstall = toolCall.name === 'install_dependencies';
                 const isReadOnly = toolCall.name === 'list_files'
                     || toolCall.name === 'read_file'
-                    || toolCall.name === 'search_code';
+                    || toolCall.name === 'search_code'
+                    || toolCall.name === 'get_diagnostics'
+                    || toolCall.name === 'read_terminal_errors';
                 const priorSignature = signature ? toolSignatures.get(signature) : undefined;
                 const repeatedAtCurrentRevision = priorSignature?.revision === workspaceRevision;
                 if (isReadOnly
@@ -2809,7 +2992,7 @@ class DevMateChatViewProvider {
                                     return (0, agentTools_1.summarizedAgentToolArguments)((0, agentTools_1.parseAgentToolCall)(toolCall));
                                 }
                                 catch {
-                                    return toolCall.arguments;
+                                    return (0, agentTools_1.boundedAgentToolHistoryArguments)(toolCall.name, toolCall.arguments);
                                 }
                             })(),
                             result: repeatedResult,
@@ -2891,16 +3074,22 @@ class DevMateChatViewProvider {
                 : 'Changes were not applied because the response was invalid.';
             this.postStatus(changeOutcome, 'error');
         }
+        const appliedResponseChanges = (0, changeSummary_1.parseAppliedFileChangeOutcome)(changeOutcome);
+        const fileChangeSummary = (0, changeSummary_1.collectFileChangeSummary)(toolHistory, appliedResponseChanges);
+        const changeNotice = changeOutcome.startsWith('Applied file changes:')
+            ? changeOutcome.split('\n\n').slice(1).join('\n\n')
+            : changeOutcome;
         const response = [
             formatAskResponse(finalData.answer, [...new Set([...finalData.usedFiles, ...toolUsedFiles])]),
-            changeOutcome
+            changeNotice
         ].filter(Boolean).join('\n\n');
-        this.sessionStore = (0, sessions_1.appendConversationSessionTurn)(this.sessionStore, question, response, Date.now());
+        this.sessionStore = (0, sessions_1.appendConversationSessionTurn)(this.sessionStore, question, response, Date.now(), fileChangeSummary);
         await this.persistSessionStore();
         await this.clearAgentCheckpoint();
         this.postMessage({
             command: 'assistantResponse',
-            response
+            response,
+            fileChanges: fileChangeSummary
         });
         this.postSessionState(false);
         this.postStatus('Ready');
@@ -3545,6 +3734,88 @@ class DevMateChatViewProvider {
 
     .message-body.markdown {
       white-space: normal;
+    }
+
+    .file-change-summary {
+      display: grid;
+      gap: 6px;
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid var(--border);
+    }
+
+    .file-change-summary-header {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 650;
+      letter-spacing: 0.02em;
+    }
+
+    .file-change-summary-counts {
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-weight: 700;
+    }
+
+    .file-change-summary-counts .changed {
+      color: var(--vscode-gitDecoration-addedResourceForeground, #2ea043);
+    }
+
+    .file-change-summary-counts .deleted {
+      margin-left: 5px;
+      color: var(--vscode-gitDecoration-deletedResourceForeground, #f85149);
+    }
+
+    .file-change-list {
+      display: grid;
+      gap: 3px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .file-change-row {
+      display: grid;
+      grid-template-columns: 14px 52px minmax(0, 1fr);
+      gap: 5px;
+      align-items: baseline;
+      min-width: 0;
+      color: var(--vscode-gitDecoration-addedResourceForeground, #2ea043);
+      font-size: 10px;
+    }
+
+    .file-change-row[data-kind="deleted"] {
+      color: var(--vscode-gitDecoration-deletedResourceForeground, #f85149);
+    }
+
+    .file-change-symbol,
+    .file-change-operation {
+      font-weight: 700;
+    }
+
+    .file-change-path {
+      min-width: 0;
+      padding: 0;
+      overflow: hidden;
+      border: 0;
+      color: inherit;
+      background: transparent;
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: inherit;
+      text-align: left;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    button.file-change-path {
+      cursor: pointer;
+    }
+
+    button.file-change-path:hover {
+      text-decoration: underline;
     }
 
     .markdown p,
@@ -4221,6 +4492,38 @@ class DevMateChatViewProvider {
       font-size: 9px;
     }
 
+    .reasoning-effort-control {
+      display: inline-flex;
+      align-items: center;
+      height: 26px;
+      padding-left: 6px;
+      border: 1px solid var(--vscode-input-border, var(--border));
+      border-radius: 6px;
+      color: var(--muted);
+      background: var(--vscode-input-background);
+    }
+
+    .reasoning-effort-icon {
+      font-size: 10px;
+      line-height: 1;
+    }
+
+    .reasoning-effort-selector {
+      max-width: 92px;
+      height: 24px;
+      padding: 0 5px 0 4px;
+      border: 0;
+      color: var(--vscode-input-foreground);
+      background: transparent;
+      font-size: 10px;
+      cursor: pointer;
+    }
+
+    .reasoning-effort-selector:focus-visible {
+      outline: 1px solid var(--focus);
+      outline-offset: -1px;
+    }
+
     .profile-dialog {
       width: min(520px, calc(100vw - 32px));
       max-height: calc(100vh - 32px);
@@ -4321,9 +4624,129 @@ class DevMateChatViewProvider {
     .profile-form-actions {
       display: flex;
       gap: 8px;
+      align-items: center;
       justify-content: flex-end;
       padding: 12px 18px 16px;
       border-top: 1px solid var(--border);
+    }
+
+    .model-picker-dialog {
+      width: min(500px, calc(100vw - 24px));
+    }
+
+    .model-picker-list {
+      display: grid;
+      gap: 7px;
+      max-height: min(440px, 58vh);
+      overflow-y: auto;
+    }
+
+    .model-picker-option {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 6px;
+      align-items: stretch;
+      padding: 5px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface-soft);
+    }
+
+    .model-picker-option[data-selected="true"] {
+      border-color: var(--focus);
+      background: color-mix(in srgb, var(--vscode-list-activeSelectionBackground) 36%, var(--surface-soft));
+    }
+
+    .model-picker-select {
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr) auto;
+      gap: 9px;
+      align-items: center;
+      min-width: 0;
+      padding: 6px;
+      border: 0;
+      border-radius: 5px;
+      color: var(--vscode-foreground);
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .model-picker-select:hover,
+    .model-picker-manage:hover {
+      background: var(--vscode-list-hoverBackground);
+    }
+
+    .model-picker-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 7px;
+      color: var(--vscode-badge-foreground);
+      background: var(--vscode-badge-background);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .model-picker-copy {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .model-picker-name,
+    .model-picker-meta,
+    .model-picker-url {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .model-picker-name {
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .model-picker-meta,
+    .model-picker-url {
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .model-picker-selected {
+      padding: 2px 6px;
+      border-radius: 999px;
+      color: var(--vscode-badge-foreground);
+      background: var(--vscode-badge-background);
+      font-size: 9px;
+      font-weight: 650;
+    }
+
+    .model-picker-manage {
+      align-self: center;
+      height: 30px;
+      padding: 0 8px;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      color: var(--muted);
+      background: transparent;
+      font-size: 10px;
+      cursor: pointer;
+    }
+
+    .profile-form-delete {
+      margin-right: auto;
+      color: var(--vscode-errorForeground, var(--vscode-editorError-foreground));
+      background: transparent;
+      border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-editorError-foreground));
+    }
+
+    .profile-form-delete[data-confirm="true"] {
+      color: var(--vscode-button-foreground);
+      background: var(--vscode-inputValidation-errorBorder, var(--vscode-editorError-foreground));
     }
 
     .session-list {
@@ -4678,6 +5101,19 @@ class DevMateChatViewProvider {
             <span id="llmProfileLabel" class="model-selector-label">Add model</span>
             <span class="model-selector-chevron" aria-hidden="true">▼</span>
           </button>
+          <label
+            id="reasoningEffortControl"
+            class="reasoning-effort-control"
+            title="Model intelligence"
+            hidden
+          >
+            <span class="reasoning-effort-icon" aria-hidden="true">✦</span>
+            <select
+              id="reasoningEffort"
+              class="reasoning-effort-selector"
+              aria-label="Model intelligence level"
+            ></select>
+          </label>
           <span class="composer-actions-spacer"></span>
           <div class="composer-submit">
             <button
@@ -4699,6 +5135,22 @@ class DevMateChatViewProvider {
       </div>
     </section>
   </main>
+
+  <dialog id="llmProfilePickerDialog" class="profile-dialog model-picker-dialog" aria-labelledby="llmProfilePickerTitle">
+    <section class="profile-form">
+      <header class="profile-form-header">
+        <h2 id="llmProfilePickerTitle">Choose model</h2>
+        <p>Select a model for this DevMate session or manage a saved profile.</p>
+      </header>
+      <div class="profile-form-body">
+        <div id="llmProfilePickerList" class="model-picker-list" role="listbox" aria-label="Available model profiles"></div>
+      </div>
+      <footer class="profile-form-actions">
+        <button id="cancelLlmProfilePicker" class="action-button secondary" type="button">Close</button>
+        <button id="addLlmProfile" class="action-button primary" type="button">Add model</button>
+      </footer>
+    </section>
+  </dialog>
 
   <dialog id="llmProfileDialog" class="profile-dialog" aria-labelledby="llmProfileFormTitle">
     <form id="llmProfileForm" class="profile-form" novalidate>
@@ -4762,6 +5214,7 @@ class DevMateChatViewProvider {
         <div id="llmProfileFormError" class="profile-form-error" role="alert" hidden></div>
       </div>
       <footer class="profile-form-actions">
+        <button id="deleteLlmProfile" class="action-button profile-form-delete" type="button" hidden>Delete</button>
         <button id="cancelLlmProfile" class="action-button secondary" type="button">Cancel</button>
         <button id="saveLlmProfile" class="action-button primary" type="submit">Save profile</button>
       </footer>
@@ -4944,6 +5397,8 @@ class DevMateChatViewProvider {
     const attachmentToggleEl = document.getElementById('toggleAttachments');
     const llmProfileSelectorEl = document.getElementById('llmProfileSelector');
     const llmProfileLabelEl = document.getElementById('llmProfileLabel');
+    const reasoningEffortControlEl = document.getElementById('reasoningEffortControl');
+    const reasoningEffortEl = document.getElementById('reasoningEffort');
     const tokenEstimateEl = document.getElementById('tokenEstimate');
     const continueAgentEl = document.getElementById('continueAgent');
     const askEl = document.getElementById('ask');
@@ -4952,6 +5407,8 @@ class DevMateChatViewProvider {
     const newSessionButtonEl = document.getElementById('newSessionButton');
     const sessionListEl = document.getElementById('sessionList');
     const newSessionOnHomeEl = document.getElementById('newSessionOnHome');
+    const llmProfilePickerDialogEl = document.getElementById('llmProfilePickerDialog');
+    const llmProfilePickerListEl = document.getElementById('llmProfilePickerList');
     const llmProfileDialogEl = document.getElementById('llmProfileDialog');
     const llmProfileFormEl = document.getElementById('llmProfileForm');
     const llmProfileFormTitleEl = document.getElementById('llmProfileFormTitle');
@@ -4966,6 +5423,7 @@ class DevMateChatViewProvider {
     const llmProfileApiKeyEl = document.getElementById('llmProfileApiKey');
     const llmProfileApiKeyHelpEl = document.getElementById('llmProfileApiKeyHelp');
     const llmProfileFormErrorEl = document.getElementById('llmProfileFormError');
+    const deleteLlmProfileEl = document.getElementById('deleteLlmProfile');
     const saveLlmProfileEl = document.getElementById('saveLlmProfile');
     const settingsButtonEl = document.getElementById('settingsButton');
     const backendStatusEl = document.getElementById('backendStatus');
@@ -5060,6 +5518,22 @@ class DevMateChatViewProvider {
       vscode.postMessage({ command: 'chooseLlmProfile' });
     });
 
+    reasoningEffortEl.addEventListener('change', () => {
+      vscode.postMessage({
+        command: 'setReasoningEffort',
+        effort: reasoningEffortEl.value
+      });
+    });
+
+    document.getElementById('cancelLlmProfilePicker').addEventListener('click', () => {
+      closeLlmProfilePicker();
+    });
+
+    document.getElementById('addLlmProfile').addEventListener('click', () => {
+      closeLlmProfilePicker();
+      vscode.postMessage({ command: 'addLlmProfile' });
+    });
+
     const openSettingsDialog = () => {
       permissionCreateFilesEl.value = state.permissionPolicy.createFiles;
       permissionUpdateFilesEl.value = state.permissionPolicy.updateFiles;
@@ -5142,6 +5616,21 @@ class DevMateChatViewProvider {
 
     document.getElementById('cancelLlmProfile').addEventListener('click', () => {
       closeLlmProfileForm();
+    });
+
+    deleteLlmProfileEl.addEventListener('click', () => {
+      const profileId = llmProfileIdEl.value;
+      if (!profileId || deleteLlmProfileEl.hidden || deleteLlmProfileEl.disabled) {
+        return;
+      }
+      if (deleteLlmProfileEl.dataset.confirm !== 'true') {
+        deleteLlmProfileEl.dataset.confirm = 'true';
+        deleteLlmProfileEl.textContent = 'Confirm delete';
+        return;
+      }
+      deleteLlmProfileEl.disabled = true;
+      deleteLlmProfileEl.textContent = 'Deleting…';
+      vscode.postMessage({ command: 'deleteLlmProfile', profileId });
     });
 
     llmProfileDialogEl.addEventListener('close', () => {
@@ -5232,10 +5721,14 @@ class DevMateChatViewProvider {
       }
 
       if (message.command === 'assistantResponse') {
+        const completion = {
+          response: message.response,
+          fileChanges: Array.isArray(message.fileChanges) ? message.fileChanges : []
+        };
         if (state.streamQueue || state.streamPumpTimer) {
-          state.pendingAssistantResponse = message.response;
+          state.pendingAssistantResponse = completion;
         } else {
-          completeAssistantResponse(message.response);
+          completeAssistantResponse(completion.response, completion.fileChanges);
         }
       }
 
@@ -5300,12 +5793,18 @@ class DevMateChatViewProvider {
         renderLlmProfile();
       }
 
+      if (message.command === 'showLlmProfilePicker') {
+        showLlmProfilePicker(message.profiles);
+      }
+
       if (message.command === 'showLlmProfileForm') {
         showLlmProfileForm(message.profile, message.hasApiKey);
       }
 
       if (message.command === 'llmProfileFormError') {
         setLlmProfileFormSaving(false);
+        deleteLlmProfileEl.dataset.confirm = 'false';
+        deleteLlmProfileEl.textContent = 'Delete';
         setLlmProfileFormError(message.message);
       }
 
@@ -5500,7 +5999,7 @@ class DevMateChatViewProvider {
       });
     }
 
-    function appendMessage(text, role, scroll = true) {
+    function appendMessage(text, role, scroll = true, fileChanges = []) {
       const item = document.createElement('article');
       item.className = 'message ' + role;
 
@@ -5518,10 +6017,93 @@ class DevMateChatViewProvider {
         body.textContent = text;
       }
       item.appendChild(body);
+      if (role === 'assistant') {
+        appendFileChangeSummary(item, fileChanges);
+      }
       messagesEl.appendChild(item);
       if (scroll) {
         messagesEl.scrollTop = messagesEl.scrollHeight;
       }
+    }
+
+    function appendFileChangeSummary(messageItem, fileChanges) {
+      const allowedKinds = new Set(['created', 'updated', 'deleted', 'renamed', 'moved']);
+      const changes = Array.isArray(fileChanges)
+        ? fileChanges.filter((change) => change
+          && allowedKinds.has(change.kind)
+          && typeof change.path === 'string'
+          && change.path).slice(0, 20)
+        : [];
+      if (changes.length === 0) {
+        return;
+      }
+
+      const deletedCount = changes.filter((change) => change.kind === 'deleted').length;
+      const changedCount = changes.length - deletedCount;
+      const summary = document.createElement('section');
+      summary.className = 'file-change-summary';
+      summary.setAttribute('aria-label', 'Files changed by DevMate');
+
+      const header = document.createElement('div');
+      header.className = 'file-change-summary-header';
+      const title = document.createElement('span');
+      title.textContent = changes.length === 1 ? '1 file changed' : changes.length + ' files changed';
+      header.appendChild(title);
+      const counts = document.createElement('span');
+      counts.className = 'file-change-summary-counts';
+      const changed = document.createElement('span');
+      changed.className = 'changed';
+      changed.textContent = '+' + changedCount;
+      counts.appendChild(changed);
+      if (deletedCount > 0) {
+        const deleted = document.createElement('span');
+        deleted.className = 'deleted';
+        deleted.textContent = '−' + deletedCount;
+        counts.appendChild(deleted);
+      }
+      header.appendChild(counts);
+      summary.appendChild(header);
+
+      const list = document.createElement('ul');
+      list.className = 'file-change-list';
+      const labels = {
+        created: 'Created',
+        updated: 'Updated',
+        deleted: 'Deleted',
+        renamed: 'Renamed',
+        moved: 'Moved'
+      };
+      changes.forEach((change) => {
+        const row = document.createElement('li');
+        row.className = 'file-change-row';
+        row.dataset.kind = change.kind;
+        const symbol = document.createElement('span');
+        symbol.className = 'file-change-symbol';
+        symbol.textContent = change.kind === 'deleted' ? '−' : '+';
+        row.appendChild(symbol);
+        const operation = document.createElement('span');
+        operation.className = 'file-change-operation';
+        operation.textContent = labels[change.kind];
+        row.appendChild(operation);
+        const pathText = (change.kind === 'renamed' || change.kind === 'moved')
+          && typeof change.previousPath === 'string'
+          ? change.previousPath + ' → ' + change.path
+          : change.path;
+        const pathElement = document.createElement(change.kind === 'deleted' ? 'span' : 'button');
+        pathElement.className = 'file-change-path';
+        pathElement.textContent = pathText;
+        pathElement.title = pathText;
+        if (change.kind !== 'deleted') {
+          pathElement.type = 'button';
+          pathElement.addEventListener('click', () => {
+            vscode.postMessage({ command: 'openWorkspaceFile', path: change.path });
+          });
+        }
+        row.appendChild(pathElement);
+        list.appendChild(row);
+      });
+      summary.appendChild(list);
+      messageItem.appendChild(summary);
     }
 
     function renderMarkdown(container, text) {
@@ -5786,7 +6368,7 @@ class DevMateChatViewProvider {
       messagesEl.replaceChildren();
       messages.forEach((message) => {
         if ((message.role === 'user' || message.role === 'assistant') && typeof message.text === 'string') {
-          appendMessage(message.text, message.role, false);
+          appendMessage(message.text, message.role, false, message.fileChanges);
         }
       });
       messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -6069,21 +6651,21 @@ class DevMateChatViewProvider {
       }
 
       if (state.pendingAssistantResponse !== undefined) {
-        const response = state.pendingAssistantResponse;
+        const completion = state.pendingAssistantResponse;
         state.pendingAssistantResponse = undefined;
         state.streamPumpTimer = setTimeout(() => {
           state.streamPumpTimer = undefined;
-          completeAssistantResponse(response);
+          completeAssistantResponse(completion.response, completion.fileChanges);
         }, 120);
       }
     }
 
     function compactProviderNarration(value) {
       const normalized = String(value || '')
-        .replace(/\x60{3}[\s\S]*?\x60{3}/g, ' Code omitted. ')
-        .replace(/^\s{0,3}(?:#{1,6}|[-*]|\d+[.)])\s+/gm, '')
-        .replace(/[\x60*_>#]+/g, '')
-        .replace(/\s+/g, ' ')
+        .replace(/\\x60{3}[\\s\\S]*?\\x60{3}/g, ' Code omitted. ')
+        .replace(/^\\s{0,3}(?:#{1,6}|[-*]|\\d+[.)])\\s+/gm, '')
+        .replace(/[\\x60*_>#]+/g, '')
+        .replace(/\\s+/g, ' ')
         .trim();
       if (normalized.length <= MAX_INTERMEDIATE_NARRATION_CHARACTERS) {
         return normalized;
@@ -6106,8 +6688,8 @@ class DevMateChatViewProvider {
       return sliced.slice(0, lastSpace > 80 ? lastSpace : sliced.length).trimEnd() + '…';
     }
 
-    function completeAssistantResponse(response) {
-      finishWorkingTurn(response);
+    function completeAssistantResponse(response, fileChanges = []) {
+      finishWorkingTurn(response, fileChanges);
       state.askPending = false;
       renderAskAvailability();
     }
@@ -6224,13 +6806,13 @@ class DevMateChatViewProvider {
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
-    function finishWorkingTurn(response) {
+    function finishWorkingTurn(response, fileChanges = []) {
       clearProviderStreamAnimation();
       clearWorkingTimer();
       document.getElementById('workingTurn')?.remove();
       const narration = document.getElementById('providerNarration');
       if (!narration) {
-        appendMessage(response, 'assistant');
+        appendMessage(response, 'assistant', true, fileChanges);
         return;
       }
       narration.removeAttribute('id');
@@ -6240,6 +6822,7 @@ class DevMateChatViewProvider {
       body.classList.add('markdown');
       body.textContent = '';
       renderMarkdown(body, response);
+      appendFileChangeSummary(narration, fileChanges);
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
@@ -6519,6 +7102,7 @@ class DevMateChatViewProvider {
       if (!state.activeProfile) {
         llmProfileLabelEl.textContent = 'Add model';
         llmProfileSelectorEl.title = 'Add a model profile';
+        reasoningEffortControlEl.hidden = true;
         renderAskAvailability();
         return;
       }
@@ -6527,6 +7111,22 @@ class DevMateChatViewProvider {
       llmProfileSelectorEl.title = state.activeProfile.providerLabel
         + ' · ' + state.activeProfile.model
         + (state.profileCount > 1 ? ' · Select another model' : ' · Manage model');
+      const reasoningOptions = Array.isArray(state.activeProfile.reasoningEffortOptions)
+        ? state.activeProfile.reasoningEffortOptions
+        : [];
+      reasoningEffortEl.replaceChildren();
+      reasoningOptions.forEach((item) => {
+        const option = document.createElement('option');
+        option.value = item.value;
+        option.textContent = item.label;
+        reasoningEffortEl.appendChild(option);
+      });
+      reasoningEffortEl.value = state.activeProfile.reasoningEffort || 'auto';
+      reasoningEffortControlEl.hidden = reasoningOptions.length <= 1;
+      const selectedLabel = reasoningOptions.find(
+        (item) => item.value === reasoningEffortEl.value
+      )?.label || 'Auto';
+      reasoningEffortControlEl.title = 'Model intelligence: ' + selectedLabel;
       renderAskAvailability();
     }
 
@@ -6537,6 +7137,7 @@ class DevMateChatViewProvider {
       });
       attachFilesEl.disabled = state.askPending;
       llmProfileSelectorEl.disabled = state.askPending;
+      reasoningEffortEl.disabled = state.askPending;
       continueAgentEl.hidden = !state.checkpointAvailable || state.askPending;
       continueAgentEl.disabled = state.askPending;
       sessionSelectorEl.disabled = state.askPending;
@@ -6573,7 +7174,86 @@ class DevMateChatViewProvider {
       restartBackendEl.disabled = state.askPending || !backend.canRestart;
     }
 
+    function showLlmProfilePicker(profiles) {
+      llmProfilePickerListEl.replaceChildren();
+      const availableProfiles = Array.isArray(profiles) ? profiles : [];
+      availableProfiles.forEach((profile) => {
+        const option = document.createElement('div');
+        option.className = 'model-picker-option';
+        option.dataset.selected = String(profile.selected === true);
+
+        const select = document.createElement('button');
+        select.type = 'button';
+        select.className = 'model-picker-select';
+        select.setAttribute('role', 'option');
+        select.setAttribute('aria-selected', String(profile.selected === true));
+
+        const icon = document.createElement('span');
+        icon.className = 'model-picker-icon';
+        icon.textContent = profile.builtIn ? '✦' : String(profile.name || '?').slice(0, 1);
+        select.appendChild(icon);
+
+        const copy = document.createElement('span');
+        copy.className = 'model-picker-copy';
+        const name = document.createElement('span');
+        name.className = 'model-picker-name';
+        name.textContent = profile.name;
+        const meta = document.createElement('span');
+        meta.className = 'model-picker-meta';
+        meta.textContent = [
+          profile.builtIn ? 'Built-in' : undefined,
+          profile.providerLabel,
+          profile.model,
+          profile.intelligence ? 'Intelligence: ' + profile.intelligence : undefined
+        ].filter(Boolean).join(' · ');
+        copy.append(name, meta);
+        if (profile.baseUrl) {
+          const url = document.createElement('span');
+          url.className = 'model-picker-url';
+          url.textContent = profile.baseUrl;
+          url.title = profile.baseUrl;
+          copy.appendChild(url);
+        }
+        select.appendChild(copy);
+
+        if (profile.selected) {
+          const selected = document.createElement('span');
+          selected.className = 'model-picker-selected';
+          selected.textContent = 'Selected';
+          select.appendChild(selected);
+        }
+        select.addEventListener('click', () => {
+          closeLlmProfilePicker();
+          vscode.postMessage({ command: 'selectLlmProfile', profileId: profile.id });
+        });
+
+        const manage = document.createElement('button');
+        manage.type = 'button';
+        manage.className = 'model-picker-manage';
+        manage.textContent = profile.builtIn ? 'Configure' : 'Edit';
+        manage.title = (profile.builtIn ? 'Configure ' : 'Edit ') + profile.name;
+        manage.addEventListener('click', () => {
+          closeLlmProfilePicker();
+          vscode.postMessage({ command: 'editLlmProfile', profileId: profile.id });
+        });
+
+        option.append(select, manage);
+        llmProfilePickerListEl.appendChild(option);
+      });
+      if (!llmProfilePickerDialogEl.open) {
+        llmProfilePickerDialogEl.showModal();
+      }
+      llmProfilePickerListEl.querySelector('[aria-selected="true"]')?.focus();
+    }
+
+    function closeLlmProfilePicker() {
+      if (llmProfilePickerDialogEl.open) {
+        llmProfilePickerDialogEl.close();
+      }
+    }
+
     function showLlmProfileForm(profile, hasApiKey) {
+      closeLlmProfilePicker();
       llmProfileFormEl.reset();
       const isBuiltIn = profile?.builtIn === true;
       llmProfileIdEl.value = profile?.id || '';
@@ -6603,6 +7283,10 @@ class DevMateChatViewProvider {
         : profile
           ? 'Save changes'
           : 'Add model';
+      deleteLlmProfileEl.hidden = !profile || isBuiltIn;
+      deleteLlmProfileEl.disabled = false;
+      deleteLlmProfileEl.dataset.confirm = 'false';
+      deleteLlmProfileEl.textContent = 'Delete';
       setLlmProfileFormError('');
       setLlmProfileFormSaving(false);
       renderLlmProfileProvider(false);
@@ -6614,6 +7298,9 @@ class DevMateChatViewProvider {
 
     function closeLlmProfileForm() {
       llmProfileApiKeyEl.value = '';
+      deleteLlmProfileEl.dataset.confirm = 'false';
+      deleteLlmProfileEl.textContent = 'Delete';
+      deleteLlmProfileEl.disabled = false;
       if (llmProfileDialogEl.open) {
         llmProfileDialogEl.close();
       }
@@ -6661,6 +7348,7 @@ class DevMateChatViewProvider {
 
     function setLlmProfileFormSaving(saving) {
       saveLlmProfileEl.disabled = saving;
+      deleteLlmProfileEl.disabled = saving;
       if (saving) {
         saveLlmProfileEl.textContent = 'Saving...';
       } else {
@@ -6782,6 +7470,18 @@ function describeAgentToolCall(call) {
         return {
             title: 'Reading file',
             detail: call.arguments.path
+        };
+    }
+    if (call.name === 'get_diagnostics') {
+        return {
+            title: 'Reading workspace diagnostics',
+            detail: call.arguments.path || 'All workspace Problems'
+        };
+    }
+    if (call.name === 'read_terminal_errors') {
+        return {
+            title: 'Reading recent terminal errors',
+            detail: `Up to ${call.arguments.maxResults} failed commands`
         };
     }
     if (call.name === 'create_file') {

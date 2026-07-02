@@ -1,12 +1,14 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MAX_AGENT_CONSECUTIVE_INSPECTIONS = exports.MAX_AGENT_TOOL_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = exports.MAX_AGENT_SEARCH_RESULTS = exports.MAX_AGENT_LIST_RESULTS = exports.MAX_AGENT_DEPENDENCY_INSTALLS = exports.MAX_AGENT_COMMAND_CALLS = exports.MAX_AGENT_FILE_MUTATIONS = exports.MAX_AGENT_TOOL_CALL_LIMIT = exports.MIN_AGENT_TOOL_CALL_LIMIT = exports.DEFAULT_AGENT_TOOL_CALL_LIMIT = void 0;
+exports.MAX_AGENT_CONSECUTIVE_INSPECTIONS = exports.MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = exports.MAX_AGENT_TERMINAL_ERROR_RESULTS = exports.MAX_AGENT_DIAGNOSTIC_RESULTS = exports.MAX_AGENT_SEARCH_RESULTS = exports.MAX_AGENT_LIST_RESULTS = exports.MAX_AGENT_DEPENDENCY_INSTALLS = exports.MAX_AGENT_COMMAND_CALLS = exports.MAX_AGENT_FILE_MUTATIONS = exports.MAX_AGENT_TOOL_CALL_LIMIT = exports.MIN_AGENT_TOOL_CALL_LIMIT = exports.DEFAULT_AGENT_TOOL_CALL_LIMIT = void 0;
 exports.boundedAgentToolCallLimit = boundedAgentToolCallLimit;
+exports.isDeferredAgentPlanAnswer = isDeferredAgentPlanAnswer;
 exports.compactAgentToolHistory = compactAgentToolHistory;
 exports.parseAgentToolCall = parseAgentToolCall;
 exports.normalizeAgentToolCallForWorkspace = normalizeAgentToolCallForWorkspace;
 exports.agentToolCallSignature = agentToolCallSignature;
 exports.summarizedAgentToolArguments = summarizedAgentToolArguments;
+exports.boundedAgentToolHistoryArguments = boundedAgentToolHistoryArguments;
 exports.consecutiveAgentInspectionCalls = consecutiveAgentInspectionCalls;
 exports.summarizeAgentToolHistory = summarizeAgentToolHistory;
 exports.normalizeAgentToolPath = normalizeAgentToolPath;
@@ -24,14 +26,32 @@ exports.MAX_AGENT_COMMAND_CALLS = 3;
 exports.MAX_AGENT_DEPENDENCY_INSTALLS = 1;
 exports.MAX_AGENT_LIST_RESULTS = 200;
 exports.MAX_AGENT_SEARCH_RESULTS = 50;
+exports.MAX_AGENT_DIAGNOSTIC_RESULTS = 100;
+exports.MAX_AGENT_TERMINAL_ERROR_RESULTS = 5;
 exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = 10_000;
 exports.MAX_AGENT_TOOL_HISTORY_CHARACTERS = 80_000;
+exports.MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS = 3_500;
 exports.MAX_AGENT_CONSECUTIVE_INSPECTIONS = 16;
 function boundedAgentToolCallLimit(value) {
     if (typeof value !== 'number' || !Number.isInteger(value)) {
         return exports.DEFAULT_AGENT_TOOL_CALL_LIMIT;
     }
     return Math.min(exports.MAX_AGENT_TOOL_CALL_LIMIT, Math.max(exports.MIN_AGENT_TOOL_CALL_LIMIT, value));
+}
+function isDeferredAgentPlanAnswer(value) {
+    if (typeof value !== 'string') {
+        return false;
+    }
+    const normalized = value
+        .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+        .replace(/^[\s#>*_-]+/, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (!normalized || normalized.length > 1_200) {
+        return false;
+    }
+    const action = '(?:start|begin|inspect|read|examine|review|create|implement|build|update|fix|reorganize|set up)';
+    return new RegExp(`^(?:(?:okay|sure)[,.]?\\s+)?(?:i(?:['’]ll|\\s+will)\\s+(?:first\\s+|now\\s+)?${action}\\b|let me\\s+(?:first\\s+)?${action}\\b)`, 'i').test(normalized);
 }
 function compactAgentToolHistory(steps) {
     const compacted = steps.map((step) => ({ ...step }));
@@ -88,6 +108,25 @@ function parseAgentToolCall(call) {
                 query,
                 path: normalizeAgentToolPath(optionalString(call.arguments.path)),
                 maxResults: boundedInteger(call.arguments.maxResults, 20, 1, exports.MAX_AGENT_SEARCH_RESULTS)
+            }
+        };
+    }
+    if (call.name === 'get_diagnostics') {
+        return {
+            id: call.id,
+            name: call.name,
+            arguments: {
+                path: normalizeAgentToolPath(optionalString(call.arguments.path)),
+                maxResults: boundedInteger(call.arguments.maxResults, 50, 1, exports.MAX_AGENT_DIAGNOSTIC_RESULTS)
+            }
+        };
+    }
+    if (call.name === 'read_terminal_errors') {
+        return {
+            id: call.id,
+            name: call.name,
+            arguments: {
+                maxResults: boundedInteger(call.arguments.maxResults, 3, 1, exports.MAX_AGENT_TERMINAL_ERROR_RESULTS)
             }
         };
     }
@@ -151,6 +190,7 @@ function normalizeAgentToolCallForWorkspace(call, workspace) {
                 'list_files',
                 'read_file',
                 'search_code',
+                'get_diagnostics',
                 'create_file',
                 'edit_file',
                 'delete_file',
@@ -167,6 +207,7 @@ function normalizeAgentToolCallForWorkspace(call, workspace) {
     }
     const allowRoot = call.name === 'list_files'
         || call.name === 'search_code'
+        || call.name === 'get_diagnostics'
         || call.name === 'run_command';
     const normalizedArguments = { ...call.arguments };
     for (const argumentName of argumentNames) {
@@ -188,21 +229,35 @@ function agentToolCallSignature(call) {
 }
 function summarizedAgentToolArguments(call) {
     if (call.name === 'create_file') {
-        return {
+        return boundedAgentToolHistoryArguments(call.name, {
             path: call.arguments.path,
             content: (0, fileChanges_1.agentHistoryOmissionMarker)('content', call.arguments.content.length, hashText(call.arguments.content))
-        };
+        });
     }
     if (call.name === 'edit_file') {
-        return {
+        const serializedReplacements = JSON.stringify(call.arguments.replacements);
+        return boundedAgentToolHistoryArguments(call.name, {
             path: call.arguments.path,
-            replacements: call.arguments.replacements.map((replacement) => ({
-                oldText: (0, fileChanges_1.agentHistoryOmissionMarker)('text', replacement.oldText.length, hashText(replacement.oldText)),
-                newText: (0, fileChanges_1.agentHistoryOmissionMarker)('text', replacement.newText.length, hashText(replacement.newText))
-            }))
-        };
+            replacementCount: call.arguments.replacements.length,
+            replacements: (0, fileChanges_1.agentHistoryOmissionMarker)('text', serializedReplacements.length, hashText(serializedReplacements))
+        });
     }
-    return call.arguments;
+    return boundedAgentToolHistoryArguments(call.name, call.arguments);
+}
+function boundedAgentToolHistoryArguments(name, argumentsValue) {
+    let serialized;
+    try {
+        serialized = JSON.stringify(argumentsValue);
+    }
+    catch {
+        serialized = '[unserializable tool arguments]';
+    }
+    if (serialized.length <= exports.MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS) {
+        return argumentsValue;
+    }
+    return {
+        summary: (0, fileChanges_1.agentHistoryOmissionMarker)('content', serialized.length, hashText(`${name}:${serialized}`))
+    };
 }
 function consecutiveAgentInspectionCalls(steps) {
     let inspections = 0;
@@ -219,7 +274,13 @@ function consecutiveAgentInspectionCalls(steps) {
         ].includes(step.name)) {
             break;
         }
-        if (['list_files', 'read_file', 'search_code'].includes(step.name)) {
+        if ([
+            'list_files',
+            'read_file',
+            'search_code',
+            'get_diagnostics',
+            'read_terminal_errors'
+        ].includes(step.name)) {
             inspections += 1;
         }
     }

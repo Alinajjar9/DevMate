@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.BUILT_IN_NEMOTRON_PROFILE = exports.BUILT_IN_NEMOTRON_PROFILE_ID = exports.PROVIDER_LABELS = exports.ACTIVE_LLM_PROFILE_STORAGE_KEY = exports.LLM_PROFILES_STORAGE_KEY = void 0;
+exports.BUILT_IN_NEMOTRON_PROFILE = exports.BUILT_IN_NEMOTRON_PROFILE_ID = exports.PROVIDER_LABELS = exports.REASONING_EFFORT_LABELS = exports.LLM_REASONING_EFFORT_STORAGE_KEY = exports.ACTIVE_LLM_PROFILE_STORAGE_KEY = exports.LLM_PROFILES_STORAGE_KEY = void 0;
 exports.normalizeProfileDraft = normalizeProfileDraft;
 exports.validateProfileDraft = validateProfileDraft;
 exports.parseStoredProfiles = parseStoredProfiles;
@@ -8,9 +8,20 @@ exports.profilesWithBuiltInNemotron = profilesWithBuiltInNemotron;
 exports.isBuiltInLlmProfile = isBuiltInLlmProfile;
 exports.isEquivalentNemotronProfile = isEquivalentNemotronProfile;
 exports.providerLabelForProfile = providerLabelForProfile;
+exports.reasoningEffortOptionsForProfile = reasoningEffortOptionsForProfile;
+exports.parseReasoningEffortPreferences = parseReasoningEffortPreferences;
+exports.reasoningEffortForProfile = reasoningEffortForProfile;
 exports.secretKeyForProfile = secretKeyForProfile;
 exports.LLM_PROFILES_STORAGE_KEY = 'devMate.llmProfiles.v1';
 exports.ACTIVE_LLM_PROFILE_STORAGE_KEY = 'devMate.activeLlmProfileId.v1';
+exports.LLM_REASONING_EFFORT_STORAGE_KEY = 'devMate.reasoningEffortByProfile.v1';
+exports.REASONING_EFFORT_LABELS = {
+    auto: 'Auto',
+    low: 'Low',
+    medium: 'Medium',
+    high: 'High',
+    xhigh: 'Extra high'
+};
 exports.PROVIDER_LABELS = {
     openai: 'OpenAI',
     ollama: 'Ollama'
@@ -25,6 +36,7 @@ exports.BUILT_IN_NEMOTRON_PROFILE = Object.freeze({
     builtIn: true
 });
 const supportedProviders = new Set(['openai', 'ollama']);
+const reasoningEfforts = new Set(['auto', 'low', 'medium', 'high', 'xhigh']);
 function normalizeProfileDraft(draft) {
     const baseUrl = draft.baseUrl?.trim().replace(/\/+$/, '');
     return {
@@ -128,8 +140,55 @@ function isEquivalentNemotronProfile(profile) {
 function providerLabelForProfile(profile) {
     return isBuiltInLlmProfile(profile) ? 'NVIDIA' : exports.PROVIDER_LABELS[profile.provider];
 }
+function reasoningEffortOptionsForProfile(profile) {
+    const model = profile.model.trim().toLocaleLowerCase();
+    if (/^(?:nvidia\/)?nemotron-3-ultra(?:-|$)/.test(model)) {
+        return ['auto', 'low', 'medium', 'high'];
+    }
+    if (!isOfficialOpenAiProfile(profile)) {
+        return ['auto'];
+    }
+    if (!/^gpt-5(?:[.-]|$)/.test(model) && !/^o(?:1|3|4)(?:-|$)/.test(model)) {
+        return ['auto'];
+    }
+    if (/(?:^|-)pro(?:-|$)/.test(model)) {
+        return ['auto', 'high'];
+    }
+    const version = /^gpt-5\.(\d+)(?:-|$)/.exec(model)?.[1];
+    return version && Number(version) >= 2
+        ? ['auto', 'low', 'medium', 'high', 'xhigh']
+        : ['auto', 'low', 'medium', 'high'];
+}
+function parseReasoningEffortPreferences(value) {
+    if (!isRecord(value)) {
+        return {};
+    }
+    const entries = Object.entries(value)
+        .filter(([id, effort]) => /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(id)
+        && reasoningEfforts.has(effort))
+        .slice(0, 100);
+    return Object.fromEntries(entries);
+}
+function reasoningEffortForProfile(profile, preferences) {
+    const preferred = preferences[profile.id] ?? 'auto';
+    return reasoningEffortOptionsForProfile(profile).includes(preferred) ? preferred : 'auto';
+}
 function secretKeyForProfile(profileId) {
     return `devMate.llmProfile.${profileId}.apiKey`;
+}
+function isOfficialOpenAiProfile(profile) {
+    if (profile.provider !== 'openai') {
+        return false;
+    }
+    if (!profile.baseUrl) {
+        return true;
+    }
+    try {
+        return new URL(profile.baseUrl).hostname.toLocaleLowerCase() === 'api.openai.com';
+    }
+    catch {
+        return false;
+    }
 }
 function isRecord(value) {
     return typeof value === 'object' && value !== null;

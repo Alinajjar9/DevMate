@@ -20,8 +20,11 @@ export const MAX_AGENT_COMMAND_CALLS = 3;
 export const MAX_AGENT_DEPENDENCY_INSTALLS = 1;
 export const MAX_AGENT_LIST_RESULTS = 200;
 export const MAX_AGENT_SEARCH_RESULTS = 50;
+export const MAX_AGENT_DIAGNOSTIC_RESULTS = 100;
+export const MAX_AGENT_TERMINAL_ERROR_RESULTS = 5;
 export const MAX_AGENT_TOOL_RESULT_CHARACTERS = 10_000;
 export const MAX_AGENT_TOOL_HISTORY_CHARACTERS = 80_000;
+export const MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS = 3_500;
 export const MAX_AGENT_CONSECUTIVE_INSPECTIONS = 16;
 
 export function boundedAgentToolCallLimit(value: unknown): number {
@@ -29,6 +32,25 @@ export function boundedAgentToolCallLimit(value: unknown): number {
     return DEFAULT_AGENT_TOOL_CALL_LIMIT;
   }
   return Math.min(MAX_AGENT_TOOL_CALL_LIMIT, Math.max(MIN_AGENT_TOOL_CALL_LIMIT, value));
+}
+
+export function isDeferredAgentPlanAnswer(value: unknown): boolean {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  const normalized = value
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/^[\s#>*_-]+/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized || normalized.length > 1_200) {
+    return false;
+  }
+  const action = '(?:start|begin|inspect|read|examine|review|create|implement|build|update|fix|reorganize|set up)';
+  return new RegExp(
+    `^(?:(?:okay|sure)[,.]?\\s+)?(?:i(?:['’]ll|\\s+will)\\s+(?:first\\s+|now\\s+)?${action}\\b|let me\\s+(?:first\\s+)?${action}\\b)`,
+    'i'
+  ).test(normalized);
 }
 
 export function compactAgentToolHistory<
@@ -52,6 +74,8 @@ export type AgentToolName =
   | 'list_files'
   | 'read_file'
   | 'search_code'
+  | 'get_diagnostics'
+  | 'read_terminal_errors'
   | 'create_file'
   | 'edit_file'
   | 'delete_file'
@@ -88,6 +112,15 @@ export type SearchCodeToolArguments = {
   maxResults: number;
 };
 
+export type GetDiagnosticsToolArguments = {
+  path: string;
+  maxResults: number;
+};
+
+export type ReadTerminalErrorsToolArguments = {
+  maxResults: number;
+};
+
 export type CreateFileToolArguments = {
   path: string;
   content: string;
@@ -113,6 +146,8 @@ export type ParsedAgentToolCall =
   | { id: string; name: 'list_files'; arguments: ListFilesToolArguments }
   | { id: string; name: 'read_file'; arguments: ReadFileToolArguments }
   | { id: string; name: 'search_code'; arguments: SearchCodeToolArguments }
+  | { id: string; name: 'get_diagnostics'; arguments: GetDiagnosticsToolArguments }
+  | { id: string; name: 'read_terminal_errors'; arguments: ReadTerminalErrorsToolArguments }
   | { id: string; name: 'create_file'; arguments: CreateFileToolArguments }
   | { id: string; name: 'edit_file'; arguments: EditFileToolArguments }
   | { id: string; name: 'delete_file'; arguments: DeleteFileToolArguments }
@@ -174,6 +209,37 @@ export function parseAgentToolCall(call: AgentToolCall): ParsedAgentToolCall {
           20,
           1,
           MAX_AGENT_SEARCH_RESULTS
+        )
+      }
+    };
+  }
+
+  if (call.name === 'get_diagnostics') {
+    return {
+      id: call.id,
+      name: call.name,
+      arguments: {
+        path: normalizeAgentToolPath(optionalString(call.arguments.path)),
+        maxResults: boundedInteger(
+          call.arguments.maxResults,
+          50,
+          1,
+          MAX_AGENT_DIAGNOSTIC_RESULTS
+        )
+      }
+    };
+  }
+
+  if (call.name === 'read_terminal_errors') {
+    return {
+      id: call.id,
+      name: call.name,
+      arguments: {
+        maxResults: boundedInteger(
+          call.arguments.maxResults,
+          3,
+          1,
+          MAX_AGENT_TERMINAL_ERROR_RESULTS
         )
       }
     };
@@ -251,6 +317,7 @@ export function normalizeAgentToolCallForWorkspace(
         'list_files',
         'read_file',
         'search_code',
+        'get_diagnostics',
         'create_file',
         'edit_file',
         'delete_file',
@@ -267,6 +334,7 @@ export function normalizeAgentToolCallForWorkspace(
   }
   const allowRoot = call.name === 'list_files'
     || call.name === 'search_code'
+    || call.name === 'get_diagnostics'
     || call.name === 'run_command';
   const normalizedArguments = { ...call.arguments };
   for (const argumentName of argumentNames) {
@@ -296,33 +364,50 @@ export function summarizedAgentToolArguments(
   call: ParsedAgentToolCall
 ): Record<string, unknown> {
   if (call.name === 'create_file') {
-    return {
+    return boundedAgentToolHistoryArguments(call.name, {
       path: call.arguments.path,
       content: agentHistoryOmissionMarker(
         'content',
         call.arguments.content.length,
         hashText(call.arguments.content)
       )
-    };
+    });
   }
   if (call.name === 'edit_file') {
-    return {
+    const serializedReplacements = JSON.stringify(call.arguments.replacements);
+    return boundedAgentToolHistoryArguments(call.name, {
       path: call.arguments.path,
-      replacements: call.arguments.replacements.map((replacement) => ({
-        oldText: agentHistoryOmissionMarker(
-          'text',
-          replacement.oldText.length,
-          hashText(replacement.oldText)
-        ),
-        newText: agentHistoryOmissionMarker(
-          'text',
-          replacement.newText.length,
-          hashText(replacement.newText)
-        )
-      }))
-    };
+      replacementCount: call.arguments.replacements.length,
+      replacements: agentHistoryOmissionMarker(
+        'text',
+        serializedReplacements.length,
+        hashText(serializedReplacements)
+      )
+    });
   }
-  return call.arguments;
+  return boundedAgentToolHistoryArguments(call.name, call.arguments);
+}
+
+export function boundedAgentToolHistoryArguments(
+  name: string,
+  argumentsValue: Record<string, unknown>
+): Record<string, unknown> {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(argumentsValue);
+  } catch {
+    serialized = '[unserializable tool arguments]';
+  }
+  if (serialized.length <= MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS) {
+    return argumentsValue;
+  }
+  return {
+    summary: agentHistoryOmissionMarker(
+      'content',
+      serialized.length,
+      hashText(`${name}:${serialized}`)
+    )
+  };
 }
 
 export function consecutiveAgentInspectionCalls(
@@ -342,7 +427,13 @@ export function consecutiveAgentInspectionCalls(
     ].includes(step.name)) {
       break;
     }
-    if (['list_files', 'read_file', 'search_code'].includes(step.name)) {
+    if ([
+      'list_files',
+      'read_file',
+      'search_code',
+      'get_diagnostics',
+      'read_terminal_errors'
+    ].includes(step.name)) {
       inspections += 1;
     }
   }

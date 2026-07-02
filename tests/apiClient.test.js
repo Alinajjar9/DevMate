@@ -138,6 +138,26 @@ test('marks an older backend stream endpoint as unsupported for fallback', async
   });
 });
 
+test('surfaces safe FastAPI validation details from the streaming endpoint', async () => {
+  await withServer((_request, response) => {
+    sendJson(response, 422, {
+      detail: [{
+        type: 'value_error',
+        loc: ['body', 'toolHistory', 3, 'arguments'],
+        msg: 'Value error, tool arguments are too large',
+        input: { secret: 'must-not-be-shown' }
+      }]
+    });
+  }, async (backendUrl) => {
+    const streamed = await askStream(backendUrl, askRequest(), undefined, 10_000);
+    assert.equal(streamed.result.status, 'error');
+    assert.equal(streamed.result.statusCode, 422);
+    assert.match(streamed.result.message, /toolHistory\.3\.arguments/);
+    assert.match(streamed.result.message, /tool arguments are too large/);
+    assert.doesNotMatch(streamed.result.message, /must-not-be-shown/);
+  });
+});
+
 test('preserves streamed provider errors for the existing retry policy', async () => {
   await withServer((_request, response) => {
     response.writeHead(200, { 'Content-Type': 'application/x-ndjson' });

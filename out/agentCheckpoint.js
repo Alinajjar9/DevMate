@@ -8,6 +8,8 @@ const toolNames = new Set([
     'list_files',
     'read_file',
     'search_code',
+    'get_diagnostics',
+    'read_terminal_errors',
     'create_file',
     'edit_file',
     'delete_file',

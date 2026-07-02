@@ -9,6 +9,7 @@ import httpx
 
 
 ProviderName = Literal["openai", "ollama"]
+ReasoningEffort = Literal["auto", "low", "medium", "high", "xhigh"]
 MessageRole = Literal["system", "user", "assistant", "tool"]
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
@@ -85,6 +86,7 @@ class ChatCompletionRequest:
     messages: tuple[ChatMessage, ...]
     max_tokens: int
     temperature: float
+    reasoning_effort: ReasoningEffort = "auto"
     timeout_seconds: float | None = None
     tools: tuple[ChatToolDefinition, ...] = ()
     force_final_answer: bool = False
@@ -141,14 +143,30 @@ def _provider_request_parts(
         ]
         payload["tool_choice"] = "auto"
     if request.model.casefold().startswith("nvidia/nemotron-3-"):
-        thinking_enabled = not request.force_final_answer and not request.disable_thinking
+        thinking_enabled = (
+            not request.force_final_answer
+            and not request.disable_thinking
+        )
         payload["chat_template_kwargs"] = {
             "enable_thinking": thinking_enabled,
             "force_nonempty_content": True,
         }
         if thinking_enabled:
-            payload["reasoning_budget"] = _nemotron_reasoning_budget(request.max_tokens)
-    if request.provider == "openai" and request.base_url is None:
+            if request.reasoning_effort == "medium":
+                payload["chat_template_kwargs"]["medium_effort"] = True
+            elif request.reasoning_effort == "high":
+                pass
+            else:
+                payload["reasoning_budget"] = _nemotron_reasoning_budget(
+                    request.max_tokens,
+                    request.reasoning_effort,
+                )
+    elif (
+        request.reasoning_effort != "auto"
+        and _supports_openai_reasoning_effort(request)
+    ):
+        payload["reasoning_effort"] = request.reasoning_effort
+    if _is_official_openai_endpoint(request):
         payload["max_completion_tokens"] = request.max_tokens
     else:
         payload["max_tokens"] = request.max_tokens
@@ -414,8 +432,43 @@ def _serialize_message(message: ChatMessage) -> dict[str, object]:
     return serialized
 
 
-def _nemotron_reasoning_budget(max_tokens: int) -> int:
-    return max(64, min(8_192, max_tokens // 2))
+def _nemotron_reasoning_budget(
+    max_tokens: int,
+    effort: ReasoningEffort = "auto",
+) -> int:
+    divisor = 4 if effort == "low" else 2
+    return max(64, min(max_tokens - 64, max_tokens // divisor))
+
+
+def _is_official_openai_endpoint(request: ChatCompletionRequest) -> bool:
+    if request.provider != "openai":
+        return False
+    if request.base_url is None:
+        return True
+    try:
+        return urlsplit(request.base_url).hostname == "api.openai.com"
+    except ValueError:
+        return False
+
+
+def _supports_openai_reasoning_effort(request: ChatCompletionRequest) -> bool:
+    if not _is_official_openai_endpoint(request):
+        return False
+    model = request.model.casefold()
+    is_reasoning_model = (
+        model == "gpt-5"
+        or model.startswith(("gpt-5-", "gpt-5."))
+        or model.startswith(("o1-", "o3-", "o4-"))
+        or model in {"o1", "o3", "o4"}
+    )
+    if not is_reasoning_model:
+        return False
+    if "-pro" in model:
+        return request.reasoning_effort == "high"
+    if request.reasoning_effort != "xhigh":
+        return True
+    version = model.removeprefix("gpt-5.").split("-", 1)[0]
+    return version.isdigit() and int(version) >= 2
 
 
 def create_chat_completions_url(

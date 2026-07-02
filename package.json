@@ -106,7 +106,7 @@
   "scripts": {
     "compile": "tsc -p ./ --listEmittedFiles",
     "check": "tsc -p ./ --noEmit",
-    "test": "npm run compile && node --test --test-isolation=none tests/agentCheckpoint.test.js tests/agentTools.test.js tests/apiClient.test.js tests/backendManager.test.js tests/commandTools.test.js tests/context.test.js tests/conversation.test.js tests/dependencyTools.test.js tests/fileChanges.test.js tests/fileTools.test.js tests/llmProfiles.test.js tests/permissions.test.js tests/projectContext.test.js tests/projectIndex.test.js tests/pythonEnvironment.test.js tests/retryPolicy.test.js tests/sessions.test.js tests/webviewScript.test.js",
+    "test": "npm run compile && node --test --test-isolation=none tests/agentCheckpoint.test.js tests/agentTools.test.js tests/apiClient.test.js tests/backendManager.test.js tests/changeSummary.test.js tests/commandTools.test.js tests/context.test.js tests/conversation.test.js tests/dependencyTools.test.js tests/errorContext.test.js tests/fileChanges.test.js tests/fileTools.test.js tests/llmProfiles.test.js tests/permissions.test.js tests/projectContext.test.js tests/projectIndex.test.js tests/pythonEnvironment.test.js tests/retryPolicy.test.js tests/sessions.test.js tests/webviewScript.test.js",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile"
   },

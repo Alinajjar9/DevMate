@@ -16,6 +16,7 @@ exports.activeConversationSession = activeConversationSession;
 exports.activeSessionModelHistory = activeSessionModelHistory;
 exports.sessionBelongsToWorkspace = sessionBelongsToWorkspace;
 exports.sessionTitleFromQuestion = sessionTitleFromQuestion;
+const changeSummary_1 = require("./changeSummary");
 const conversation_1 = require("./conversation");
 exports.CONVERSATION_SESSIONS_STORAGE_KEY = 'devMate.conversationSessions.v2';
 exports.LEGACY_CONVERSATION_SESSIONS_STORAGE_KEY = 'devMate.conversationSessions.v1';
@@ -105,8 +106,8 @@ function deleteConversationSession(store, id) {
         sessions: remaining
     };
 }
-function appendConversationSessionTurn(store, user, assistant, now) {
-    const turn = normalizeTurn({ user, assistant });
+function appendConversationSessionTurn(store, user, assistant, now, fileChanges = []) {
+    const turn = normalizeTurn({ user, assistant, fileChanges });
     if (!turn || !turn.assistant || !activeConversationSession(store)) {
         return store;
     }
@@ -154,7 +155,10 @@ function activeConversationSession(store) {
     return store.sessions.find((session) => session.id === store.activeSessionId);
 }
 function activeSessionModelHistory(store) {
-    return (0, conversation_1.boundConversationHistory)(activeConversationSession(store)?.turns ?? []);
+    return (0, conversation_1.boundConversationHistory)((activeConversationSession(store)?.turns ?? []).map((turn) => ({
+        user: turn.user,
+        assistant: turn.assistant
+    })));
 }
 function sessionBelongsToWorkspace(session, workspace) {
     return Boolean(workspace && session.workspaceId === workspace.id);
@@ -244,7 +248,7 @@ function boundSessionTurns(value, maximumCharacters = exports.MAX_SESSION_CHARAC
         if (!turn) {
             continue;
         }
-        const turnCharacters = turn.user.length + turn.assistant.length;
+        const turnCharacters = turn.user.length + turn.assistant.length + fileChangeCharacters(turn.fileChanges);
         if (characters + turnCharacters > maximumCharacters) {
             continue;
         }
@@ -259,7 +263,14 @@ function normalizeTurn(value) {
     }
     const user = normalizeUserMessage(value.user);
     const assistant = value.assistant.trim().slice(0, conversation_1.MAX_CONVERSATION_TURN_CHARACTERS);
-    return user ? { user, assistant } : undefined;
+    const fileChanges = (0, changeSummary_1.parseFileChangeSummary)(value.fileChanges);
+    return user
+        ? {
+            user,
+            assistant,
+            ...(fileChanges.length > 0 ? { fileChanges } : {})
+        }
+        : undefined;
 }
 function normalizeUserMessage(value) {
     return value.trim().slice(0, conversation_1.MAX_CONVERSATION_TURN_CHARACTERS);
@@ -282,7 +293,11 @@ function normalizeWorkspaceName(value) {
         || 'Unknown project';
 }
 function conversationCharacters(turns) {
-    return turns.reduce((total, turn) => total + turn.user.length + turn.assistant.length, 0);
+    return turns.reduce((total, turn) => total + turn.user.length + turn.assistant.length
+        + fileChangeCharacters(turn.fileChanges), 0);
+}
+function fileChangeCharacters(fileChanges) {
+    return fileChanges?.reduce((total, change) => total + change.path.length + (change.previousPath?.length ?? 0) + 16, 0) ?? 0;
 }
 function isSessionId(value) {
     return /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(value);

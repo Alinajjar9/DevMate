@@ -13,6 +13,15 @@ test('parses a bounded workspace and session agent checkpoint', () => {
   assert.deepEqual(parseAgentRunCheckpoint(checkpoint, now), checkpoint);
 });
 
+test('accepts diagnostics and terminal-error tool history', () => {
+  const checkpoint = validCheckpoint();
+  checkpoint.toolHistory = [
+    { ...toolStep(1), name: 'get_diagnostics', arguments: { path: '' } },
+    { ...toolStep(2), name: 'read_terminal_errors', arguments: { maxResults: 3 } }
+  ];
+  assert.deepEqual(parseAgentRunCheckpoint(checkpoint, now), checkpoint);
+});
+
 test('rejects stale, oversized, duplicate, and invalid agent checkpoints', () => {
   const cases = [
     { ...validCheckpoint(), updatedAt: now - MAX_AGENT_CHECKPOINT_AGE_MS - 1 },

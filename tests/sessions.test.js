@@ -93,6 +93,22 @@ test('persists an unanswered user message and completes it without duplication',
   assert.equal(activeSessionModelHistory(store).length, 1);
 });
 
+test('persists file-change summaries without replaying them to the model', () => {
+  let store = createConversationSessionStore('session', 1, workspaceA);
+  const fileChanges = [
+    { kind: 'updated', path: 'src/app.ts' },
+    { kind: 'deleted', path: 'src/old.ts' }
+  ];
+  store = appendConversationSessionTurn(store, 'Update the app', 'Done.', 2, fileChanges);
+
+  const restored = parseConversationSessionStore(store);
+  assert.deepEqual(activeConversationSession(restored).turns[0].fileChanges, fileChanges);
+  assert.deepEqual(activeSessionModelHistory(restored), [{
+    user: 'Update the app',
+    assistant: 'Done.'
+  }]);
+});
+
 test('bounds total persisted turn content across project sessions', () => {
   let store = createConversationSessionStore('session-0', 1, workspaceA);
   for (let sessionIndex = 0; sessionIndex < MAX_CONVERSATION_SESSIONS; sessionIndex += 1) {

@@ -30,6 +30,7 @@ export type LlmSettings = {
   baseUrl?: string;
   maxTokens: number;
   temperature: number;
+  reasoningEffort: ReasoningEffort;
   timeoutSeconds: number;
 };
 
@@ -96,3 +97,4 @@ export type FileChange = {
   content: string;
 };
 import type { AgentToolCall, AgentToolName } from '../agentTools';
+import type { ReasoningEffort } from '../llmProfiles';

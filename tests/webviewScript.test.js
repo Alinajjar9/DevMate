@@ -36,6 +36,30 @@ test('working card has visible motion with a reduced-motion fallback', () => {
   assert.match(source, /\.working-card\[data-state="working"\][\s\S]*?flex-shrink:\s*0/);
 });
 
+test('narration compaction preserves letters while normalizing whitespace', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'extension.ts'),
+    'utf8'
+  );
+  const marker = '<script nonce="' + '$' + '{nonce}">';
+  const start = source.indexOf(marker);
+  const end = source.indexOf('</script>', start);
+  const script = source.slice(start + marker.length, end);
+  const tick = String.fromCharCode(96);
+  const cookedScript = new Function('return ' + tick + script + tick + ';')();
+  const functionStart = cookedScript.indexOf('function compactProviderNarration(value)');
+  const functionEnd = cookedScript.indexOf('function completeAssistantResponse', functionStart);
+  const functionSource = cookedScript.slice(functionStart, functionEnd);
+  const compact = new Function(
+    'MAX_INTERMEDIATE_NARRATION_CHARACTERS',
+    functionSource + '; return compactProviderNarration;'
+  )(220);
+
+  const narration = 'Now I understand the issue. The styles reference CSS classes.';
+  assert.equal(compact(narration), narration);
+  assert.equal(compact('Multiple   spaces\nstay readable.'), 'Multiple spaces stay readable.');
+});
+
 test('settings expose the bounded tool-call limit', () => {
   const source = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'extension.ts'),
@@ -142,8 +166,8 @@ test('streamed output is visibly drained before the final answer replaces it', (
   assert.match(source, /author\.textContent = 'DevMate update'/);
   assert.match(source, /finalizeProviderNarration\(\);[\s\S]*?renderAgentToolActivity/);
   assert.doesNotMatch(source, /#workingTurn \.working-stream/);
-  assert.match(source, /state\.pendingAssistantResponse = message\.response/);
-  assert.match(source, /completeAssistantResponse\(response\)/);
+  assert.match(source, /state\.pendingAssistantResponse = completion/);
+  assert.match(source, /completeAssistantResponse\(completion\.response, completion\.fileChanges\)/);
   assert.match(source, /Live streaming unavailable — waiting for the completed response/);
 });
 
@@ -176,6 +200,36 @@ test('built-in Nemotron setup locks provider fields while keeping the API key co
   assert.match(source, /The built-in Nemotron profile cannot be deleted/);
 });
 
+test('model selection uses a DevMate-styled modal instead of a native Quick Pick', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'extension.ts'),
+    'utf8'
+  );
+  assert.match(source, /id="llmProfilePickerDialog"/);
+  assert.match(source, /class="profile-dialog model-picker-dialog"/);
+  assert.match(source, /command: 'showLlmProfilePicker'/);
+  assert.match(source, /command: 'selectLlmProfile'/);
+  assert.match(source, /command: 'editLlmProfile'/);
+  assert.match(source, /deleteLlmProfileEl\.dataset\.confirm/);
+  const selectorImplementation = source.slice(
+    source.indexOf('private chooseLlmProfile'),
+    source.indexOf('private async selectLlmProfile')
+  );
+  assert.doesNotMatch(selectorImplementation, /showQuickPick/);
+});
+
+test('recognized reasoning models expose a compact intelligence selector', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'extension.ts'),
+    'utf8'
+  );
+  assert.match(source, /id="reasoningEffort"/);
+  assert.match(source, /command: 'setReasoningEffort'/);
+  assert.match(source, /reasoningEffortOptionsForProfile/);
+  assert.match(source, /reasoningOptions\.length <= 1/);
+  assert.match(source, /reasoningEffortEl\.disabled = state\.askPending/);
+});
+
 test('working UI exposes tool usage and resumable agent checkpoints', () => {
   const source = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'extension.ts'),
@@ -188,6 +242,39 @@ test('working UI exposes tool usage and resumable agent checkpoints', () => {
   assert.match(source, /message\.command === 'agentCheckpointUpdated'/);
   assert.match(source, /retrying with reasoning disabled/);
   assert.match(source, /requesting final summary without tools/);
+});
+
+test('agent can inspect workspace diagnostics and captured terminal failures', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'extension.ts'),
+    'utf8'
+  );
+  const backendSource = fs.readFileSync(
+    path.join(__dirname, '..', 'backend', 'app', 'main.py'),
+    'utf8'
+  );
+  assert.match(source, /onDidStartTerminalShellExecution/);
+  assert.match(source, /vscode\.languages\.getDiagnostics\(\)/);
+  assert.match(source, /event\.terminal\.name\.startsWith\('DevMate:'\)/);
+  assert.match(source, /shouldSkipProjectFile\(relativePath\)/);
+  assert.match(source, /'get_diagnostics'/);
+  assert.match(source, /'read_terminal_errors'/);
+  assert.match(backendSource, /name="get_diagnostics"/);
+  assert.match(backendSource, /name="read_terminal_errors"/);
+});
+
+test('completed answers show persistent green and red file-change summaries', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'extension.ts'),
+    'utf8'
+  );
+  assert.match(source, /className = 'file-change-summary'/);
+  assert.match(source, /className = 'file-change-row'/);
+  assert.match(source, /gitDecoration-addedResourceForeground/);
+  assert.match(source, /gitDecoration-deletedResourceForeground/);
+  assert.match(source, /appendFileChangeSummary\(narration, fileChanges\)/);
+  assert.match(source, /fileChanges: turn\.fileChanges \?\? \[\]/);
+  assert.match(source, /collectFileChangeSummary\(toolHistory, appliedResponseChanges\)/);
 });
 
 test('project-bound sessions open from a dedicated landing screen', () => {
@@ -219,7 +306,7 @@ test('new user messages persist independently from failed assistant requests', (
   assert.match(source, /appendConversationSessionUserMessage\(/);
   assert.match(source, /isNewTurn:\s*true/);
   assert.match(source, /isNewTurn:\s*false/);
-  assert.match(source, /turn\.assistant\s*\?\s*\[\{ role: 'assistant'/);
+  assert.match(source, /turn\.assistant[\s\S]*?role: 'assistant'/);
 });
 
 test('exhausted agent runs finalize locally instead of looping checkpoints', () => {
@@ -230,4 +317,6 @@ test('exhausted agent runs finalize locally instead of looping checkpoints', () 
   assert.match(source, /consecutiveAgentInspectionCalls\(toolHistory\)/);
   assert.match(source, /Finalizing from completed project-tool work/);
   assert.match(source, /summarizeAgentToolHistory\(toolHistory, errorMessage\)/);
+  assert.match(source, /Model stopped before acting — retrying with project tools/);
+  assert.match(source, /described what it would do but did not call a project tool/);
 });

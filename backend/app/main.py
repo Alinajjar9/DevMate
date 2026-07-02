@@ -3,8 +3,9 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Annotated, Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
 from .code_changes import CodeChangeParseError, parse_code_change_response
@@ -17,6 +18,7 @@ from .providers import (
     OpenAICompatibleProvider,
     ProviderError,
     ProviderName,
+    ReasoningEffort,
 )
 from .text_tool_calls import (
     classify_text_tool_call_prefix,
@@ -46,6 +48,8 @@ AgentToolName = Literal[
     "list_files",
     "read_file",
     "search_code",
+    "get_diagnostics",
+    "read_terminal_errors",
     "create_file",
     "edit_file",
     "delete_file",
@@ -58,6 +62,8 @@ READ_ONLY_AGENT_TOOLS: tuple[AgentToolName, ...] = (
     "list_files",
     "read_file",
     "search_code",
+    "get_diagnostics",
+    "read_terminal_errors",
 )
 MUTATING_AGENT_TOOLS: tuple[AgentToolName, ...] = (
     "create_file",
@@ -80,6 +86,7 @@ class LlmSettings(BaseModel):
     baseUrl: str | None = Field(default=None, max_length=2_048)
     maxTokens: int = Field(ge=128, le=32_000)
     temperature: float = Field(ge=0, le=2)
+    reasoningEffort: ReasoningEffort = "auto"
     timeoutSeconds: float = Field(default=900, ge=10, le=1_800)
 
 
@@ -305,6 +312,46 @@ AGENT_TOOL_DEFINITIONS = (
         },
     ),
     ChatToolDefinition(
+        name="get_diagnostics",
+        description=(
+            "Read current VS Code Problems diagnostics for workspace files. "
+            "Returns errors and warnings with workspace-relative paths and positions."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Optional workspace-relative file or directory. Use an empty string for the entire workspace.",
+                },
+                "maxResults": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                },
+            },
+            "additionalProperties": False,
+        },
+    ),
+    ChatToolDefinition(
+        name="read_terminal_errors",
+        description=(
+            "Read recent failed commands captured from user terminals in the current workspace. "
+            "Only failures observed after DevMate activation through VS Code Terminal Shell Integration are available."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "maxResults": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 5,
+                },
+            },
+            "additionalProperties": False,
+        },
+    ),
+    ChatToolDefinition(
         name="create_file",
         description=(
             "Create one new eligible workspace text file, automatically creating missing parent directories. "
@@ -481,6 +528,27 @@ _chat_provider = OpenAICompatibleProvider()
 
 def get_chat_provider() -> ChatProvider:
     return _chat_provider
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error(
+    request: Request,
+    error: RequestValidationError,
+) -> JSONResponse:
+    issues = [
+        {
+            "loc": [part for part in item.get("loc", ()) if isinstance(part, (str, int))],
+            "msg": str(item.get("msg", "Invalid value"))[:240],
+            "type": str(item.get("type", "value_error"))[:120],
+        }
+        for item in error.errors()[:8]
+    ]
+    summary = "; ".join(
+        f"{'.'.join(str(part) for part in issue['loc'])}: {issue['msg']}"
+        for issue in issues[:4]
+    )
+    logger.warning("Rejected %s request validation: %s", request.url.path, summary)
+    return JSONResponse(status_code=422, content={"detail": issues})
 
 
 @app.get("/health", response_model=HealthResult)
@@ -670,6 +738,7 @@ def _build_completion_request(
         messages=messages,
         max_tokens=request.settings.maxTokens,
         temperature=request.settings.temperature,
+        reasoning_effort=request.settings.reasoningEffort,
         timeout_seconds=request.settings.timeoutSeconds,
         tools=tuple(
             definition

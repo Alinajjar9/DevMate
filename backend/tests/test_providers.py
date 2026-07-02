@@ -158,6 +158,72 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
             ChatCompletion(content="OpenAI answer"),
         )
 
+    async def test_sends_supported_openai_reasoning_effort(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            self.assertEqual(payload["reasoning_effort"], "xhigh")
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "Reasoned answer"}}]},
+            )
+
+        provider = OpenAICompatibleProvider(transport=httpx.MockTransport(handler))
+        completion = await provider.complete(self._request(
+            base_url=None,
+            model="gpt-5.4-nano",
+            reasoning_effort="xhigh",
+        ))
+
+        self.assertEqual(completion.content, "Reasoned answer")
+
+    async def test_does_not_send_reasoning_effort_to_unknown_compatible_endpoints(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            self.assertNotIn("reasoning_effort", payload)
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "Compatible answer"}}]},
+            )
+
+        provider = OpenAICompatibleProvider(transport=httpx.MockTransport(handler))
+        completion = await provider.complete(self._request(
+            model="vendor/reasoning-model",
+            reasoning_effort="high",
+        ))
+
+        self.assertEqual(completion.content, "Compatible answer")
+
+    async def test_maps_nemotron_intelligence_to_supported_controls(self) -> None:
+        expected = {
+            "low": ({"enable_thinking": True, "force_nonempty_content": True}, 300),
+            "medium": ({
+                "enable_thinking": True,
+                "force_nonempty_content": True,
+                "medium_effort": True,
+            }, None),
+            "high": ({"enable_thinking": True, "force_nonempty_content": True}, None),
+        }
+        for effort, (template_kwargs, budget) in expected.items():
+            async def handler(request: httpx.Request) -> httpx.Response:
+                payload = json.loads(request.content)
+                self.assertEqual(payload["chat_template_kwargs"], template_kwargs)
+                if budget is None:
+                    self.assertNotIn("reasoning_budget", payload)
+                else:
+                    self.assertEqual(payload["reasoning_budget"], budget)
+                return httpx.Response(
+                    200,
+                    json={"choices": [{"message": {"content": "Nemotron answer"}}]},
+                )
+
+            with self.subTest(effort=effort):
+                provider = OpenAICompatibleProvider(transport=httpx.MockTransport(handler))
+                completion = await provider.complete(self._request(
+                    model="nvidia/nemotron-3-ultra-550b-a55b",
+                    reasoning_effort=effort,
+                ))
+                self.assertEqual(completion.content, "Nemotron answer")
+
     async def test_uses_the_request_specific_provider_timeout(self) -> None:
         async def handler(request: httpx.Request) -> httpx.Response:
             self.assertEqual(request.extensions["timeout"]["read"], 1_200)
@@ -400,6 +466,7 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
         messages: tuple[ChatMessage, ...] | None = None,
         force_final_answer: bool = False,
         disable_thinking: bool = False,
+        reasoning_effort: str = "auto",
         timeout_seconds: float | None = None,
     ) -> ChatCompletionRequest:
         return ChatCompletionRequest(
@@ -413,6 +480,7 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
             ),
             max_tokens=1200,
             temperature=0.2,
+            reasoning_effort=reasoning_effort,
             timeout_seconds=timeout_seconds,
             tools=tools,
             force_final_answer=force_final_answer,

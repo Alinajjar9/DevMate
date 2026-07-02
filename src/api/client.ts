@@ -8,6 +8,7 @@ const HEALTH_TIMEOUT_MS = 2_000;
 export const DEFAULT_ASK_TIMEOUT_MS = 930_000;
 const PROVIDER_KEY_HEADER = 'X-DevMate-Provider-Key';
 const MAX_BACKEND_RESPONSE_BYTES = 4_000_000;
+const MAX_BACKEND_ERROR_RESPONSE_BYTES = 64_000;
 
 export type AskStreamEvent =
   | { type: 'delta'; text: string }
@@ -461,16 +462,40 @@ async function nodeHttpStreamRequest(
           return;
         }
         if (statusCode < 200 || statusCode >= 300) {
-          incomingResponse.resume();
-          finish({
-            result: {
-              status: 'error',
-              message: `The DevMate backend returned HTTP ${statusCode}.`,
-              statusCode,
-              errorKind: 'http'
-            },
-            unsupported: false
+          const chunks: Buffer[] = [];
+          let errorBytes = 0;
+          incomingResponse.on('data', (value: Buffer | string) => {
+            const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+            errorBytes += chunk.length;
+            if (errorBytes > MAX_BACKEND_ERROR_RESPONSE_BYTES) {
+              finish({
+                result: {
+                  status: 'error',
+                  message: `The DevMate backend returned HTTP ${statusCode} with an oversized error response.`,
+                  statusCode,
+                  errorKind: 'http'
+                },
+                unsupported: false
+              });
+              incomingResponse.destroy();
+              return;
+            }
+            chunks.push(chunk);
           });
+          incomingResponse.on('end', () => {
+            const payload = readNodeJson(incomingResponse, Buffer.concat(chunks));
+            finish({
+              result: {
+                status: 'error',
+                message: getHttpErrorMessage(statusCode, payload),
+                statusCode,
+                errorKind: 'http'
+              },
+              unsupported: false
+            });
+          });
+          incomingResponse.on('error', failTransport);
+          incomingResponse.on('aborted', failTransport);
           return;
         }
         const contentType = incomingResponse.headers['content-type'];
@@ -655,6 +680,26 @@ function getHttpErrorMessage(status: number, payload: unknown): string {
   }
   if (isRecord(payload) && typeof payload.detail === 'string') {
     return payload.detail;
+  }
+  if (status === 422 && isRecord(payload) && Array.isArray(payload.detail)) {
+    const fields = payload.detail
+      .slice(0, 4)
+      .map((item) => {
+        if (!isRecord(item) || !Array.isArray(item.loc) || typeof item.msg !== 'string') {
+          return undefined;
+        }
+        const location = item.loc
+          .filter((part) => part !== 'body')
+          .map((part) => String(part).replace(/[\u0000-\u001f\u007f]/g, ''))
+          .filter(Boolean)
+          .join('.');
+        const message = item.msg.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 240);
+        return `${location || 'request'}: ${message}`;
+      })
+      .filter((item): item is string => Boolean(item));
+    if (fields.length > 0) {
+      return `DevMate rejected an invalid request field: ${fields.join('; ')}`;
+    }
   }
 
   return `The DevMate backend returned HTTP ${status}.`;
