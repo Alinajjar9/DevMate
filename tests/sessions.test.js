@@ -6,6 +6,7 @@ const {
   activeSessionModelHistory,
   addConversationSession,
   appendConversationSessionTurn,
+  appendConversationSessionUserMessage,
   createConversationSessionStore,
   deleteConversationSession,
   MAX_CONVERSATION_SESSIONS,
@@ -60,6 +61,36 @@ test('auto-titles the first completed turn and bounds model history separately',
   assert.equal(sessionTitleFromQuestion(' '.repeat(10)), 'New session');
   assert.ok(sessionTitleFromQuestion('x'.repeat(200)).endsWith('…'));
   assert.ok(sessionTitleFromQuestion('x'.repeat(200)).length <= 80);
+});
+
+test('persists an unanswered user message and completes it without duplication', () => {
+  let store = createConversationSessionStore('session', 1, workspaceA);
+  store = appendConversationSessionUserMessage(store, '  Keep this after failure  ', 2);
+
+  assert.equal(activeConversationSession(store).title, 'Keep this after failure');
+  assert.deepEqual(activeConversationSession(store).turns, [{
+    user: 'Keep this after failure',
+    assistant: ''
+  }]);
+  assert.deepEqual(activeSessionModelHistory(store), []);
+
+  const restored = parseConversationSessionStore(store);
+  assert.deepEqual(activeConversationSession(restored).turns, [{
+    user: 'Keep this after failure',
+    assistant: ''
+  }]);
+
+  store = appendConversationSessionTurn(
+    restored,
+    'Keep this after failure',
+    'Completed after retry',
+    3
+  );
+  assert.deepEqual(activeConversationSession(store).turns, [{
+    user: 'Keep this after failure',
+    assistant: 'Completed after retry'
+  }]);
+  assert.equal(activeSessionModelHistory(store).length, 1);
 });
 
 test('bounds total persisted turn content across project sessions', () => {

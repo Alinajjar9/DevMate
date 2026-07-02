@@ -537,7 +537,7 @@ class DevMateChatViewProvider {
                 ? {
                     messages: activeSession.turns.flatMap((turn) => [
                         { role: 'user', text: turn.user },
-                        { role: 'assistant', text: turn.assistant }
+                        ...(turn.assistant ? [{ role: 'assistant', text: turn.assistant }] : [])
                     ])
                 }
                 : {})
@@ -2517,6 +2517,11 @@ class DevMateChatViewProvider {
         if (!activeSession || !(0, sessions_1.sessionBelongsToWorkspace)(activeSession, this.getConversationWorkspace())) {
             this.postRequestFailure('Choose a session for the currently open project before asking.', { level: 'warning' });
             return;
+        }
+        if (!resumedCheckpoint && message.isNewTurn !== false) {
+            this.sessionStore = (0, sessions_1.appendConversationSessionUserMessage)(this.sessionStore, question, Date.now());
+            await this.persistSessionStore();
+            this.postSessionState(false);
         }
         const activeProfile = this.getActiveLlmProfile();
         if (!activeProfile) {
@@ -5001,7 +5006,8 @@ class DevMateChatViewProvider {
         command: 'ask',
         mode: state.mode,
         question,
-        scope: state.scope
+        scope: state.scope,
+        isNewTurn: true
       };
       vscode.postMessage(state.lastRequest);
     });
@@ -5929,7 +5935,7 @@ class DevMateChatViewProvider {
         setStatus('Ready');
         startWorkingTurn();
         renderAskAvailability();
-        vscode.postMessage(state.lastRequest);
+        vscode.postMessage({ ...state.lastRequest, isNewTurn: false });
       });
       footer.appendChild(retry);
       card.appendChild(footer);

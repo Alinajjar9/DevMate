@@ -44,6 +44,7 @@ import {
   activeSessionModelHistory,
   addConversationSession,
   appendConversationSessionTurn,
+  appendConversationSessionUserMessage,
   createEmptyConversationSessionStore,
   deleteConversationSession,
   mergeConversationSessionStores,
@@ -240,7 +241,13 @@ class StartedDependencyInstallError extends Error {
 }
 
 type WebviewMessage =
-  | { command: 'ask'; mode: AssistantMode; question: string; scope: ScopeInfo }
+  | {
+    command: 'ask';
+    mode: AssistantMode;
+    question: string;
+    scope: ScopeInfo;
+    isNewTurn?: boolean;
+  }
   | { command: 'continueAgentRun' }
   | { command: 'cancelRequest' }
   | { command: 'setScope'; scope: ScopeKind }
@@ -843,7 +850,7 @@ class DevMateChatViewProvider implements
         ? {
           messages: activeSession.turns.flatMap((turn) => [
             { role: 'user', text: turn.user },
-            { role: 'assistant', text: turn.assistant }
+            ...(turn.assistant ? [{ role: 'assistant', text: turn.assistant }] : [])
           ])
         }
         : {})
@@ -3469,6 +3476,16 @@ class DevMateChatViewProvider implements
       return;
     }
 
+    if (!resumedCheckpoint && message.isNewTurn !== false) {
+      this.sessionStore = appendConversationSessionUserMessage(
+        this.sessionStore,
+        question,
+        Date.now()
+      );
+      await this.persistSessionStore();
+      this.postSessionState(false);
+    }
+
     const activeProfile = this.getActiveLlmProfile();
     if (!activeProfile) {
       this.postRequestFailure('Add a model profile before asking.', { level: 'warning' });
@@ -6052,7 +6069,8 @@ class DevMateChatViewProvider implements
         command: 'ask',
         mode: state.mode,
         question,
-        scope: state.scope
+        scope: state.scope,
+        isNewTurn: true
       };
       vscode.postMessage(state.lastRequest);
     });
@@ -6980,7 +6998,7 @@ class DevMateChatViewProvider implements
         setStatus('Ready');
         startWorkingTurn();
         renderAskAvailability();
-        vscode.postMessage(state.lastRequest);
+        vscode.postMessage({ ...state.lastRequest, isNewTurn: false });
       });
       footer.appendChild(retry);
       card.appendChild(footer);

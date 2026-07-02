@@ -11,6 +11,7 @@ exports.selectConversationSession = selectConversationSession;
 exports.renameConversationSession = renameConversationSession;
 exports.deleteConversationSession = deleteConversationSession;
 exports.appendConversationSessionTurn = appendConversationSessionTurn;
+exports.appendConversationSessionUserMessage = appendConversationSessionUserMessage;
 exports.activeConversationSession = activeConversationSession;
 exports.activeSessionModelHistory = activeSessionModelHistory;
 exports.sessionBelongsToWorkspace = sessionBelongsToWorkspace;
@@ -106,7 +107,29 @@ function deleteConversationSession(store, id) {
 }
 function appendConversationSessionTurn(store, user, assistant, now) {
     const turn = normalizeTurn({ user, assistant });
-    if (!turn || !activeConversationSession(store)) {
+    if (!turn || !turn.assistant || !activeConversationSession(store)) {
+        return store;
+    }
+    const sessions = boundStoreSessions(store.sessions.map((session) => {
+        if (session.id !== store.activeSessionId) {
+            return session;
+        }
+        const pendingTurn = session.turns.at(-1);
+        const turns = pendingTurn?.user === turn.user && !pendingTurn.assistant
+            ? [...session.turns.slice(0, -1), turn]
+            : [...session.turns, turn];
+        return {
+            ...session,
+            title: session.turns.length === 0 ? sessionTitleFromQuestion(turn.user) : session.title,
+            updatedAt: Math.max(session.updatedAt, now),
+            turns: boundSessionTurns(turns)
+        };
+    }).sort((left, right) => right.updatedAt - left.updatedAt));
+    return { ...store, sessions };
+}
+function appendConversationSessionUserMessage(store, user, now) {
+    const normalizedUser = normalizeUserMessage(user);
+    if (!normalizedUser || !activeConversationSession(store)) {
         return store;
     }
     const sessions = boundStoreSessions(store.sessions.map((session) => {
@@ -115,9 +138,14 @@ function appendConversationSessionTurn(store, user, assistant, now) {
         }
         return {
             ...session,
-            title: session.turns.length === 0 ? sessionTitleFromQuestion(turn.user) : session.title,
+            title: session.turns.length === 0
+                ? sessionTitleFromQuestion(normalizedUser)
+                : session.title,
             updatedAt: Math.max(session.updatedAt, now),
-            turns: boundSessionTurns([...session.turns, turn])
+            turns: boundSessionTurns([
+                ...session.turns,
+                { user: normalizedUser, assistant: '' }
+            ])
         };
     }).sort((left, right) => right.updatedAt - left.updatedAt));
     return { ...store, sessions };
@@ -229,9 +257,12 @@ function normalizeTurn(value) {
     if (!isRecord(value) || typeof value.user !== 'string' || typeof value.assistant !== 'string') {
         return undefined;
     }
-    const user = value.user.trim().slice(0, conversation_1.MAX_CONVERSATION_TURN_CHARACTERS);
+    const user = normalizeUserMessage(value.user);
     const assistant = value.assistant.trim().slice(0, conversation_1.MAX_CONVERSATION_TURN_CHARACTERS);
-    return user && assistant ? { user, assistant } : undefined;
+    return user ? { user, assistant } : undefined;
+}
+function normalizeUserMessage(value) {
+    return value.trim().slice(0, conversation_1.MAX_CONVERSATION_TURN_CHARACTERS);
 }
 function normalizeSessionTitle(value) {
     return value
