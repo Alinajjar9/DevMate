@@ -65,6 +65,21 @@ class DevMateApiTests(unittest.TestCase):
             },
         )
 
+    def test_stream_endpoint_emits_start_delta_and_validated_final_result(self) -> None:
+        with self.client.stream(
+            "POST",
+            "/ask/stream",
+            json=self._ask_payload(scope_type="project", items=[]),
+        ) as response:
+            events = [json.loads(line) for line in response.iter_lines() if line]
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"].split(";")[0], "application/x-ndjson")
+        self.assertEqual(events[0], {"type": "start"})
+        self.assertEqual(events[1], {"type": "delta", "text": "Mock provider answer"})
+        self.assertEqual(events[-1]["type"], "final")
+        self.assertEqual(events[-1]["result"]["data"]["answer"], "Mock provider answer")
+
     def test_ask_uses_selection_context(self) -> None:
         response = self.client.post(
             "/ask",

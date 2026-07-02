@@ -10,7 +10,7 @@ DevMate is a VS Code extension prototype for AI-assisted project help.
 - Shows where DevMate will focus
 - Local FastAPI backend with `/health` and `/ask`
 - Managed local-backend startup, health monitoring, logs, restart controls, and configurable external backend URLs
-- Real OpenAI-compatible Chat Completions requests
+- Streamed OpenAI-compatible responses with non-streaming backend fallback
 - Iterative agent tools for project inspection, exact file edits, and approved verification commands
 - Animated in-chat working state with real phases, elapsed time, selected model, and cancellation
 - Compact segmented mode controls and a top-right in-chat Settings dialog
@@ -38,6 +38,8 @@ Retrieval is deterministic and runs entirely in the extension host using BM25-st
 DevMate can ask the extension host to inspect and improve the open project before answering. Read-only tools support `list_files`, ranged `read_file`, and plain-text `search_code`. In trusted workspaces, Code and Debug additionally receive `create_file`, exact-replacement `edit_file`, `delete_file`, `rename_file`, `move_file`, approved `run_command` verification, and manifest-based `install_dependencies` tools. Tool activity appears as compact cards in the chat. The per-request tool limit defaults to 16 and is configurable from 4 through 32; older results are compacted first when a longer loop approaches the bounded context budget.
 
 Each request immediately creates a working card in the chat. It displays the selected model, elapsed time, actual lifecycle phases such as context collection and tool use, and a Cancel button. The active card remains pinned near the top of the chat viewport while tool and permission cards accumulate. Chat cards are non-shrinking flex items, so a long tool run scrolls normally instead of compressing and clipping the working card. Its deliberately restrained edge, sheen, indicator, and active-phase animations run on slower cycles and respect reduced-motion preferences. Routine progress no longer occupies the top status strip; that area is reserved for warnings and errors. The working card is removed when the final assistant message arrives, while completed tool activity remains visible.
+
+Provider text now appears progressively inside the working card through `/ask/stream`. Internal reasoning text is never exposed; DevMate shows only a generic reasoning phase until answer text or a tool call arrives. Final answers use a DOM-built Markdown renderer with headings, lists, inline code, highlighted fenced code, copy actions, HTTP links, and workspace-bound clickable file references. Raw model HTML is never injected into the webview.
 
 Warnings from scope selection, health checks, and other UI actions do not end an active request. Only explicit success, failure, or cancellation events release the pending state and re-enable Send. Mode, scope, attachment, and model selectors remain locked for the duration, preventing context changes or a second request from colliding with work still running in the extension host.
 
@@ -142,7 +144,7 @@ If the backend connection drops during a request, DevMate attempts local recover
 
 DevMate waits up to fifteen minutes for each model-provider call by default, and the extension automatically adds a 30-second transport buffer. Change **DevMate: Request Timeout Seconds** (`devMate.requestTimeoutSeconds`) in VS Code Settings to any value from 10 through 1800. The value is sent with every request and controls both sides, so changing it does not require a backend restart. `DEVMATE_PROVIDER_TIMEOUT_SECONDS` remains the backend fallback for older clients or requests that omit the setting.
 
-Long-running `/ask` calls use a bounded Node HTTP transport instead of the built-in `fetch` header deadline, so slow providers can use the full configured timeout rather than disconnecting after five minutes. Cancellation still destroys the active request immediately, responses are capped at 4,000,000 bytes, and genuine connection failures remain eligible for managed-backend recovery. After fifteen seconds without a provider response, the working card changes from **Generating answer** to an explicit slow-model waiting phase; project tools can begin only after the provider returns its first tool call.
+Long-running `/ask/stream` calls use a bounded Node HTTP transport instead of the built-in `fetch` header deadline, so slow providers can use the full configured timeout rather than disconnecting after five minutes. Cancellation still destroys the active request immediately, responses are capped at 4,000,000 bytes, and genuine connection failures remain eligible for managed-backend recovery. After fifteen seconds without a provider event, the working card changes from **Generating answer** to an explicit slow-model waiting phase; project tools can begin only after the provider returns its first tool call. Backends without the streaming endpoint fall back to `/ask`.
 
 Verification commands default to a five-minute maximum. Configure `devMate.commandTimeoutSeconds` from the in-chat Settings dialog or VS Code Settings. A model-requested shorter timeout is honored; it cannot exceed the configured maximum.
 

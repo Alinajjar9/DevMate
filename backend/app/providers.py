@@ -1,5 +1,7 @@
 from dataclasses import dataclass
+import json
 import os
+from collections.abc import AsyncIterator
 from typing import Literal, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
@@ -80,6 +82,13 @@ class ChatCompletionRequest:
     force_final_answer: bool = False
 
 
+@dataclass(frozen=True)
+class ChatStreamEvent:
+    kind: Literal["content", "reasoning", "tool", "complete"]
+    text: str | None = None
+    completion: ChatCompletion | None = None
+
+
 class ChatProvider(Protocol):
     async def complete(self, request: ChatCompletionRequest) -> ChatCompletion | str: ...
 
@@ -88,6 +97,52 @@ class ProviderError(Exception):
     def __init__(self, message: str, status_code: int = 502) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+def _provider_request_parts(
+    request: ChatCompletionRequest,
+    *,
+    stream: bool,
+) -> tuple[str, dict[str, str], dict[str, object]]:
+    endpoint = create_chat_completions_url(request.base_url, request.provider)
+    headers = {
+        "Accept": "text/event-stream" if stream else "application/json",
+        "Content-Type": "application/json",
+    }
+    if request.api_key:
+        headers["Authorization"] = f"Bearer {request.api_key}"
+
+    payload: dict[str, object] = {
+        "model": request.model,
+        "messages": [_serialize_message(message) for message in request.messages],
+        "temperature": request.temperature,
+        "stream": stream,
+    }
+    if request.tools:
+        payload["tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                },
+            }
+            for tool in request.tools
+        ]
+        payload["tool_choice"] = "auto"
+    if request.model.casefold().startswith("nvidia/nemotron-3-"):
+        payload["chat_template_kwargs"] = {
+            "enable_thinking": not request.force_final_answer,
+            "force_nonempty_content": True,
+        }
+        if not request.force_final_answer:
+            payload["reasoning_budget"] = _nemotron_reasoning_budget(request.max_tokens)
+    if request.provider == "openai" and request.base_url is None:
+        payload["max_completion_tokens"] = request.max_tokens
+    else:
+        payload["max_tokens"] = request.max_tokens
+    return endpoint, headers, payload
 
 
 class OpenAICompatibleProvider:
@@ -104,47 +159,7 @@ class OpenAICompatibleProvider:
         if request.provider == "openai" and not request.api_key:
             raise ProviderError("The selected model profile is missing an API key.", 400)
 
-        endpoint = create_chat_completions_url(request.base_url, request.provider)
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        }
-        if request.api_key:
-            headers["Authorization"] = f"Bearer {request.api_key}"
-
-        payload: dict[str, object] = {
-            "model": request.model,
-            "messages": [_serialize_message(message) for message in request.messages],
-            "temperature": request.temperature,
-            "stream": False,
-        }
-        if request.tools:
-            payload["tools"] = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters,
-                    },
-                }
-                for tool in request.tools
-            ]
-            payload["tool_choice"] = "auto"
-        if request.model.casefold().startswith("nvidia/nemotron-3-"):
-            payload["chat_template_kwargs"] = {
-                "enable_thinking": not request.force_final_answer,
-                "force_nonempty_content": True,
-            }
-            if not request.force_final_answer:
-                payload["reasoning_budget"] = _nemotron_reasoning_budget(
-                    request.max_tokens
-                )
-        if request.provider == "openai" and request.base_url is None:
-            payload["max_completion_tokens"] = request.max_tokens
-        else:
-            # NVIDIA and Ollama document max_tokens on their OpenAI-compatible APIs.
-            payload["max_tokens"] = request.max_tokens
+        endpoint, headers, payload = _provider_request_parts(request, stream=False)
 
         try:
             async with httpx.AsyncClient(
@@ -187,6 +202,177 @@ class OpenAICompatibleProvider:
                 502,
             )
         return completion
+
+    async def stream(self, request: ChatCompletionRequest) -> AsyncIterator[ChatStreamEvent]:
+        if request.provider == "openai" and not request.api_key:
+            raise ProviderError("The selected model profile is missing an API key.", 400)
+
+        endpoint, headers, payload = _provider_request_parts(request, stream=True)
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        streamed_tool_calls: dict[int, dict[str, str]] = {}
+        finish_reason: str | None = None
+        tool_announced = False
+        try:
+            async with httpx.AsyncClient(
+                transport=self._transport,
+                timeout=request.timeout_seconds or self._timeout_seconds,
+                follow_redirects=False,
+            ) as client:
+                async with client.stream("POST", endpoint, headers=headers, json=payload) as response:
+                    if response.is_redirect:
+                        raise ProviderError(
+                            "The model provider returned a redirect. Check the profile base URL.",
+                            502,
+                        )
+                    if response.status_code >= 400:
+                        await response.aread()
+                        raise _provider_http_error(response)
+
+                    content_type = response.headers.get("content-type", "").casefold()
+                    if "text/event-stream" not in content_type:
+                        raw_response = await response.aread()
+                        try:
+                            response_payload = json.loads(raw_response)
+                        except (TypeError, ValueError) as error:
+                            raise ProviderError(
+                                "The model provider returned a non-streaming invalid response.",
+                                502,
+                            ) from error
+                        completion = _read_completion(response_payload)
+                        if not completion:
+                            raise ProviderError(
+                                "The model provider returned an empty or invalid answer.",
+                                502,
+                            )
+                        if completion.content:
+                            yield ChatStreamEvent(kind="content", text=completion.content)
+                        yield ChatStreamEvent(kind="complete", completion=completion)
+                        return
+
+                    async for line in response.aiter_lines():
+                        normalized = line.strip()
+                        if not normalized or normalized.startswith(":"):
+                            continue
+                        if not normalized.startswith("data:"):
+                            continue
+                        data = normalized[5:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                        except ValueError as error:
+                            raise ProviderError(
+                                "The model provider returned an invalid streaming event.",
+                                502,
+                            ) from error
+                        choice = _first_stream_choice(chunk)
+                        if choice is None:
+                            continue
+                        raw_finish_reason = choice.get("finish_reason")
+                        if isinstance(raw_finish_reason, str) and raw_finish_reason.strip():
+                            finish_reason = raw_finish_reason.strip()[:120]
+                        delta = choice.get("delta")
+                        if not isinstance(delta, dict):
+                            continue
+                        content = delta.get("content")
+                        if isinstance(content, str) and content:
+                            content_parts.append(content)
+                            yield ChatStreamEvent(kind="content", text=content)
+                        reasoning = delta.get("reasoning_content")
+                        if isinstance(reasoning, str) and reasoning:
+                            reasoning_parts.append(reasoning)
+                            yield ChatStreamEvent(kind="reasoning")
+                        raw_tool_calls = delta.get("tool_calls")
+                        _append_stream_tool_calls(streamed_tool_calls, raw_tool_calls)
+                        if isinstance(raw_tool_calls, list) and raw_tool_calls and not tool_announced:
+                            tool_announced = True
+                            yield ChatStreamEvent(kind="tool")
+        except httpx.TimeoutException as error:
+            raise ProviderError(
+                "The model provider timed out before returning an answer.",
+                504,
+            ) from error
+        except httpx.RequestError as error:
+            raise ProviderError(
+                "DevMate could not reach the configured model provider.",
+                502,
+            ) from error
+
+        completion = _stream_completion(
+            content_parts,
+            reasoning_parts,
+            streamed_tool_calls,
+            finish_reason,
+        )
+        if not completion:
+            raise ProviderError("The model provider returned an empty or invalid answer.", 502)
+        yield ChatStreamEvent(kind="complete", completion=completion)
+
+
+def _first_stream_choice(value: object) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+    choices = value.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return None
+    return choices[0]
+
+
+def _append_stream_tool_calls(
+    target: dict[int, dict[str, str]],
+    value: object,
+) -> None:
+    if not isinstance(value, list) or len(value) > 3:
+        return
+    for fallback_index, raw_call in enumerate(value):
+        if not isinstance(raw_call, dict):
+            continue
+        raw_index = raw_call.get("index", fallback_index)
+        if not isinstance(raw_index, int) or raw_index < 0 or raw_index > 2:
+            continue
+        current = target.setdefault(raw_index, {"id": "", "name": "", "arguments": ""})
+        call_id = raw_call.get("id")
+        if isinstance(call_id, str):
+            current["id"] += call_id
+        function = raw_call.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        arguments = function.get("arguments")
+        if isinstance(name, str):
+            current["name"] += name
+        if isinstance(arguments, str):
+            current["arguments"] += arguments
+            if len(current["arguments"]) > MAX_TOOL_ARGUMENT_CHARACTERS:
+                raise ProviderError("The model provider streamed oversized tool arguments.", 502)
+
+
+def _stream_completion(
+    content_parts: list[str],
+    reasoning_parts: list[str],
+    streamed_tool_calls: dict[int, dict[str, str]],
+    finish_reason: str | None,
+) -> ChatCompletion | None:
+    tool_calls: list[ChatToolCall] = []
+    for index in sorted(streamed_tool_calls):
+        value = streamed_tool_calls[index]
+        call_id = value["id"].strip()
+        name = value["name"].strip()
+        arguments = value["arguments"]
+        if not call_id or len(call_id) > 120 or not name or len(name) > 120:
+            return None
+        tool_calls.append(ChatToolCall(id=call_id, name=name, arguments=arguments))
+    content = "".join(content_parts).strip() or None
+    reasoning = "".join(reasoning_parts).strip()[:MAX_REASONING_DIAGNOSTIC_CHARACTERS] or None
+    if not content and not tool_calls and not reasoning and not finish_reason:
+        return None
+    return ChatCompletion(
+        content=content,
+        tool_calls=tuple(tool_calls),
+        finish_reason=finish_reason,
+        reasoning_content=reasoning,
+    )
 
 
 def _serialize_message(message: ChatMessage) -> dict[str, object]:

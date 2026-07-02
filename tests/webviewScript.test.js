@@ -13,7 +13,8 @@ test('embedded DevMate webview script has valid JavaScript syntax', () => {
   const end = source.indexOf('</script>', start);
   assert.ok(start >= 0 && end > start, 'webview script block was not found');
   const script = source.slice(start + marker.length, end);
-  assert.doesNotThrow(() => new Function(script));
+  const cookedScript = new Function('return `' + script + '`;')();
+  assert.doesNotThrow(() => new Function(cookedScript));
 });
 
 test('working card has visible motion with a reduced-motion fallback', () => {
@@ -105,6 +106,26 @@ test('slow provider calls replace the static generating phase with a waiting hea
   assert.match(source, /Waiting for model response — the selected model is still working/);
   assert.match(source, /}, 15_000\);/);
   assert.match(source, /clearTimeout\(waitingTimer\)/);
+});
+
+test('provider streaming and safe rich answer rendering are wired into the chat', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'extension.ts'),
+    'utf8'
+  );
+  const clientSource = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'api', 'client.ts'),
+    'utf8'
+  );
+  assert.match(clientSource, /export async function askStream/);
+  assert.match(clientSource, /'\/ask\/stream'/);
+  assert.match(source, /command: 'providerStreamDelta'/);
+  assert.match(source, /message\.command === 'providerStreamDelta'/);
+  assert.match(source, /function renderMarkdown/);
+  assert.match(source, /function appendHighlightedCode/);
+  assert.match(source, /command: 'copyText'/);
+  assert.match(source, /command: 'openWorkspaceFile'/);
+  assert.doesNotMatch(source, /\.innerHTML\s*=/);
 });
 
 test('project-bound sessions open from a dedicated landing screen', () => {

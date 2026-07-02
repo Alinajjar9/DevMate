@@ -4,6 +4,7 @@ const test = require('node:test');
 
 const {
   ask,
+  askStream,
   DEFAULT_ASK_TIMEOUT_MS,
   isLoopbackBackendUrl
 } = require('../out/api/client');
@@ -80,6 +81,86 @@ test('surfaces FastAPI provider error details', async () => {
     assert.equal(result.message, 'The model provider rejected the API key.');
     assert.equal(result.statusCode, 401);
     assert.equal(result.errorKind, 'http');
+  });
+});
+
+test('parses progressive backend events and returns the validated final result', async () => {
+  const events = [];
+  await withServer((_request, response) => {
+    response.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+    response.write(JSON.stringify({ type: 'start' }) + '\n');
+    response.write(JSON.stringify({ type: 'progress', phase: 'Model is reasoning' }) + '\n');
+    response.write(JSON.stringify({ type: 'delta', text: 'Hello ' }) + '\n');
+    response.write(JSON.stringify({ type: 'delta', text: 'world' }) + '\n');
+    response.end(JSON.stringify({
+      type: 'final',
+      result: {
+        status: 'ok',
+        data: { answer: 'Hello world', usedFiles: [], changes: [], toolCalls: [] }
+      }
+    }) + '\n');
+  }, async (backendUrl) => {
+    const streamed = await askStream(
+      backendUrl,
+      askRequest(),
+      undefined,
+      10_000,
+      undefined,
+      (event) => events.push(event)
+    );
+
+    assert.equal(streamed.unsupported, false);
+    assert.equal(streamed.result.status, 'ok');
+    assert.equal(streamed.result.data.answer, 'Hello world');
+    assert.deepEqual(events, [
+      { type: 'progress', phase: 'Model is reasoning' },
+      { type: 'delta', text: 'Hello ' },
+      { type: 'delta', text: 'world' }
+    ]);
+  });
+});
+
+test('marks an older backend stream endpoint as unsupported for fallback', async () => {
+  await withServer((_request, response) => {
+    sendJson(response, 404, { detail: 'Not Found' });
+  }, async (backendUrl) => {
+    const streamed = await askStream(backendUrl, askRequest(), undefined, 10_000);
+    assert.equal(streamed.unsupported, true);
+    assert.equal(streamed.result.statusCode, 404);
+  });
+});
+
+test('preserves streamed provider errors for the existing retry policy', async () => {
+  await withServer((_request, response) => {
+    response.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+    response.end(JSON.stringify({
+      type: 'error',
+      message: 'Provider busy',
+      statusCode: 429,
+      errorKind: 'http'
+    }) + '\n');
+  }, async (backendUrl) => {
+    const streamed = await askStream(backendUrl, askRequest(), undefined, 10_000);
+    assert.equal(streamed.result.status, 'error');
+    assert.equal(streamed.result.statusCode, 429);
+    assert.equal(streamed.result.errorKind, 'http');
+  });
+});
+
+test('cancels an active streaming backend request', async () => {
+  const controller = new AbortController();
+  await withServer(() => undefined, async (backendUrl) => {
+    const pending = askStream(
+      backendUrl,
+      askRequest(),
+      undefined,
+      10_000,
+      controller.signal
+    );
+    controller.abort();
+    const streamed = await pending;
+    assert.equal(streamed.result.errorKind, 'cancelled');
+    assert.equal(streamed.unsupported, false);
   });
 });
 

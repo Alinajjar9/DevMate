@@ -1,7 +1,10 @@
 import json
+import logging
+from collections.abc import AsyncIterator
 from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
 from .code_changes import CodeChangeParseError, parse_code_change_response
@@ -15,6 +18,9 @@ from .providers import (
     ProviderError,
     ProviderName,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 ContextSource = Literal["file", "selection", "attachment"]
@@ -478,6 +484,106 @@ async def ask(
         Header(alias="X-DevMate-Provider-Key", max_length=10_000),
     ] = None,
 ) -> AskResult:
+    completion_request, enabled_tools, used_files = _build_completion_request(
+        request,
+        provider_api_key,
+    )
+    try:
+        completion_value = await chat_provider.complete(completion_request)
+    except ProviderError as error:
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from error
+
+    completion = completion_value if isinstance(completion_value, ChatCompletion) else ChatCompletion(
+        content=completion_value
+    )
+    return _ask_result_from_completion(request, completion, enabled_tools, used_files)
+
+
+@app.post("/ask/stream")
+async def ask_stream(
+    request: AskRequest,
+    chat_provider: Annotated[ChatProvider, Depends(get_chat_provider)],
+    provider_api_key: Annotated[
+        str | None,
+        Header(alias="X-DevMate-Provider-Key", max_length=10_000),
+    ] = None,
+) -> StreamingResponse:
+    completion_request, enabled_tools, used_files = _build_completion_request(
+        request,
+        provider_api_key,
+    )
+
+    async def event_stream() -> AsyncIterator[str]:
+        yield _stream_line({"type": "start"})
+        completion: ChatCompletion | None = None
+        reasoning_announced = False
+        try:
+            stream_method = getattr(chat_provider, "stream", None)
+            if callable(stream_method):
+                async for event in stream_method(completion_request):
+                    if event.kind == "content" and event.text:
+                        yield _stream_line({"type": "delta", "text": event.text})
+                    elif event.kind == "reasoning" and not reasoning_announced:
+                        reasoning_announced = True
+                        yield _stream_line({"type": "progress", "phase": "Model is reasoning"})
+                    elif event.kind == "tool":
+                        yield _stream_line({"type": "progress", "phase": "Preparing project tool call"})
+                    elif event.kind == "complete" and event.completion:
+                        completion = event.completion
+            else:
+                completion_value = await chat_provider.complete(completion_request)
+                completion = completion_value if isinstance(completion_value, ChatCompletion) else ChatCompletion(
+                    content=completion_value
+                )
+                if completion.content:
+                    yield _stream_line({"type": "delta", "text": completion.content})
+
+            if not completion:
+                raise HTTPException(
+                    status_code=502,
+                    detail="The model provider ended its stream without a final response.",
+                )
+            result = _ask_result_from_completion(
+                request,
+                completion,
+                enabled_tools,
+                used_files,
+            )
+            yield _stream_line({"type": "final", "result": result.model_dump(mode="json")})
+        except ProviderError as error:
+            yield _stream_line({
+                "type": "error",
+                "message": str(error),
+                "statusCode": error.status_code,
+                "errorKind": "http",
+            })
+        except HTTPException as error:
+            yield _stream_line({
+                "type": "error",
+                "message": str(error.detail),
+                "statusCode": error.status_code,
+                "errorKind": "http",
+            })
+        except Exception:
+            logger.exception("Streamed provider request failed unexpectedly")
+            yield _stream_line({
+                "type": "error",
+                "message": "The DevMate backend could not complete the streamed request.",
+                "statusCode": 500,
+                "errorKind": "http",
+            })
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _build_completion_request(
+    request: AskRequest,
+    provider_api_key: str | None,
+) -> tuple[ChatCompletionRequest, tuple[AgentToolName, ...], list[str]]:
     used_files = _used_files(request.scope)
     api_key = provider_api_key.strip() if provider_api_key else None
     requested_tools = (
@@ -504,31 +610,31 @@ async def ask(
         agent_edits_enabled=request.agentEditsEnabled,
         conversation_turns=request.conversationHistory,
     )
-    try:
-        completion_value = await chat_provider.complete(
-            ChatCompletionRequest(
-                provider=request.settings.provider,
-                model=request.settings.model,
-                base_url=request.settings.baseUrl,
-                api_key=api_key if request.settings.provider == "openai" else None,
-                messages=messages,
-                max_tokens=request.settings.maxTokens,
-                temperature=request.settings.temperature,
-                timeout_seconds=request.settings.timeoutSeconds,
-                tools=tuple(
-                    definition
-                    for definition in AGENT_TOOL_DEFINITIONS
-                    if definition.name in enabled_tools
-                ),
-                force_final_answer=request.forceFinalAnswer,
-            )
-        )
-    except ProviderError as error:
-        raise HTTPException(status_code=error.status_code, detail=str(error)) from error
+    return ChatCompletionRequest(
+        provider=request.settings.provider,
+        model=request.settings.model,
+        base_url=request.settings.baseUrl,
+        api_key=api_key if request.settings.provider == "openai" else None,
+        messages=messages,
+        max_tokens=request.settings.maxTokens,
+        temperature=request.settings.temperature,
+        timeout_seconds=request.settings.timeoutSeconds,
+        tools=tuple(
+            definition
+            for definition in AGENT_TOOL_DEFINITIONS
+            if definition.name in enabled_tools
+        ),
+        force_final_answer=request.forceFinalAnswer,
+    ), enabled_tools, used_files
 
-    completion = completion_value if isinstance(completion_value, ChatCompletion) else ChatCompletion(
-        content=completion_value
-    )
+
+def _ask_result_from_completion(
+    request: AskRequest,
+    completion: ChatCompletion,
+    enabled_tools: tuple[AgentToolName, ...],
+    used_files: list[str],
+) -> AskResult:
+    tools_enabled = bool(enabled_tools)
     if completion.tool_calls:
         if not tools_enabled:
             raise HTTPException(status_code=502, detail="The model requested a tool after the tool limit was reached.")
@@ -579,6 +685,10 @@ async def ask(
             changes=changes,
         ),
     )
+
+
+def _stream_line(value: dict[str, object]) -> str:
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False) + "\n"
 
 
 def _parse_agent_tool_calls(

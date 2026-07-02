@@ -290,6 +290,17 @@ class DevMateChatViewProvider {
             case 'deleteSession':
                 await this.deleteSession(message.sessionId);
                 return;
+            case 'copyText':
+                if (typeof message.text === 'string' && message.text.length <= 500_000) {
+                    await vscode.env.clipboard.writeText(message.text);
+                }
+                return;
+            case 'openWorkspaceFile':
+                await this.openWorkspaceFile(message.path, message.line);
+                return;
+            case 'openExternalLink':
+                await this.openExternalLink(message.url);
+                return;
             case 'commandPermissionDecision':
                 await this.handleCommandPermissionDecision(message.requestId, message.decision);
                 return;
@@ -333,6 +344,51 @@ class DevMateChatViewProvider {
         this.sessionStore = (0, sessions_1.addConversationSession)(this.sessionStore, (0, crypto_1.randomUUID)(), Date.now(), workspace);
         await this.persistSessionStore();
         this.postSessionState(true, true);
+    }
+    async openWorkspaceFile(requestedPath, requestedLine) {
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        if (!folder || typeof requestedPath !== 'string') {
+            return;
+        }
+        const value = requestedPath.trim();
+        if (!value || value.length > 2_048) {
+            return;
+        }
+        const absolutePath = path.isAbsolute(value)
+            ? path.resolve(value)
+            : path.resolve(folder.uri.fsPath, value);
+        const relativePath = path.relative(folder.uri.fsPath, absolutePath);
+        if (!relativePath
+            || relativePath === '..'
+            || relativePath.startsWith(`..${path.sep}`)
+            || path.isAbsolute(relativePath)) {
+            return;
+        }
+        try {
+            await this.assertNoWorkspaceSymlink(folder, normalizeRelativeWorkspacePath(relativePath), false);
+            const document = await vscode.workspace.openTextDocument(vscode.Uri.file(absolutePath));
+            const line = Number.isInteger(requestedLine)
+                ? Math.max(0, Math.min(document.lineCount - 1, Number(requestedLine) - 1))
+                : 0;
+            await vscode.window.showTextDocument(document, {
+                preview: true,
+                selection: new vscode.Range(line, 0, line, 0)
+            });
+        }
+        catch {
+            this.postStatus(`Could not open ${value}.`, 'warning');
+        }
+    }
+    async openExternalLink(value) {
+        try {
+            const uri = vscode.Uri.parse(value, true);
+            if (uri.scheme === 'http' || uri.scheme === 'https') {
+                await vscode.env.openExternal(uri);
+            }
+        }
+        catch {
+            // Invalid and non-HTTP links are ignored.
+        }
     }
     async selectSession(sessionId) {
         if (!this.canChangeSession()) {
@@ -2157,15 +2213,51 @@ class DevMateChatViewProvider {
     async askWithProviderRetries(backendUrl, request, providerApiKey, timeoutMilliseconds, signal) {
         let retryNumber = 0;
         while (true) {
+            this.postMessage({ command: 'providerStreamReset' });
             const waitingTimer = setTimeout(() => {
                 this.postStatus('Waiting for model response — the selected model is still working');
             }, 15_000);
+            let receivedStreamText = false;
+            let pendingStreamText = '';
+            let streamFlushTimer;
+            const flushStreamText = () => {
+                if (!pendingStreamText) {
+                    return;
+                }
+                this.postMessage({ command: 'providerStreamDelta', text: pendingStreamText });
+                pendingStreamText = '';
+            };
             let result;
             try {
-                result = await (0, client_1.ask)(backendUrl, request, providerApiKey, timeoutMilliseconds, signal);
+                const streamAttempt = await (0, client_1.askStream)(backendUrl, request, providerApiKey, timeoutMilliseconds, signal, (event) => {
+                    clearTimeout(waitingTimer);
+                    if (event.type === 'delta') {
+                        if (!receivedStreamText) {
+                            receivedStreamText = true;
+                            this.postStatus('Receiving model response');
+                        }
+                        pendingStreamText += event.text;
+                        if (!streamFlushTimer) {
+                            streamFlushTimer = setTimeout(() => {
+                                streamFlushTimer = undefined;
+                                flushStreamText();
+                            }, 40);
+                        }
+                    }
+                    else {
+                        this.postStatus(event.phase);
+                    }
+                });
+                result = streamAttempt.unsupported
+                    ? await (0, client_1.ask)(backendUrl, request, providerApiKey, timeoutMilliseconds, signal)
+                    : streamAttempt.result;
             }
             finally {
                 clearTimeout(waitingTimer);
+                if (streamFlushTimer) {
+                    clearTimeout(streamFlushTimer);
+                }
+                flushStreamText();
             }
             if (!(0, retryPolicy_1.isRetryableProviderFailure)(result)) {
                 return { result, retriesExhausted: false };
@@ -3114,6 +3206,123 @@ class DevMateChatViewProvider {
       white-space: pre-wrap;
     }
 
+    .message-body.markdown {
+      white-space: normal;
+    }
+
+    .markdown p,
+    .markdown ul,
+    .markdown ol,
+    .markdown pre,
+    .markdown h1,
+    .markdown h2,
+    .markdown h3,
+    .markdown h4 {
+      margin: 0 0 8px;
+    }
+
+    .markdown > :last-child {
+      margin-bottom: 0;
+    }
+
+    .markdown h1 { font-size: 1.35em; }
+    .markdown h2 { font-size: 1.22em; }
+    .markdown h3 { font-size: 1.12em; }
+    .markdown h4 { font-size: 1.04em; }
+
+    .markdown ul,
+    .markdown ol {
+      padding-left: 20px;
+    }
+
+    .markdown table {
+      width: 100%;
+      margin: 0 0 8px;
+      border-collapse: collapse;
+      font-size: 0.94em;
+    }
+
+    .markdown th,
+    .markdown td {
+      padding: 5px 7px;
+      border: 1px solid var(--border);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .markdown th {
+      background: var(--surface-soft);
+      font-weight: 650;
+    }
+
+    .markdown-inline-code,
+    .markdown-file-link {
+      padding: 1px 4px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--vscode-textPreformat-foreground, var(--vscode-foreground));
+      background: var(--vscode-textCodeBlock-background, var(--surface));
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 0.92em;
+    }
+
+    .markdown-file-link,
+    .markdown-link {
+      cursor: pointer;
+    }
+
+    .markdown-link {
+      padding: 0;
+      border: 0;
+      color: var(--vscode-textLink-foreground);
+      background: transparent;
+      text-decoration: underline;
+    }
+
+    .markdown-code-block {
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--vscode-textCodeBlock-background, var(--surface));
+    }
+
+    .markdown-code-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 28px;
+      padding: 3px 6px 3px 9px;
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .markdown-copy {
+      padding: 2px 7px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--vscode-foreground);
+      background: transparent;
+      cursor: pointer;
+    }
+
+    .markdown-code-block pre {
+      margin: 0;
+      padding: 9px 10px;
+      overflow: auto;
+      white-space: pre;
+    }
+
+    .markdown-code-block code {
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: var(--vscode-editor-font-size, 12px);
+    }
+
+    .markdown-token.comment { color: var(--vscode-editorLineNumber-foreground); }
+    .markdown-token.string { color: var(--vscode-debugTokenExpression-string, #ce9178); }
+    .markdown-token.keyword { color: var(--vscode-debugTokenExpression-name, #569cd6); font-weight: 600; }
+    .markdown-token.number { color: var(--vscode-debugTokenExpression-number, #b5cea8); }
+
     .working-card {
       position: relative;
       isolation: isolate;
@@ -3238,6 +3447,27 @@ class DevMateChatViewProvider {
       margin: 0 0 9px;
       padding: 0;
       list-style: none;
+    }
+
+    .working-stream {
+      max-height: 220px;
+      margin-top: 8px;
+      padding: 8px 9px;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--vscode-foreground);
+      background: var(--vscode-textCodeBlock-background, var(--surface));
+      font-size: 11px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+
+    .working-stream::after {
+      content: '▋';
+      margin-left: 2px;
+      color: var(--vscode-button-background);
+      animation: tool-pulse 1.2s ease-in-out infinite;
     }
 
     .working-phase {
@@ -3442,6 +3672,7 @@ class DevMateChatViewProvider {
       .working-card[data-state="working"] .working-heading::after,
       .working-phase[data-status="active"],
       .working-phase[data-status="active"] .working-phase-icon,
+      .working-stream::after,
       .working-indicator,
       .working-indicator::after,
       .backend-status[data-state="checking"] .backend-status-dot,
@@ -4695,6 +4926,14 @@ class DevMateChatViewProvider {
         }
         renderAgentToolActivity(message.activity);
       }
+
+      if (message.command === 'providerStreamReset') {
+        resetProviderStream();
+      }
+
+      if (message.command === 'providerStreamDelta') {
+        appendProviderStreamDelta(message.text);
+      }
     });
 
     vscode.postMessage({ command: 'setScope', scope: 'project' });
@@ -4771,11 +5010,273 @@ class DevMateChatViewProvider {
 
       const body = document.createElement('div');
       body.className = 'message-body';
-      body.textContent = text;
+      if (role === 'assistant') {
+        body.classList.add('markdown');
+        renderMarkdown(body, text);
+      } else {
+        body.textContent = text;
+      }
       item.appendChild(body);
       messagesEl.appendChild(item);
       if (scroll) {
         messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+    }
+
+    function renderMarkdown(container, text) {
+      const lines = String(text).replace(/\\r\\n/g, '\\n').split('\\n');
+      const fence = String.fromCharCode(96).repeat(3);
+      let index = 0;
+      while (index < lines.length) {
+        const line = lines[index];
+        if (!line.trim()) {
+          index += 1;
+          continue;
+        }
+        if (line.trimStart().startsWith(fence)) {
+          const opening = line.trimStart().slice(fence.length).trim();
+          const codeLines = [];
+          index += 1;
+          while (index < lines.length && !lines[index].trimStart().startsWith(fence)) {
+            codeLines.push(lines[index]);
+            index += 1;
+          }
+          if (index < lines.length) {
+            index += 1;
+          }
+          appendCodeBlock(container, codeLines.join('\\n'), opening);
+          continue;
+        }
+        const heading = line.match(/^(#{1,4})\\s+(.+)$/);
+        if (heading) {
+          const element = document.createElement('h' + heading[1].length);
+          appendInlineMarkdown(element, heading[2]);
+          container.appendChild(element);
+          index += 1;
+          continue;
+        }
+        if (index + 1 < lines.length && line.includes('|') && isMarkdownTableSeparator(lines[index + 1])) {
+          const table = document.createElement('table');
+          const head = document.createElement('thead');
+          const headRow = document.createElement('tr');
+          markdownTableCells(line).forEach((value) => {
+            const cell = document.createElement('th');
+            appendInlineMarkdown(cell, value);
+            headRow.appendChild(cell);
+          });
+          head.appendChild(headRow);
+          table.appendChild(head);
+          const body = document.createElement('tbody');
+          index += 2;
+          while (index < lines.length && lines[index].trim() && lines[index].includes('|')) {
+            const row = document.createElement('tr');
+            markdownTableCells(lines[index]).forEach((value) => {
+              const cell = document.createElement('td');
+              appendInlineMarkdown(cell, value);
+              row.appendChild(cell);
+            });
+            body.appendChild(row);
+            index += 1;
+          }
+          table.appendChild(body);
+          container.appendChild(table);
+          continue;
+        }
+        if (/^\\s*[-*]\\s+/.test(line)) {
+          const list = document.createElement('ul');
+          while (index < lines.length && /^\\s*[-*]\\s+/.test(lines[index])) {
+            const item = document.createElement('li');
+            appendInlineMarkdown(item, lines[index].replace(/^\\s*[-*]\\s+/, ''));
+            list.appendChild(item);
+            index += 1;
+          }
+          container.appendChild(list);
+          continue;
+        }
+        if (/^\\s*\\d+[.)]\\s+/.test(line)) {
+          const list = document.createElement('ol');
+          while (index < lines.length && /^\\s*\\d+[.)]\\s+/.test(lines[index])) {
+            const item = document.createElement('li');
+            appendInlineMarkdown(item, lines[index].replace(/^\\s*\\d+[.)]\\s+/, ''));
+            list.appendChild(item);
+            index += 1;
+          }
+          container.appendChild(list);
+          continue;
+        }
+
+        const paragraphLines = [line];
+        index += 1;
+        while (index < lines.length && lines[index].trim() && !isMarkdownBlockStart(lines[index], fence)) {
+          paragraphLines.push(lines[index]);
+          index += 1;
+        }
+        const paragraph = document.createElement('p');
+        paragraphLines.forEach((paragraphLine, lineIndex) => {
+          if (lineIndex > 0) {
+            paragraph.appendChild(document.createElement('br'));
+          }
+          appendInlineMarkdown(paragraph, paragraphLine);
+        });
+        container.appendChild(paragraph);
+      }
+    }
+
+    function isMarkdownBlockStart(line, fence) {
+      return line.trimStart().startsWith(fence)
+        || /^(#{1,4})\\s+/.test(line)
+        || /^\\s*[-*]\\s+/.test(line)
+        || /^\\s*\\d+[.)]\\s+/.test(line);
+    }
+
+    function markdownTableCells(line) {
+      const trimmed = line.trim().replace(/^\\|/, '').replace(/\\|$/, '');
+      return trimmed.split('|').map((cell) => cell.trim());
+    }
+
+    function isMarkdownTableSeparator(line) {
+      const cells = markdownTableCells(line);
+      return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+    }
+
+    function appendInlineMarkdown(container, text) {
+      const pattern = /(\\*\\*[^*]+\\*\\*|\\x60[^\\x60]+\\x60|\\[[^\\]]+\\]\\([^)]+\\))/g;
+      let cursor = 0;
+      for (const match of text.matchAll(pattern)) {
+        if (match.index > cursor) {
+          container.appendChild(document.createTextNode(text.slice(cursor, match.index)));
+        }
+        const token = match[0];
+        if (token.startsWith('**')) {
+          const strong = document.createElement('strong');
+          strong.textContent = token.slice(2, -2);
+          container.appendChild(strong);
+        } else if (token.charCodeAt(0) === 96) {
+          appendInlineCode(container, token.slice(1, -1));
+        } else {
+          const link = token.match(/^\\[([^\\]]+)\\]\\(([^)]+)\\)$/);
+          appendMarkdownLink(container, link[1], link[2]);
+        }
+        cursor = match.index + token.length;
+      }
+      if (cursor < text.length) {
+        container.appendChild(document.createTextNode(text.slice(cursor)));
+      }
+    }
+
+    function appendInlineCode(container, value) {
+      const file = workspaceFileTarget(value);
+      if (file) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'markdown-file-link';
+        button.textContent = value;
+        button.title = 'Open ' + file.path;
+        button.addEventListener('click', () => {
+          vscode.postMessage({ command: 'openWorkspaceFile', path: file.path, line: file.line });
+        });
+        container.appendChild(button);
+        return;
+      }
+      const code = document.createElement('code');
+      code.className = 'markdown-inline-code';
+      code.textContent = value;
+      container.appendChild(code);
+    }
+
+    function appendMarkdownLink(container, label, target) {
+      const file = workspaceFileTarget(target);
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'markdown-link';
+      button.textContent = label;
+      if (file) {
+        button.title = 'Open ' + file.path;
+        button.addEventListener('click', () => {
+          vscode.postMessage({ command: 'openWorkspaceFile', path: file.path, line: file.line });
+        });
+      } else if (/^https?:\\/\\//i.test(target)) {
+        button.title = target;
+        button.addEventListener('click', () => {
+          vscode.postMessage({ command: 'openExternalLink', url: target });
+        });
+      } else {
+        button.disabled = true;
+      }
+      container.appendChild(button);
+    }
+
+    function workspaceFileTarget(value) {
+      const normalized = String(value).trim().replace(/^file:\\/\\//i, '');
+      if (!normalized || /^https?:\\/\\//i.test(normalized) || normalized.includes(String.fromCharCode(0))) {
+        return undefined;
+      }
+      const lineMatch = normalized.match(/^(.*):(\\d+)$/);
+      const filePath = lineMatch ? lineMatch[1] : normalized;
+      const line = lineMatch ? Number(lineMatch[2]) : undefined;
+      if (!/[\\\\/]/.test(filePath) && !/\\.[A-Za-z0-9]{1,10}$/.test(filePath)) {
+        return undefined;
+      }
+      return { path: filePath, line };
+    }
+
+    function appendCodeBlock(container, codeText, language) {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'markdown-code-block';
+      const header = document.createElement('div');
+      header.className = 'markdown-code-header';
+      const label = document.createElement('span');
+      label.textContent = language || 'code';
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.className = 'markdown-copy';
+      copy.textContent = 'Copy';
+      copy.addEventListener('click', () => {
+        vscode.postMessage({ command: 'copyText', text: codeText });
+        copy.textContent = 'Copied';
+        setTimeout(() => { copy.textContent = 'Copy'; }, 1200);
+      });
+      header.append(label, copy);
+      const pre = document.createElement('pre');
+      const code = document.createElement('code');
+      appendHighlightedCode(code, codeText);
+      pre.appendChild(code);
+      wrapper.append(header, pre);
+      container.appendChild(wrapper);
+    }
+
+    function appendHighlightedCode(container, codeText) {
+      const keywords = new Set([
+        'async', 'await', 'break', 'case', 'catch', 'class', 'const', 'continue', 'def',
+        'else', 'export', 'false', 'finally', 'for', 'from', 'function', 'if', 'import',
+        'in', 'interface', 'let', 'new', 'None', 'null', 'return', 'static', 'switch',
+        'this', 'throw', 'true', 'try', 'type', 'var', 'while', 'yield'
+      ]);
+      const pattern = /(\\/\\*[\\s\\S]*?\\*\\/|\\/\\/[^\\n]*|<!--[\\s\\S]*?-->|"(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|\\b\\d+(?:\\.\\d+)?\\b|\\b[A-Za-z_$][\\w$]*\\b)/g;
+      let cursor = 0;
+      for (const match of codeText.matchAll(pattern)) {
+        if (match.index > cursor) {
+          container.appendChild(document.createTextNode(codeText.slice(cursor, match.index)));
+        }
+        const token = match[0];
+        const span = document.createElement('span');
+        span.className = 'markdown-token ' + (
+          token.startsWith('//') || token.startsWith('/*') || token.startsWith('<!--')
+            ? 'comment'
+            : token.startsWith('"') || token.startsWith("'")
+              ? 'string'
+              : /^\\d/.test(token)
+                ? 'number'
+                : keywords.has(token)
+                  ? 'keyword'
+                  : ''
+        );
+        span.textContent = token;
+        container.appendChild(span);
+        cursor = match.index + token.length;
+      }
+      if (cursor < codeText.length) {
+        container.appendChild(document.createTextNode(codeText.slice(cursor)));
       }
     }
 
@@ -4908,6 +5409,12 @@ class DevMateChatViewProvider {
       phases.className = 'working-phases';
       card.appendChild(phases);
 
+      const stream = document.createElement('div');
+      stream.className = 'working-stream';
+      stream.hidden = true;
+      stream.setAttribute('aria-label', 'Streaming model response');
+      card.appendChild(stream);
+
       const footer = document.createElement('div');
       footer.className = 'working-footer';
       const elapsed = document.createElement('span');
@@ -4950,6 +5457,27 @@ class DevMateChatViewProvider {
       updateWorkingElapsed();
       state.workingTimer = setInterval(updateWorkingElapsed, 1000);
       updateWorkingTurn('Preparing request');
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function resetProviderStream() {
+      const stream = document.querySelector('#workingTurn .working-stream');
+      if (!stream) {
+        return;
+      }
+      stream.textContent = '';
+      stream.hidden = true;
+    }
+
+    function appendProviderStreamDelta(text) {
+      const stream = document.querySelector('#workingTurn .working-stream');
+      if (!stream || typeof text !== 'string' || !text) {
+        return;
+      }
+      const nextText = (stream.textContent + text).slice(-50_000);
+      stream.textContent = nextText;
+      stream.hidden = false;
+      stream.scrollTop = stream.scrollHeight;
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
@@ -5601,7 +6129,7 @@ function formatAskResponse(answer, usedFiles) {
         answer,
         '',
         'Used files:',
-        ...usedFiles.map((file) => `- ${file}`)
+        ...usedFiles.map((file) => '- `' + file + '`')
     ].join('\n');
 }
 function formatContextSize(includedCharacters, totalCharacters, truncated) {

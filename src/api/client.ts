@@ -1,12 +1,22 @@
 import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
 import type { ClientRequest, IncomingMessage } from 'http';
+import { StringDecoder } from 'string_decoder';
 import type { ApiResult, AskRequest, AskResponse, HealthResponse } from './types';
 
 const HEALTH_TIMEOUT_MS = 2_000;
 export const DEFAULT_ASK_TIMEOUT_MS = 930_000;
 const PROVIDER_KEY_HEADER = 'X-DevMate-Provider-Key';
 const MAX_BACKEND_RESPONSE_BYTES = 4_000_000;
+
+export type AskStreamEvent =
+  | { type: 'delta'; text: string }
+  | { type: 'progress'; phase: string };
+
+export type AskStreamResult = {
+  result: ApiResult<AskResponse>;
+  unsupported: boolean;
+};
 
 export async function health(backendUrl: string): Promise<ApiResult<HealthResponse>> {
   return fetchJsonRequest<HealthResponse>(backendUrl, '/health', { method: 'GET' }, HEALTH_TIMEOUT_MS);
@@ -42,6 +52,43 @@ export async function ask(
     },
     timeoutMilliseconds,
     signal
+  );
+}
+
+export async function askStream(
+  backendUrl: string,
+  askRequest: AskRequest,
+  providerApiKey?: string,
+  timeoutMilliseconds = DEFAULT_ASK_TIMEOUT_MS,
+  signal?: AbortSignal,
+  onEvent?: (event: AskStreamEvent) => void
+): Promise<AskStreamResult> {
+  if (providerApiKey && !isLoopbackBackendUrl(backendUrl)) {
+    return {
+      result: {
+        status: 'error',
+        message: 'DevMate only sends provider API keys to a backend running on this computer.',
+        errorKind: 'configuration'
+      },
+      unsupported: false
+    };
+  }
+  return nodeHttpStreamRequest(
+    backendUrl,
+    '/ask/stream',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/x-ndjson',
+        'Accept-Encoding': 'identity',
+        ...(providerApiKey ? { [PROVIDER_KEY_HEADER]: providerApiKey } : {})
+      },
+      body: JSON.stringify(askRequest)
+    },
+    timeoutMilliseconds,
+    signal,
+    onEvent
   );
 }
 
@@ -243,6 +290,234 @@ async function nodeHttpJsonRequest<T>(
             return;
           }
           finish(payload);
+        });
+        incomingResponse.on('error', failTransport);
+        incomingResponse.on('aborted', failTransport);
+      });
+      backendRequest.on('error', failTransport);
+      timer = setTimeout(() => {
+        timedOut = true;
+        response?.destroy();
+        backendRequest?.destroy();
+        failTransport();
+      }, timeoutMilliseconds);
+      externalSignal?.addEventListener('abort', cancelRequest, { once: true });
+      backendRequest.end(init.body);
+    } catch {
+      failTransport();
+    }
+  });
+}
+
+async function nodeHttpStreamRequest(
+  backendUrl: string,
+  requestPath: string,
+  init: NodeJsonRequestInit,
+  timeoutMilliseconds: number,
+  externalSignal?: AbortSignal,
+  onEvent?: (event: AskStreamEvent) => void
+): Promise<AskStreamResult> {
+  const endpointValue = createEndpoint(backendUrl, requestPath);
+  if (!endpointValue) {
+    return {
+      result: {
+        status: 'error',
+        message: `Invalid DevMate backend URL: ${backendUrl}`,
+        errorKind: 'configuration'
+      },
+      unsupported: false
+    };
+  }
+  if (externalSignal?.aborted) {
+    return { result: cancelledResult(), unsupported: false };
+  }
+
+  const endpoint = new URL(endpointValue);
+  return new Promise((resolve) => {
+    let backendRequest: ClientRequest | undefined;
+    let response: IncomingMessage | undefined;
+    let timer: NodeJS.Timeout | undefined;
+    let settled = false;
+    let timedOut = false;
+    let cancelled = false;
+    let receivedBytes = 0;
+    let lineBuffer = '';
+    let finalResult: ApiResult<AskResponse> | undefined;
+    const decoder = new StringDecoder('utf8');
+
+    const finish = (result: AskStreamResult) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+      externalSignal?.removeEventListener('abort', cancelRequest);
+      resolve(result);
+    };
+    const failTransport = () => {
+      if (timedOut) {
+        finish({
+          result: {
+            status: 'error',
+            message: `The DevMate backend request timed out after ${timeoutMilliseconds / 1_000} seconds.`,
+            errorKind: 'timeout'
+          },
+          unsupported: false
+        });
+        return;
+      }
+      if (cancelled) {
+        finish({ result: cancelledResult(), unsupported: false });
+        return;
+      }
+      finish({
+        result: {
+          status: 'error',
+          message: `Cannot reach the DevMate backend at ${backendUrl}. Start the local backend and try again.`,
+          errorKind: 'network'
+        },
+        unsupported: false
+      });
+    };
+    const cancelRequest = () => {
+      cancelled = true;
+      response?.destroy();
+      backendRequest?.destroy();
+      failTransport();
+    };
+    const processLine = (line: string) => {
+      const normalized = line.trim();
+      if (!normalized || settled) {
+        return;
+      }
+      let value: unknown;
+      try {
+        value = JSON.parse(normalized) as unknown;
+      } catch {
+        finish({
+          result: {
+            status: 'error',
+            message: 'The DevMate backend returned an invalid streaming event.',
+            errorKind: 'invalid-response'
+          },
+          unsupported: false
+        });
+        return;
+      }
+      if (!isRecord(value) || typeof value.type !== 'string') {
+        return;
+      }
+      if (value.type === 'delta' && typeof value.text === 'string' && value.text) {
+        onEvent?.({ type: 'delta', text: value.text });
+        return;
+      }
+      if (value.type === 'progress' && typeof value.phase === 'string' && value.phase) {
+        onEvent?.({ type: 'progress', phase: value.phase.slice(0, 120) });
+        return;
+      }
+      if (value.type === 'final' && isApiResult<AskResponse>(value.result)) {
+        finalResult = value.result;
+        return;
+      }
+      if (value.type === 'error' && typeof value.message === 'string') {
+        finalResult = {
+          status: 'error',
+          message: value.message,
+          statusCode: typeof value.statusCode === 'number' ? value.statusCode : undefined,
+          errorKind: value.errorKind === 'http' ? 'http' : 'invalid-response'
+        };
+      }
+    };
+
+    try {
+      const requestFunction = endpoint.protocol === 'https:' ? httpsRequest : httpRequest;
+      backendRequest = requestFunction(endpoint, {
+        method: init.method,
+        headers: init.headers
+      }, (incomingResponse) => {
+        response = incomingResponse;
+        const statusCode = incomingResponse.statusCode ?? 0;
+        if (statusCode === 404 || statusCode === 405) {
+          incomingResponse.resume();
+          finish({
+            result: {
+              status: 'error',
+              message: 'The configured backend does not support response streaming.',
+              statusCode,
+              errorKind: 'http'
+            },
+            unsupported: true
+          });
+          return;
+        }
+        if (statusCode < 200 || statusCode >= 300) {
+          incomingResponse.resume();
+          finish({
+            result: {
+              status: 'error',
+              message: `The DevMate backend returned HTTP ${statusCode}.`,
+              statusCode,
+              errorKind: 'http'
+            },
+            unsupported: false
+          });
+          return;
+        }
+        const contentType = incomingResponse.headers['content-type'];
+        const normalizedContentType = Array.isArray(contentType) ? contentType.join(';') : contentType;
+        if (!normalizedContentType?.includes('application/x-ndjson')) {
+          incomingResponse.resume();
+          finish({
+            result: {
+              status: 'error',
+              message: 'The configured backend does not support response streaming.',
+              errorKind: 'invalid-response'
+            },
+            unsupported: true
+          });
+          return;
+        }
+        incomingResponse.on('data', (value: Buffer | string) => {
+          const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+          receivedBytes += chunk.length;
+          if (receivedBytes > MAX_BACKEND_RESPONSE_BYTES) {
+            finish({
+              result: {
+                status: 'error',
+                message: 'The DevMate backend returned an oversized streaming response.',
+                errorKind: 'invalid-response'
+              },
+              unsupported: false
+            });
+            incomingResponse.destroy();
+            return;
+          }
+          lineBuffer += decoder.write(chunk);
+          let newline = lineBuffer.indexOf('\n');
+          while (newline >= 0) {
+            processLine(lineBuffer.slice(0, newline));
+            lineBuffer = lineBuffer.slice(newline + 1);
+            newline = lineBuffer.indexOf('\n');
+          }
+        });
+        incomingResponse.on('end', () => {
+          if (settled) {
+            return;
+          }
+          lineBuffer += decoder.end();
+          if (lineBuffer.trim()) {
+            processLine(lineBuffer);
+          }
+          finish({
+            result: finalResult ?? {
+              status: 'error',
+              message: 'The DevMate backend stream ended without a final response.',
+              errorKind: 'invalid-response'
+            },
+            unsupported: false
+          });
         });
         incomingResponse.on('error', failTransport);
         incomingResponse.on('aborted', failTransport);

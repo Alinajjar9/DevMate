@@ -61,6 +61,53 @@ class ProviderUrlTests(unittest.TestCase):
 
 
 class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_streams_content_without_exposing_reasoning_text(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            self.assertTrue(payload["stream"])
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "text/event-stream"},
+                content=(
+                    'data: {"choices":[{"delta":{"reasoning_content":"private"}}]}\n\n'
+                    'data: {"choices":[{"delta":{"content":"Hello "}}]}\n\n'
+                    'data: {"choices":[{"delta":{"content":"world"},"finish_reason":"stop"}]}\n\n'
+                    'data: [DONE]\n\n'
+                ),
+            )
+
+        provider = OpenAICompatibleProvider(transport=httpx.MockTransport(handler))
+        events = [event async for event in provider.stream(self._request())]
+
+        self.assertEqual([event.kind for event in events], [
+            "reasoning", "content", "content", "complete"
+        ])
+        self.assertIsNone(events[0].text)
+        self.assertEqual(events[-1].completion.content, "Hello world")
+        self.assertEqual(events[-1].completion.reasoning_content, "private")
+        self.assertEqual(events[-1].completion.finish_reason, "stop")
+
+    async def test_reassembles_streamed_tool_call_arguments(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "text/event-stream"},
+                content=(
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"read_file","arguments":"{\\"path\\":"}}]}}]}\n\n'
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"app.py\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n'
+                    'data: [DONE]\n\n'
+                ),
+            )
+
+        provider = OpenAICompatibleProvider(transport=httpx.MockTransport(handler))
+        events = [event async for event in provider.stream(self._request())]
+        completion = events[-1].completion
+
+        self.assertEqual([event.kind for event in events], ["tool", "complete"])
+        self.assertEqual(completion.tool_calls[0].id, "call-1")
+        self.assertEqual(completion.tool_calls[0].name, "read_file")
+        self.assertEqual(completion.tool_calls[0].arguments, '{"path":"app.py"}')
+
     async def test_sends_nvidia_compatible_request_and_reads_answer(self) -> None:
         async def handler(request: httpx.Request) -> httpx.Response:
             self.assertEqual(
