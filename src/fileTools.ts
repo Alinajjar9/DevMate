@@ -1,6 +1,7 @@
 import {
   MAX_FILE_CHANGE_CHARACTERS,
   MAX_TOTAL_CHANGE_CHARACTERS,
+  isAgentHistoryOmissionMarker,
   normalizeWorkspaceRelativePath,
   validateFileChanges
 } from './fileChanges';
@@ -56,6 +57,15 @@ export function parseEditFileArguments(value: Record<string, unknown>): {
     }
     if (candidate.oldText.includes('\0') || candidate.newText.includes('\0')) {
       throw new Error('DevMate will not edit binary content.');
+    }
+    if (
+      isAgentHistoryOmissionMarker(candidate.oldText)
+      || isAgentHistoryOmissionMarker(candidate.newText)
+    ) {
+      throw new Error(
+        'DevMate rejected an internal tool-history marker as edit text. '
+        + 'Read the current file and provide real replacement text.'
+      );
     }
     argumentCharacters += candidate.oldText.length + candidate.newText.length;
     if (argumentCharacters > MAX_TOTAL_CHANGE_CHARACTERS) {

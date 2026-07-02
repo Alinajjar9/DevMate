@@ -99,4 +99,11 @@ test('rejects missing, ambiguous, unsafe, and excessive replacements', () => {
     path: '../secret.txt',
     content: 'nope'
   }), /workspace-relative|unsafe/);
+  assert.throws(() => parseEditFileArguments({
+    path: 'styles.css',
+    replacements: [{
+      oldText: 'body {}',
+      newText: '[42 characters, sha256 c65bca3ac757f148]'
+    }]
+  }), /internal tool-history marker/);
 });

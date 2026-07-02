@@ -46,4 +46,12 @@ test('rejects protected, duplicate, binary, and oversized changes', () => {
   assert.throws(() => validateFileChanges([
     { path: 'src/app.ts', content: 'a'.repeat(MAX_FILE_CHANGE_CHARACTERS + 1) }
   ]), /per-file/);
+  for (const marker of [
+    '[omitted after execution: 33124 characters, sha256 c65bca3ac757f148]',
+    '[DevMate internal history summary: content omitted after execution; 33124 characters; sha256 c65bca3ac757f148; never use as file content]'
+  ]) {
+    assert.throws(() => validateFileChanges([
+      { path: 'static/styles.css', content: marker }
+    ]), /internal tool-history marker/);
+  }
 });

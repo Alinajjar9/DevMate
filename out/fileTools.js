@@ -41,6 +41,11 @@ function parseEditFileArguments(value) {
         if (candidate.oldText.includes('\0') || candidate.newText.includes('\0')) {
             throw new Error('DevMate will not edit binary content.');
         }
+        if ((0, fileChanges_1.isAgentHistoryOmissionMarker)(candidate.oldText)
+            || (0, fileChanges_1.isAgentHistoryOmissionMarker)(candidate.newText)) {
+            throw new Error('DevMate rejected an internal tool-history marker as edit text. '
+                + 'Read the current file and provide real replacement text.');
+        }
         argumentCharacters += candidate.oldText.length + candidate.newText.length;
         if (argumentCharacters > fileChanges_1.MAX_TOTAL_CHANGE_CHARACTERS) {
             throw new Error('The edit replacements exceed the total size limit.');

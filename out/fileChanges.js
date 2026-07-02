@@ -1,6 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MAX_TOTAL_CHANGE_CHARACTERS = exports.MAX_FILE_CHANGE_CHARACTERS = exports.MAX_FILE_CHANGES = void 0;
+exports.agentHistoryOmissionMarker = agentHistoryOmissionMarker;
+exports.isAgentHistoryOmissionMarker = isAgentHistoryOmissionMarker;
 exports.validateFileChanges = validateFileChanges;
 exports.normalizeWorkspaceRelativePath = normalizeWorkspaceRelativePath;
 const projectContext_1 = require("./projectContext");
@@ -9,6 +11,15 @@ exports.MAX_FILE_CHANGE_CHARACTERS = 200_000;
 exports.MAX_TOTAL_CHANGE_CHARACTERS = 500_000;
 const windowsReservedNames = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 const windowsInvalidCharacters = /[<>:"|?*]/;
+const legacyHistoryMarker = /^\[(?:omitted after execution: )?\d+ characters, sha256 [0-9a-f]{16}\]$/i;
+const internalHistoryMarker = /^\[DevMate internal history summary: (?:content|text) omitted after execution; \d+ characters; sha256 [0-9a-f]{16}; never use as file content\]$/i;
+function agentHistoryOmissionMarker(kind, characters, hash) {
+    return `[DevMate internal history summary: ${kind} omitted after execution; `
+        + `${characters} characters; sha256 ${hash}; never use as file content]`;
+}
+function isAgentHistoryOmissionMarker(value) {
+    return legacyHistoryMarker.test(value.trim()) || internalHistoryMarker.test(value.trim());
+}
 function validateFileChanges(value) {
     if (!Array.isArray(value)) {
         throw new Error('The backend returned an invalid file-change list.');
@@ -33,6 +44,10 @@ function validateFileChanges(value) {
         }
         if (candidate.content.includes('\0')) {
             throw new Error(`DevMate will not write binary content to ${path}.`);
+        }
+        if (isAgentHistoryOmissionMarker(candidate.content)) {
+            throw new Error(`DevMate rejected an internal tool-history marker as the contents of ${path}. `
+                + 'Read or move the real file instead.');
         }
         if (candidate.content.length > exports.MAX_FILE_CHANGE_CHARACTERS) {
             throw new Error(`${path} exceeds the per-file change limit.`);

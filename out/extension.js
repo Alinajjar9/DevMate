@@ -2687,6 +2687,20 @@ class DevMateChatViewProvider {
             }
             if (result.status === 'error' || !result.data) {
                 const errorMessage = result.message ?? 'Ask request failed.';
+                if (forceFinalThisTurn
+                    && toolHistory.length > 0
+                    && result.errorKind !== 'network'
+                    && result.errorKind !== 'timeout'
+                    && result.errorKind !== 'cancelled') {
+                    this.postStatus('Finalizing from completed project-tool work');
+                    finalData = {
+                        answer: (0, agentTools_1.summarizeAgentToolHistory)(toolHistory, errorMessage),
+                        usedFiles: [...toolUsedFiles],
+                        changes: [],
+                        toolCalls: []
+                    };
+                    break;
+                }
                 if (!forceFinalThisTurn
                     && !emptyResponseRecoveryAttempted
                     && isRecoverableEmptyModelResponse(errorMessage)) {
@@ -2755,7 +2769,12 @@ class DevMateChatViewProvider {
                     || toolCall.name === 'search_code';
                 const priorSignature = signature ? toolSignatures.get(signature) : undefined;
                 const repeatedAtCurrentRevision = priorSignature?.revision === workspaceRevision;
-                if (isFileMutation && fileMutationCalls >= agentTools_1.MAX_AGENT_FILE_MUTATIONS) {
+                if (isReadOnly
+                    && (0, agentTools_1.consecutiveAgentInspectionCalls)(toolHistory) >= agentTools_1.MAX_AGENT_CONSECUTIVE_INSPECTIONS) {
+                    execution = this.rejectedToolExecution(toolCall, `DevMate paused the request after ${agentTools_1.MAX_AGENT_CONSECUTIVE_INSPECTIONS} consecutive inspection calls without a file change or verification command. Use the gathered evidence and finish concisely.`);
+                    forceFinalAnswer = true;
+                }
+                else if (isFileMutation && fileMutationCalls >= agentTools_1.MAX_AGENT_FILE_MUTATIONS) {
                     execution = this.rejectedToolExecution(toolCall, 'DevMate reached the file-mutation limit for this request.');
                     forceFinalAnswer = true;
                 }

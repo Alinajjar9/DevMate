@@ -11,6 +11,21 @@ export type ValidatedFileChange = {
 
 const windowsReservedNames = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 const windowsInvalidCharacters = /[<>:"|?*]/;
+const legacyHistoryMarker = /^\[(?:omitted after execution: )?\d+ characters, sha256 [0-9a-f]{16}\]$/i;
+const internalHistoryMarker = /^\[DevMate internal history summary: (?:content|text) omitted after execution; \d+ characters; sha256 [0-9a-f]{16}; never use as file content\]$/i;
+
+export function agentHistoryOmissionMarker(
+  kind: 'content' | 'text',
+  characters: number,
+  hash: string
+): string {
+  return `[DevMate internal history summary: ${kind} omitted after execution; `
+    + `${characters} characters; sha256 ${hash}; never use as file content]`;
+}
+
+export function isAgentHistoryOmissionMarker(value: string): boolean {
+  return legacyHistoryMarker.test(value.trim()) || internalHistoryMarker.test(value.trim());
+}
 
 export function validateFileChanges(value: unknown): ValidatedFileChange[] {
   if (!Array.isArray(value)) {
@@ -38,6 +53,12 @@ export function validateFileChanges(value: unknown): ValidatedFileChange[] {
     }
     if (candidate.content.includes('\0')) {
       throw new Error(`DevMate will not write binary content to ${path}.`);
+    }
+    if (isAgentHistoryOmissionMarker(candidate.content)) {
+      throw new Error(
+        `DevMate rejected an internal tool-history marker as the contents of ${path}. `
+        + 'Read or move the real file instead.'
+      );
     }
     if (candidate.content.length > MAX_FILE_CHANGE_CHARACTERS) {
       throw new Error(`${path} exceeds the per-file change limit.`);

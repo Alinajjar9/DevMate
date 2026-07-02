@@ -3,6 +3,7 @@ const test = require('node:test');
 
 const {
   DEFAULT_AGENT_TOOL_CALL_LIMIT,
+  MAX_AGENT_CONSECUTIVE_INSPECTIONS,
   MAX_AGENT_TOOL_CALL_LIMIT,
   MIN_AGENT_TOOL_CALL_LIMIT,
   MAX_AGENT_TOOL_HISTORY_CHARACTERS,
@@ -10,10 +11,12 @@ const {
   agentToolCallSignature,
   boundedAgentToolCallLimit,
   compactAgentToolHistory,
+  consecutiveAgentInspectionCalls,
   normalizeAgentToolCallForWorkspace,
   normalizeAgentToolPath,
   parseAgentToolCall,
   summarizedAgentToolArguments,
+  summarizeAgentToolHistory,
   truncateAgentToolResult
 } = require('../out/agentTools');
 
@@ -145,10 +148,52 @@ test('parses mutation tools and summarizes large history arguments', () => {
   assert.equal(create.arguments.path, 'src/new.ts');
   assert.deepEqual(edit.arguments.replacements, [{ oldText: 'false', newText: 'true' }]);
   assert.match(summarizedAgentToolArguments(create).content, /omitted after execution/);
+  assert.match(summarizedAgentToolArguments(create).content, /never use as file content/);
   assert.notEqual(
     agentToolCallSignature({ ...create, arguments: { path: 'src/new.ts', content: 'one' } }),
     agentToolCallSignature({ ...create, arguments: { path: 'src/new.ts', content: 'two' } })
   );
+});
+
+test('bounds consecutive inspection loops until meaningful progress', () => {
+  const inspections = Array.from({ length: MAX_AGENT_CONSECUTIVE_INSPECTIONS }, (_, index) => ({
+    name: index % 2 === 0 ? 'read_file' : 'search_code',
+    isError: false
+  }));
+  assert.equal(consecutiveAgentInspectionCalls(inspections), MAX_AGENT_CONSECUTIVE_INSPECTIONS);
+  assert.equal(consecutiveAgentInspectionCalls([
+    ...inspections,
+    { name: 'edit_file', isError: false },
+    { name: 'read_file', isError: false }
+  ]), 1);
+});
+
+test('builds an honest local summary when a model cannot finalize tool work', () => {
+  const summary = summarizeAgentToolHistory([
+    {
+      name: 'create_file',
+      arguments: { path: 'static/styles.css', content: '[history omitted]' },
+      result: 'Applied file changes:\n- Created static/styles.css',
+      isError: false
+    },
+    {
+      name: 'run_command',
+      arguments: { executable: 'npm', args: ['test'], cwd: '' },
+      result: 'Exit code: 0\nDuration: 1 second',
+      isError: false
+    },
+    {
+      name: 'read_file',
+      arguments: { path: 'missing.css' },
+      result: 'The file does not exist.',
+      isError: true
+    }
+  ], 'The model requested another tool when DevMate required a final answer.');
+
+  assert.match(summary, /Created static\/styles\.css/);
+  assert.match(summary, /npm test exited with code 0/);
+  assert.match(summary, /1 tool request failed or was rejected/);
+  assert.match(summary, /requested another tool/);
 });
 
 test('parses and signs file lifecycle tools', () => {

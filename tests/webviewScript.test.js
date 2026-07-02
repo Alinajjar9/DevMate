@@ -214,3 +214,13 @@ test('new user messages persist independently from failed assistant requests', (
   assert.match(source, /isNewTurn:\s*false/);
   assert.match(source, /turn\.assistant\s*\?\s*\[\{ role: 'assistant'/);
 });
+
+test('exhausted agent runs finalize locally instead of looping checkpoints', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'extension.ts'),
+    'utf8'
+  );
+  assert.match(source, /consecutiveAgentInspectionCalls\(toolHistory\)/);
+  assert.match(source, /Finalizing from completed project-tool work/);
+  assert.match(source, /summarizeAgentToolHistory\(toolHistory, errorMessage\)/);
+});

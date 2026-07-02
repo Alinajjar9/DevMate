@@ -1,17 +1,20 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MAX_AGENT_TOOL_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = exports.MAX_AGENT_SEARCH_RESULTS = exports.MAX_AGENT_LIST_RESULTS = exports.MAX_AGENT_DEPENDENCY_INSTALLS = exports.MAX_AGENT_COMMAND_CALLS = exports.MAX_AGENT_FILE_MUTATIONS = exports.MAX_AGENT_TOOL_CALL_LIMIT = exports.MIN_AGENT_TOOL_CALL_LIMIT = exports.DEFAULT_AGENT_TOOL_CALL_LIMIT = void 0;
+exports.MAX_AGENT_CONSECUTIVE_INSPECTIONS = exports.MAX_AGENT_TOOL_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = exports.MAX_AGENT_SEARCH_RESULTS = exports.MAX_AGENT_LIST_RESULTS = exports.MAX_AGENT_DEPENDENCY_INSTALLS = exports.MAX_AGENT_COMMAND_CALLS = exports.MAX_AGENT_FILE_MUTATIONS = exports.MAX_AGENT_TOOL_CALL_LIMIT = exports.MIN_AGENT_TOOL_CALL_LIMIT = exports.DEFAULT_AGENT_TOOL_CALL_LIMIT = void 0;
 exports.boundedAgentToolCallLimit = boundedAgentToolCallLimit;
 exports.compactAgentToolHistory = compactAgentToolHistory;
 exports.parseAgentToolCall = parseAgentToolCall;
 exports.normalizeAgentToolCallForWorkspace = normalizeAgentToolCallForWorkspace;
 exports.agentToolCallSignature = agentToolCallSignature;
 exports.summarizedAgentToolArguments = summarizedAgentToolArguments;
+exports.consecutiveAgentInspectionCalls = consecutiveAgentInspectionCalls;
+exports.summarizeAgentToolHistory = summarizeAgentToolHistory;
 exports.normalizeAgentToolPath = normalizeAgentToolPath;
 exports.truncateAgentToolResult = truncateAgentToolResult;
 const crypto_1 = require("crypto");
 const commandTools_1 = require("./commandTools");
 const dependencyTools_1 = require("./dependencyTools");
+const fileChanges_1 = require("./fileChanges");
 const fileTools_1 = require("./fileTools");
 exports.DEFAULT_AGENT_TOOL_CALL_LIMIT = 16;
 exports.MIN_AGENT_TOOL_CALL_LIMIT = 4;
@@ -23,6 +26,7 @@ exports.MAX_AGENT_LIST_RESULTS = 200;
 exports.MAX_AGENT_SEARCH_RESULTS = 50;
 exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = 10_000;
 exports.MAX_AGENT_TOOL_HISTORY_CHARACTERS = 80_000;
+exports.MAX_AGENT_CONSECUTIVE_INSPECTIONS = 16;
 function boundedAgentToolCallLimit(value) {
     if (typeof value !== 'number' || !Number.isInteger(value)) {
         return exports.DEFAULT_AGENT_TOOL_CALL_LIMIT;
@@ -186,19 +190,111 @@ function summarizedAgentToolArguments(call) {
     if (call.name === 'create_file') {
         return {
             path: call.arguments.path,
-            content: `[omitted after execution: ${call.arguments.content.length} characters, sha256 ${hashText(call.arguments.content)}]`
+            content: (0, fileChanges_1.agentHistoryOmissionMarker)('content', call.arguments.content.length, hashText(call.arguments.content))
         };
     }
     if (call.name === 'edit_file') {
         return {
             path: call.arguments.path,
             replacements: call.arguments.replacements.map((replacement) => ({
-                oldText: `[${replacement.oldText.length} characters, sha256 ${hashText(replacement.oldText)}]`,
-                newText: `[${replacement.newText.length} characters, sha256 ${hashText(replacement.newText)}]`
+                oldText: (0, fileChanges_1.agentHistoryOmissionMarker)('text', replacement.oldText.length, hashText(replacement.oldText)),
+                newText: (0, fileChanges_1.agentHistoryOmissionMarker)('text', replacement.newText.length, hashText(replacement.newText))
             }))
         };
     }
     return call.arguments;
+}
+function consecutiveAgentInspectionCalls(steps) {
+    let inspections = 0;
+    for (let index = steps.length - 1; index >= 0; index -= 1) {
+        const step = steps[index];
+        if (!step.isError && [
+            'create_file',
+            'edit_file',
+            'delete_file',
+            'rename_file',
+            'move_file',
+            'install_dependencies',
+            'run_command'
+        ].includes(step.name)) {
+            break;
+        }
+        if (['list_files', 'read_file', 'search_code'].includes(step.name)) {
+            inspections += 1;
+        }
+    }
+    return inspections;
+}
+function summarizeAgentToolHistory(steps, finalizationError) {
+    const completedChanges = [];
+    const verification = [];
+    let failedCalls = 0;
+    for (const step of steps) {
+        if (step.name === 'run_command') {
+            const command = commandSummary(step.arguments);
+            const exitCode = /(?:^|\n)Exit code:\s*(-?\d+)/i.exec(step.result)?.[1];
+            verification.push(exitCode === undefined
+                ? `${command} did not return a usable exit code.`
+                : `${command} exited with code ${exitCode}.`);
+        }
+        if (step.isError) {
+            failedCalls += 1;
+            continue;
+        }
+        const path = boundedSummaryValue(step.arguments.path);
+        const newPath = boundedSummaryValue(step.arguments.newPath);
+        if (step.name === 'create_file' && path) {
+            completedChanges.push(`Created ${path}.`);
+        }
+        else if (step.name === 'edit_file' && path) {
+            completedChanges.push(`Updated ${path}.`);
+        }
+        else if (step.name === 'delete_file' && path) {
+            completedChanges.push(`Deleted ${path}.`);
+        }
+        else if (step.name === 'rename_file' && path && newPath) {
+            completedChanges.push(`Renamed ${path} to ${newPath}.`);
+        }
+        else if (step.name === 'move_file' && path && newPath) {
+            completedChanges.push(`Moved ${path} to ${newPath}.`);
+        }
+        else if (step.name === 'install_dependencies') {
+            const manifestPath = boundedSummaryValue(step.arguments.manifestPath);
+            completedChanges.push(manifestPath
+                ? `Installed dependencies from ${manifestPath}.`
+                : 'Installed the approved project dependencies.');
+        }
+    }
+    const lines = [
+        'DevMate completed the available project-tool work, but the model did not return a usable final summary.',
+        '',
+        completedChanges.length > 0 ? 'Completed:' : 'No file changes were completed.',
+        ...completedChanges.map((item) => `- ${item}`)
+    ];
+    if (verification.length > 0) {
+        lines.push('', 'Verification:', ...verification.map((item) => `- ${item}`));
+    }
+    if (failedCalls > 0) {
+        lines.push('', `${failedCalls} tool ${failedCalls === 1 ? 'request failed or was rejected' : 'requests failed or were rejected'}; review the tool cards for details.`);
+    }
+    lines.push('', `Remaining issue: ${boundedSummaryValue(finalizationError, 300) || 'The model could not finalize the request.'}`, 'Start a follow-up request if more project work is needed.');
+    return lines.join('\n');
+}
+function commandSummary(argumentsValue) {
+    const executable = boundedSummaryValue(argumentsValue.executable, 80) || 'Verification command';
+    const args = Array.isArray(argumentsValue.args)
+        ? argumentsValue.args
+            .filter((value) => typeof value === 'string')
+            .map((value) => boundedSummaryValue(value, 80))
+            .filter(Boolean)
+            .slice(0, 12)
+        : [];
+    return [executable, ...args].join(' ');
+}
+function boundedSummaryValue(value, maximum = 240) {
+    return typeof value === 'string'
+        ? value.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maximum)
+        : '';
 }
 function normalizeAgentToolPath(value, allowRoot = true) {
     const trimmed = value.trim();

@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import { parseRunCommandArguments } from './commandTools';
 import { parseInstallDependenciesArguments } from './dependencyTools';
 import type { InstallDependenciesToolArguments } from './dependencyTools';
+import { agentHistoryOmissionMarker } from './fileChanges';
 import {
   parseCreateFileArguments,
   parseDeleteFileArguments,
@@ -21,6 +22,7 @@ export const MAX_AGENT_LIST_RESULTS = 200;
 export const MAX_AGENT_SEARCH_RESULTS = 50;
 export const MAX_AGENT_TOOL_RESULT_CHARACTERS = 10_000;
 export const MAX_AGENT_TOOL_HISTORY_CHARACTERS = 80_000;
+export const MAX_AGENT_CONSECUTIVE_INSPECTIONS = 16;
 
 export function boundedAgentToolCallLimit(value: unknown): number {
   if (typeof value !== 'number' || !Number.isInteger(value)) {
@@ -296,19 +298,141 @@ export function summarizedAgentToolArguments(
   if (call.name === 'create_file') {
     return {
       path: call.arguments.path,
-      content: `[omitted after execution: ${call.arguments.content.length} characters, sha256 ${hashText(call.arguments.content)}]`
+      content: agentHistoryOmissionMarker(
+        'content',
+        call.arguments.content.length,
+        hashText(call.arguments.content)
+      )
     };
   }
   if (call.name === 'edit_file') {
     return {
       path: call.arguments.path,
       replacements: call.arguments.replacements.map((replacement) => ({
-        oldText: `[${replacement.oldText.length} characters, sha256 ${hashText(replacement.oldText)}]`,
-        newText: `[${replacement.newText.length} characters, sha256 ${hashText(replacement.newText)}]`
+        oldText: agentHistoryOmissionMarker(
+          'text',
+          replacement.oldText.length,
+          hashText(replacement.oldText)
+        ),
+        newText: agentHistoryOmissionMarker(
+          'text',
+          replacement.newText.length,
+          hashText(replacement.newText)
+        )
       }))
     };
   }
   return call.arguments;
+}
+
+export function consecutiveAgentInspectionCalls(
+  steps: Array<{ name: string; isError: boolean }>
+): number {
+  let inspections = 0;
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    const step = steps[index];
+    if (!step.isError && [
+      'create_file',
+      'edit_file',
+      'delete_file',
+      'rename_file',
+      'move_file',
+      'install_dependencies',
+      'run_command'
+    ].includes(step.name)) {
+      break;
+    }
+    if (['list_files', 'read_file', 'search_code'].includes(step.name)) {
+      inspections += 1;
+    }
+  }
+  return inspections;
+}
+
+export function summarizeAgentToolHistory(
+  steps: Array<{
+    name: string;
+    arguments: Record<string, unknown>;
+    result: string;
+    isError: boolean;
+  }>,
+  finalizationError: string
+): string {
+  const completedChanges: string[] = [];
+  const verification: string[] = [];
+  let failedCalls = 0;
+
+  for (const step of steps) {
+    if (step.name === 'run_command') {
+      const command = commandSummary(step.arguments);
+      const exitCode = /(?:^|\n)Exit code:\s*(-?\d+)/i.exec(step.result)?.[1];
+      verification.push(exitCode === undefined
+        ? `${command} did not return a usable exit code.`
+        : `${command} exited with code ${exitCode}.`);
+    }
+    if (step.isError) {
+      failedCalls += 1;
+      continue;
+    }
+    const path = boundedSummaryValue(step.arguments.path);
+    const newPath = boundedSummaryValue(step.arguments.newPath);
+    if (step.name === 'create_file' && path) {
+      completedChanges.push(`Created ${path}.`);
+    } else if (step.name === 'edit_file' && path) {
+      completedChanges.push(`Updated ${path}.`);
+    } else if (step.name === 'delete_file' && path) {
+      completedChanges.push(`Deleted ${path}.`);
+    } else if (step.name === 'rename_file' && path && newPath) {
+      completedChanges.push(`Renamed ${path} to ${newPath}.`);
+    } else if (step.name === 'move_file' && path && newPath) {
+      completedChanges.push(`Moved ${path} to ${newPath}.`);
+    } else if (step.name === 'install_dependencies') {
+      const manifestPath = boundedSummaryValue(step.arguments.manifestPath);
+      completedChanges.push(manifestPath
+        ? `Installed dependencies from ${manifestPath}.`
+        : 'Installed the approved project dependencies.');
+    }
+  }
+
+  const lines = [
+    'DevMate completed the available project-tool work, but the model did not return a usable final summary.',
+    '',
+    completedChanges.length > 0 ? 'Completed:' : 'No file changes were completed.',
+    ...completedChanges.map((item) => `- ${item}`)
+  ];
+  if (verification.length > 0) {
+    lines.push('', 'Verification:', ...verification.map((item) => `- ${item}`));
+  }
+  if (failedCalls > 0) {
+    lines.push(
+      '',
+      `${failedCalls} tool ${failedCalls === 1 ? 'request failed or was rejected' : 'requests failed or were rejected'}; review the tool cards for details.`
+    );
+  }
+  lines.push(
+    '',
+    `Remaining issue: ${boundedSummaryValue(finalizationError, 300) || 'The model could not finalize the request.'}`,
+    'Start a follow-up request if more project work is needed.'
+  );
+  return lines.join('\n');
+}
+
+function commandSummary(argumentsValue: Record<string, unknown>): string {
+  const executable = boundedSummaryValue(argumentsValue.executable, 80) || 'Verification command';
+  const args = Array.isArray(argumentsValue.args)
+    ? argumentsValue.args
+      .filter((value): value is string => typeof value === 'string')
+      .map((value) => boundedSummaryValue(value, 80))
+      .filter(Boolean)
+      .slice(0, 12)
+    : [];
+  return [executable, ...args].join(' ');
+}
+
+function boundedSummaryValue(value: unknown, maximum = 240): string {
+  return typeof value === 'string'
+    ? value.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maximum)
+    : '';
 }
 
 export function normalizeAgentToolPath(value: string, allowRoot = true): string {

@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import {
   DEFAULT_AGENT_TOOL_CALL_LIMIT,
+  MAX_AGENT_CONSECUTIVE_INSPECTIONS,
   MAX_AGENT_TOOL_CALL_LIMIT,
   MIN_AGENT_TOOL_CALL_LIMIT,
   MAX_AGENT_COMMAND_CALLS,
@@ -12,9 +13,11 @@ import {
   agentToolCallSignature,
   boundedAgentToolCallLimit,
   compactAgentToolHistory,
+  consecutiveAgentInspectionCalls,
   normalizeAgentToolCallForWorkspace,
   parseAgentToolCall,
   summarizedAgentToolArguments,
+  summarizeAgentToolHistory,
   truncateAgentToolResult
 } from './agentTools';
 import type { AgentToolCall, AgentToolName, ParsedAgentToolCall } from './agentTools';
@@ -3681,6 +3684,22 @@ class DevMateChatViewProvider implements
       if (result.status === 'error' || !result.data) {
         const errorMessage = result.message ?? 'Ask request failed.';
         if (
+          forceFinalThisTurn
+          && toolHistory.length > 0
+          && result.errorKind !== 'network'
+          && result.errorKind !== 'timeout'
+          && result.errorKind !== 'cancelled'
+        ) {
+          this.postStatus('Finalizing from completed project-tool work');
+          finalData = {
+            answer: summarizeAgentToolHistory(toolHistory, errorMessage),
+            usedFiles: [...toolUsedFiles],
+            changes: [],
+            toolCalls: []
+          };
+          break;
+        }
+        if (
           !forceFinalThisTurn
           && !emptyResponseRecoveryAttempted
           && isRecoverableEmptyModelResponse(errorMessage)
@@ -3753,7 +3772,16 @@ class DevMateChatViewProvider implements
           || toolCall.name === 'search_code';
         const priorSignature = signature ? toolSignatures.get(signature) : undefined;
         const repeatedAtCurrentRevision = priorSignature?.revision === workspaceRevision;
-        if (isFileMutation && fileMutationCalls >= MAX_AGENT_FILE_MUTATIONS) {
+        if (
+          isReadOnly
+          && consecutiveAgentInspectionCalls(toolHistory) >= MAX_AGENT_CONSECUTIVE_INSPECTIONS
+        ) {
+          execution = this.rejectedToolExecution(
+            toolCall,
+            `DevMate paused the request after ${MAX_AGENT_CONSECUTIVE_INSPECTIONS} consecutive inspection calls without a file change or verification command. Use the gathered evidence and finish concisely.`
+          );
+          forceFinalAnswer = true;
+        } else if (isFileMutation && fileMutationCalls >= MAX_AGENT_FILE_MUTATIONS) {
           execution = this.rejectedToolExecution(
             toolCall,
             'DevMate reached the file-mutation limit for this request.'
