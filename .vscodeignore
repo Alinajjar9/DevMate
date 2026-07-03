@@ -4,6 +4,7 @@
 .gitignore
 .nvmrc
 .python-version
+.pyinstaller-build/**
 .vscodeignore
 .vscode/**
 .vscode-test/**
@@ -17,7 +18,9 @@ docs/**
 backend/requirements-dev.txt
 IMPLEMENTATION_PLAN.local.md
 package-lock.json
+scripts/**
 **/__pycache__/**
-*.map
+**/*.map
 *.vsix
 tsconfig.json
+VSIX_README.md

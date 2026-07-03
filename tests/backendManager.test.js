@@ -3,7 +3,9 @@ const path = require('node:path');
 const test = require('node:test');
 
 const {
+  backendLaunchArguments,
   backendStatusLabel,
+  bundledBackendLaunchCandidate,
   LocalBackendManager,
   parseLocalBackendTarget,
   pythonLaunchCandidates
@@ -92,6 +94,36 @@ test('prefers configured and extension-local Python launchers', () => {
   const unix = pythonLaunchCandidates('/opt/devmate', '', 'linux');
   assert.equal(unix[0].executable, '/opt/devmate/.venv/bin/python');
   assert.equal(unix.at(-1).executable, 'python');
+});
+
+test('finds the standalone backend for the current platform build', () => {
+  const windows = bundledBackendLaunchCandidate('C:\\DevMate', 'win32', 'x64');
+  assert.equal(windows.kind, 'standalone');
+  assert.match(
+    windows.executable.replace(/\\/g, '/'),
+    /backend-runtime\/win32-x64\/devmate-backend\/devmate-backend\.exe$/
+  );
+
+  const linux = bundledBackendLaunchCandidate('/opt/devmate', 'linux', 'arm64');
+  assert.match(
+    linux.executable,
+    /backend-runtime\/linux-arm64\/devmate-backend\/devmate-backend$/
+  );
+
+  assert.deepEqual(
+    backendLaunchArguments(windows, {
+      url: 'http://127.0.0.1:8123', host: '127.0.0.1', port: 8123
+    }),
+    ['--host', '127.0.0.1', '--port', '8123']
+  );
+  assert.deepEqual(
+    backendLaunchArguments({
+      executable: 'py', prefixArgs: ['-3'], label: 'Python', kind: 'python'
+    }, {
+      url: 'http://127.0.0.1:8123', host: '127.0.0.1', port: 8123
+    }),
+    ['-3', '-m', 'uvicorn', 'backend.app.main:app', '--host', '127.0.0.1', '--port', '8123']
+  );
 });
 
 test('formats managed backend states for compact UI', () => {

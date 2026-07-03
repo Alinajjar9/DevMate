@@ -36,6 +36,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.LocalBackendManager = exports.BACKEND_RESTART_WINDOW_MS = exports.MAX_BACKEND_RESTARTS = exports.BACKEND_START_POLL_MS = exports.BACKEND_START_ATTEMPTS = exports.BACKEND_HEALTH_INTERVAL_MS = void 0;
 exports.parseLocalBackendTarget = parseLocalBackendTarget;
 exports.pythonLaunchCandidates = pythonLaunchCandidates;
+exports.bundledBackendLaunchCandidate = bundledBackendLaunchCandidate;
+exports.backendLaunchArguments = backendLaunchArguments;
 exports.backendStatusLabel = backendStatusLabel;
 const child_process_1 = require("child_process");
 const path = __importStar(require("path"));
@@ -118,6 +120,37 @@ function pythonLaunchCandidates(extensionPath, configuredPythonPath, platform = 
         seen.add(signature);
         return true;
     });
+}
+function bundledBackendLaunchCandidate(extensionPath, platform = process.platform, architecture = process.arch) {
+    const platformPath = platform === 'win32' ? path.win32 : path.posix;
+    const executableName = platform === 'win32' ? 'devmate-backend.exe' : 'devmate-backend';
+    return {
+        executable: platformPath.join(extensionPath, 'backend-runtime', `${platform}-${architecture}`, 'devmate-backend', executableName),
+        prefixArgs: [],
+        label: `Bundled backend (${platform}-${architecture})`,
+        kind: 'standalone'
+    };
+}
+function backendLaunchArguments(launcher, target) {
+    if (launcher.kind === 'standalone') {
+        return [
+            ...launcher.prefixArgs,
+            '--host',
+            target.host,
+            '--port',
+            String(target.port)
+        ];
+    }
+    return [
+        ...launcher.prefixArgs,
+        '-m',
+        'uvicorn',
+        'backend.app.main:app',
+        '--host',
+        target.host,
+        '--port',
+        String(target.port)
+    ];
 }
 function backendStatusLabel(status) {
     if (status.state === 'online') {
@@ -253,8 +286,11 @@ class LocalBackendManager {
             this.startMonitor();
             return true;
         }
+        const bundledLauncher = bundledBackendLaunchCandidate(this.options.extensionPath);
+        const hasBundledBackend = this.options.fileExists(bundledLauncher.executable);
         const backendEntry = path.join(this.options.extensionPath, 'backend', 'app', 'main.py');
-        if (!this.options.fileExists(backendEntry)) {
+        const hasBackendSource = this.options.fileExists(backendEntry);
+        if (!hasBundledBackend && !hasBackendSource) {
             this.updateStatus({
                 state: 'offline',
                 detail: 'The DevMate backend files are missing from this extension installation.',
@@ -269,7 +305,12 @@ class LocalBackendManager {
             managed: true,
             canRestart: false
         });
-        const launchers = pythonLaunchCandidates(this.options.extensionPath, this.options.getConfiguredPythonPath()).filter((launcher) => !path.isAbsolute(launcher.executable)
+        const launchers = [
+            ...(hasBundledBackend ? [bundledLauncher] : []),
+            ...(hasBackendSource
+                ? pythonLaunchCandidates(this.options.extensionPath, this.options.getConfiguredPythonPath()).map((launcher) => ({ ...launcher, kind: 'python' }))
+                : [])
+        ].filter((launcher) => !path.isAbsolute(launcher.executable)
             || this.options.fileExists(launcher.executable));
         this.launching = true;
         try {
@@ -300,19 +341,13 @@ class LocalBackendManager {
     }
     async launchWith(launcher, target) {
         this.options.onOutput(`\n[DevMate] Starting backend with ${launcher.label}: ${launcher.executable}\n`);
+        const argumentsList = backendLaunchArguments(launcher, target);
         let child;
         try {
-            child = (0, child_process_1.spawn)(launcher.executable, [
-                ...launcher.prefixArgs,
-                '-m',
-                'uvicorn',
-                'backend.app.main:app',
-                '--host',
-                target.host,
-                '--port',
-                String(target.port)
-            ], {
-                cwd: this.options.extensionPath,
+            child = (0, child_process_1.spawn)(launcher.executable, argumentsList, {
+                cwd: launcher.kind === 'standalone'
+                    ? path.dirname(launcher.executable)
+                    : this.options.extensionPath,
                 windowsHide: true,
                 env: {
                     ...process.env,

@@ -79,7 +79,7 @@ npm run compile
 
 The development extension is installed only in the Extension Development Host window. If a different demo project is needed, change the workspace path in `.vscode/launch.json` before pressing `F5`.
 
-The backend starts automatically when `devMate.manageLocalBackend` is enabled and `devMate.backendUrl` points to a local HTTP address. DevMate first looks for `.venv` or `venv` beside the extension and then falls back to Python on `PATH`.
+The backend starts automatically when `devMate.manageLocalBackend` is enabled and `devMate.backendUrl` points to a local HTTP address. DevMate prefers a bundled backend executable when one is available for the current platform. Development builds then fall back to `.venv`, `venv`, a configured interpreter, or Python on `PATH`.
 
 ## Configuring a model
 
@@ -276,43 +276,42 @@ The tests do not make paid provider requests. Provider behaviour is tested with 
 
 ## Packaging a VSIX
 
-Install Microsoft's VS Code extension packaging tool:
+Install the development dependencies, including PyInstaller for the backend build:
 
 ```powershell
-npm install --save-dev @vscode/vsce
+npm ci
+py -m venv .venv
+.venv\Scripts\python -m pip install -r backend\requirements-dev.txt
 ```
 
-Inspect the files that will be included:
+Build the standalone backend for the current operating system and architecture:
 
 ```powershell
-npx @vscode/vsce ls
+npm run build:backend
 ```
 
-Create an installable VSIX:
+Run the tests and create an installable VSIX:
 
 ```powershell
 npm test
-npx @vscode/vsce package --out devmate.vsix
+npx --yes @vscode/vsce package --out devmate-1.0.0.vsix --allow-missing-repository
 ```
+
+The `vscode:prepublish` script rebuilds the backend and TypeScript extension automatically. PyInstaller builds for the computer it runs on, so a Windows x64 VSIX must be built on Windows x64.
 
 Install it with:
 
 ```powershell
-code --install-extension .\devmate.vsix
+code --install-extension .\devmate-1.0.0.vsix
 ```
 
 It can also be installed from VS Code through **Extensions: Install from VSIX**.
 
-### Python environment for the installed extension
+### Backend in the installed extension
 
-The VSIX contains the backend source but does not bundle a Python virtual environment. Create an environment from this repository and install the runtime requirements:
+The Windows x64 VSIX includes a self-contained backend executable. DevMate starts it when VS Code opens, monitors its health, restarts it after a failure, and stops the process it owns when VS Code closes. Users do not need to install Python or configure `devMate.backendPythonPath` for that build.
 
-```powershell
-py -m venv .venv
-.venv\Scripts\python -m pip install -r backend\requirements.txt
-```
-
-Set **DevMate: Backend Python Path** in VS Code to the absolute path of `.venv\Scripts\python.exe`. The installed extension will use that interpreter when starting its packaged backend.
+The Python backend source remains in the package as a fallback for development or an unsupported platform. In that case, install `backend/requirements.txt` and set **DevMate: Backend Python Path** to the interpreter.
 
 ## Repository structure
 
@@ -329,6 +328,9 @@ Set **DevMate: Backend Python Path** in VS Code to the absolute path of `.venv\S
 | `backend/app/main.py` | FastAPI routes, validation, and tool schemas |
 | `backend/app/prompts.py` | Mode and agent-loop prompts |
 | `backend/app/providers.py` | OpenAI-compatible provider client |
+| `backend/run_backend.py` | Entry point for the standalone backend |
+| `scripts/build-backend.js` | Platform-aware PyInstaller build command |
+| `backend-runtime/` | Generated platform backend included in the VSIX |
 | `tests/` | Extension tests |
 | `backend/tests/` | Backend tests |
 | `out/` | Compiled JavaScript used by VS Code |
@@ -337,11 +339,10 @@ Set **DevMate: Backend Python Path** in VS Code to the absolute path of `.venv\S
 
 ### DevMate cannot reach the backend
 
-- Confirm that the selected Python interpreter exists.
-- Install `backend/requirements.txt` into that interpreter.
+- Open the DevMate backend logs and check whether the bundled executable started.
 - Check whether port 8000 is already in use.
-- Open the DevMate backend logs from the toolbar or settings.
 - Restart the backend from the settings dialog.
+- On a platform without a bundled runtime, install `backend/requirements.txt` and configure **DevMate: Backend Python Path**.
 
 ### The provider times out
 
@@ -365,7 +366,7 @@ The workspace must be trusted and VS Code Terminal Shell Integration must be ava
 - Project retrieval is lexical rather than embedding-based.
 - Code navigation depends on installed VS Code language providers.
 - Completed change snapshots are kept in memory, so an old native diff may be unavailable after reloading VS Code.
-- The packaged extension requires a separately prepared Python environment.
+- Standalone backend builds are platform-specific and currently prepared for Windows x64.
 - Directory operations, arbitrary shells, Git commands, servers, generators, and deployment commands are not supported.
 
 ## Security notes

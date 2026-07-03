@@ -5,6 +5,8 @@ node_modules/
 !.env.example
 __pycache__/
 *.py[cod]
+.pyinstaller-build/
+backend-runtime/
 .vscode-test/
 *.vsix
 docs/
