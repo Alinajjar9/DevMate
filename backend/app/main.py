@@ -30,6 +30,7 @@ from .text_tool_calls import (
 logger = logging.getLogger(__name__)
 
 
+DEVMATE_BACKEND_VERSION = "1.0.0"
 ContextSource = Literal["file", "selection", "attachment"]
 MAX_CONTEXT_CHARACTERS = 20_000
 MAX_PROJECT_CONTEXT_FILES = 5
@@ -601,7 +602,7 @@ AGENT_TOOL_DEFINITIONS = (
 )
 
 
-app = FastAPI(title="DevMate Backend", version="0.9.0")
+app = FastAPI(title="DevMate Backend", version=DEVMATE_BACKEND_VERSION)
 _chat_provider = OpenAICompatibleProvider()
 
 

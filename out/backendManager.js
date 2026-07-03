@@ -137,6 +137,7 @@ function backendStatusLabel(status) {
     }
     return 'Backend offline';
 }
+// The manager only stops processes it started itself. Existing local backends remain untouched.
 class LocalBackendManager {
     options;
     statusValue = {

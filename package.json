@@ -1,7 +1,7 @@
 {
   "name": "devmate",
   "displayName": "DevMate",
-  "description": "A VS Code assistant prototype for compact AI-supported project guidance.",
+  "description": "A local-first VS Code coding assistant with project tools, sessions, and model profiles.",
   "version": "1.0.0",
   "publisher": "local",
   "author": "Ali Najjar",

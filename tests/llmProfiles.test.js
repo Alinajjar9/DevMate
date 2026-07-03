@@ -53,7 +53,19 @@ test('rejects duplicate names and unsafe base URLs', () => {
       },
       profiles
     ),
-    /without embedded credentials/
+    /without credentials/
+  );
+  assert.match(
+    validateProfileDraft(
+      {
+        name: 'Query URL',
+        provider: 'openai',
+        model: 'model-c',
+        baseUrl: 'https://example.com/v1?api-version=1'
+      },
+      profiles
+    ),
+    /query parameters/
   );
 });
 

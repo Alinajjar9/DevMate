@@ -156,6 +156,7 @@ export function backendStatusLabel(status: ManagedBackendStatus): string {
   return 'Backend offline';
 }
 
+// The manager only stops processes it started itself. Existing local backends remain untouched.
 export class LocalBackendManager {
   private statusValue: ManagedBackendStatus = {
     state: 'checking',

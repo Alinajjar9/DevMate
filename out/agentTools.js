@@ -1,9 +1,11 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MAX_AGENT_CONSECUTIVE_INSPECTIONS = exports.MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = exports.MAX_AGENT_READ_LINES = exports.MAX_AGENT_CODE_NAVIGATION_RESULTS = exports.MAX_AGENT_TERMINAL_ERROR_RESULTS = exports.MAX_AGENT_DIAGNOSTIC_RESULTS = exports.MAX_AGENT_SEARCH_RESULTS = exports.MAX_AGENT_LIST_RESULTS = exports.MAX_AGENT_DEPENDENCY_INSTALLS = exports.MAX_AGENT_COMMAND_CALLS = exports.MAX_AGENT_FILE_MUTATIONS = exports.MAX_AGENT_TOOL_CALL_LIMIT = exports.MIN_AGENT_TOOL_CALL_LIMIT = exports.DEFAULT_AGENT_TOOL_CALL_LIMIT = void 0;
+exports.FILE_MUTATION_AGENT_TOOL_NAMES = exports.READ_ONLY_AGENT_TOOL_NAMES = exports.AGENT_TOOL_NAMES = exports.MAX_AGENT_CONSECUTIVE_INSPECTIONS = exports.MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = exports.MAX_AGENT_READ_LINES = exports.MAX_AGENT_CODE_NAVIGATION_RESULTS = exports.MAX_AGENT_TERMINAL_ERROR_RESULTS = exports.MAX_AGENT_DIAGNOSTIC_RESULTS = exports.MAX_AGENT_SEARCH_RESULTS = exports.MAX_AGENT_LIST_RESULTS = exports.MAX_AGENT_DEPENDENCY_INSTALLS = exports.MAX_AGENT_COMMAND_CALLS = exports.MAX_AGENT_FILE_MUTATIONS = exports.MAX_AGENT_TOOL_CALL_LIMIT = exports.MIN_AGENT_TOOL_CALL_LIMIT = exports.DEFAULT_AGENT_TOOL_CALL_LIMIT = void 0;
 exports.boundedAgentToolCallLimit = boundedAgentToolCallLimit;
 exports.isDeferredAgentPlanAnswer = isDeferredAgentPlanAnswer;
 exports.compactAgentToolHistory = compactAgentToolHistory;
+exports.isReadOnlyAgentTool = isReadOnlyAgentTool;
+exports.isFileMutationAgentTool = isFileMutationAgentTool;
 exports.parseAgentToolCall = parseAgentToolCall;
 exports.normalizeAgentToolCallForWorkspace = normalizeAgentToolCallForWorkspace;
 exports.agentToolCallSignature = agentToolCallSignature;
@@ -68,6 +70,49 @@ function compactAgentToolHistory(steps) {
         step.result = marker;
     }
     return compacted;
+}
+exports.AGENT_TOOL_NAMES = [
+    'list_files',
+    'read_file',
+    'search_code',
+    'get_symbols',
+    'find_definition',
+    'find_references',
+    'get_diagnostics',
+    'read_terminal_errors',
+    'create_file',
+    'edit_file',
+    'delete_file',
+    'rename_file',
+    'move_file',
+    'install_dependencies',
+    'run_command'
+];
+// Tool groups live here so checkpoints and loop limits cannot quietly drift apart.
+exports.READ_ONLY_AGENT_TOOL_NAMES = [
+    'list_files',
+    'read_file',
+    'search_code',
+    'get_symbols',
+    'find_definition',
+    'find_references',
+    'get_diagnostics',
+    'read_terminal_errors'
+];
+exports.FILE_MUTATION_AGENT_TOOL_NAMES = [
+    'create_file',
+    'edit_file',
+    'delete_file',
+    'rename_file',
+    'move_file'
+];
+const readOnlyAgentTools = new Set(exports.READ_ONLY_AGENT_TOOL_NAMES);
+const fileMutationAgentTools = new Set(exports.FILE_MUTATION_AGENT_TOOL_NAMES);
+function isReadOnlyAgentTool(name) {
+    return readOnlyAgentTools.has(name);
+}
+function isFileMutationAgentTool(name) {
+    return fileMutationAgentTools.has(name);
 }
 function parseAgentToolCall(call) {
     if (!call.id.trim()) {

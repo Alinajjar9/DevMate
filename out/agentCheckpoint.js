@@ -2,22 +2,10 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MAX_AGENT_CHECKPOINT_AGE_MS = exports.AGENT_CHECKPOINT_STORAGE_KEY = void 0;
 exports.parseAgentRunCheckpoint = parseAgentRunCheckpoint;
+const agentTools_1 = require("./agentTools");
 exports.AGENT_CHECKPOINT_STORAGE_KEY = 'devMate.agentCheckpoint.v1';
 exports.MAX_AGENT_CHECKPOINT_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
-const toolNames = new Set([
-    'list_files',
-    'read_file',
-    'search_code',
-    'get_diagnostics',
-    'read_terminal_errors',
-    'create_file',
-    'edit_file',
-    'delete_file',
-    'rename_file',
-    'move_file',
-    'install_dependencies',
-    'run_command'
-]);
+const toolNames = new Set(agentTools_1.AGENT_TOOL_NAMES);
 function parseAgentRunCheckpoint(value, now = Date.now()) {
     if (!isRecord(value)
         || value.version !== 1

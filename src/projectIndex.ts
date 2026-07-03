@@ -126,6 +126,7 @@ export function splitProjectContent(
       break;
     }
 
+    // A small overlap keeps declarations and their surrounding code together across chunk boundaries.
     const overlapTarget = Math.max(startOffset + 1, endOffset - PROJECT_CHUNK_OVERLAP_CHARACTERS);
     const overlapBoundary = content.lastIndexOf('\n', overlapTarget);
     startOffset = overlapBoundary >= startOffset
@@ -171,6 +172,7 @@ export function retrieveProjectChunks(
     return [];
   }
 
+  // Rare matching terms carry more weight than words repeated throughout the project.
   const documentFrequency = new Map<string, number>();
   for (const token of queryTokens) {
     documentFrequency.set(

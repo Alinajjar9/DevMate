@@ -2,11 +2,14 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  AGENT_TOOL_NAMES,
   DEFAULT_AGENT_TOOL_CALL_LIMIT,
+  FILE_MUTATION_AGENT_TOOL_NAMES,
   MAX_AGENT_CONSECUTIVE_INSPECTIONS,
   MAX_AGENT_TOOL_CALL_LIMIT,
   MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS,
   MIN_AGENT_TOOL_CALL_LIMIT,
+  READ_ONLY_AGENT_TOOL_NAMES,
   MAX_AGENT_TOOL_HISTORY_CHARACTERS,
   MAX_AGENT_TOOL_RESULT_CHARACTERS,
   agentToolCallSignature,
@@ -15,6 +18,8 @@ const {
   compactAgentToolHistory,
   consecutiveAgentInspectionCalls,
   isDeferredAgentPlanAnswer,
+  isFileMutationAgentTool,
+  isReadOnlyAgentTool,
   normalizeAgentToolCallForWorkspace,
   normalizeAgentToolPath,
   parseAgentToolCall,
@@ -34,6 +39,25 @@ test('bounds configurable agent tool-call limits', () => {
   assert.equal(boundedAgentToolCallLimit(24), 24);
   assert.equal(boundedAgentToolCallLimit(100), 100);
   assert.equal(boundedAgentToolCallLimit(101), MAX_AGENT_TOOL_CALL_LIMIT);
+});
+
+test('keeps navigation tools inside the shared read-only group', () => {
+  for (const name of ['get_symbols', 'find_definition', 'find_references']) {
+    assert.equal(isReadOnlyAgentTool(name), true);
+    assert.equal(isFileMutationAgentTool(name), false);
+  }
+  assert.equal(isFileMutationAgentTool('edit_file'), true);
+});
+
+test('classifies every supported agent tool exactly once', () => {
+  const grouped = [
+    ...READ_ONLY_AGENT_TOOL_NAMES,
+    ...FILE_MUTATION_AGENT_TOOL_NAMES,
+    'install_dependencies',
+    'run_command'
+  ];
+  assert.deepEqual(new Set(grouped), new Set(AGENT_TOOL_NAMES));
+  assert.equal(grouped.length, AGENT_TOOL_NAMES.length);
 });
 
 test('recognizes short future-action preambles as unfinished agent answers', () => {

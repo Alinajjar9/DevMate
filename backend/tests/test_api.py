@@ -1,14 +1,19 @@
 import json
 import unittest
+from typing import get_args
 
 from fastapi.testclient import TestClient
 
 from backend.app.main import (
+    AGENT_TOOL_DEFINITIONS,
+    AgentToolName,
     MAX_AGENT_TOOL_STEPS,
     MAX_ATTACHED_FILES,
     MAX_CONTEXT_CHARACTERS,
     MAX_PROJECT_CONTEXT_FILES,
     MAX_PROJECT_FILE_CHARACTERS,
+    MUTATING_AGENT_TOOLS,
+    READ_ONLY_AGENT_TOOLS,
     app,
     get_chat_provider,
 )
@@ -63,9 +68,18 @@ class DevMateApiTests(unittest.TestCase):
             response.json(),
             {
                 "status": "ok",
-                "data": {"backend": "online", "version": "0.9.0"},
+                "data": {"backend": "online", "version": "1.0.0"},
             },
         )
+
+    def test_every_supported_agent_tool_has_one_definition(self) -> None:
+        supported = set(get_args(AgentToolName))
+        classified = set((*READ_ONLY_AGENT_TOOLS, *MUTATING_AGENT_TOOLS))
+        definitions = [definition.name for definition in AGENT_TOOL_DEFINITIONS]
+
+        self.assertEqual(classified, supported)
+        self.assertEqual(set(definitions), supported)
+        self.assertEqual(len(definitions), len(supported))
 
     def test_stream_endpoint_emits_start_delta_and_validated_final_result(self) -> None:
         with self.client.stream(

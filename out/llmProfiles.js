@@ -70,8 +70,12 @@ function validateProfileDraft(draft, existingProfiles, editingProfileId) {
     if (normalized.baseUrl) {
         try {
             const url = new URL(normalized.baseUrl);
-            if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
-                return 'Use an HTTP or HTTPS base URL without embedded credentials.';
+            if (!['http:', 'https:'].includes(url.protocol)
+                || url.username
+                || url.password
+                || url.search
+                || url.hash) {
+                return 'Use an HTTP or HTTPS base URL without credentials, query parameters, or fragments.';
             }
         }
         catch {
@@ -191,6 +195,6 @@ function isOfficialOpenAiProfile(profile) {
     }
 }
 function isRecord(value) {
-    return typeof value === 'object' && value !== null;
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 //# sourceMappingURL=llmProfiles.js.map

@@ -1,3 +1,10 @@
+.agents/**
+.codex/**
+.git/**
+.gitignore
+.nvmrc
+.python-version
+.vscodeignore
 .vscode/**
 .vscode-test/**
 src/**
@@ -8,6 +15,9 @@ tests/**
 backend/tests/**
 docs/**
 backend/requirements-dev.txt
+IMPLEMENTATION_PLAN.local.md
+package-lock.json
 **/__pycache__/**
 *.map
+*.vsix
 tsconfig.json

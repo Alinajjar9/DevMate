@@ -2758,21 +2758,12 @@ class DevMateChatViewProvider {
         });
     }
     enabledAgentTools(mode, fileMutationCalls, commandCalls, dependencyInstallCalls) {
-        const tools = [
-            'list_files',
-            'read_file',
-            'search_code',
-            'get_symbols',
-            'find_definition',
-            'find_references',
-            'get_diagnostics',
-            'read_terminal_errors'
-        ];
+        const tools = [...agentTools_1.READ_ONLY_AGENT_TOOL_NAMES];
         if (mode === 'ideas' || !vscode.workspace.isTrusted) {
             return tools;
         }
         if (fileMutationCalls < agentTools_1.MAX_AGENT_FILE_MUTATIONS) {
-            tools.push('create_file', 'edit_file', 'delete_file', 'rename_file', 'move_file');
+            tools.push(...agentTools_1.FILE_MUTATION_AGENT_TOOL_NAMES);
         }
         if (dependencyInstallCalls < agentTools_1.MAX_AGENT_DEPENDENCY_INSTALLS) {
             tools.push('install_dependencies');
@@ -3038,6 +3029,7 @@ class DevMateChatViewProvider {
             limit: toolCallLimit
         });
         await persistCheckpoint();
+        // Each pass either finishes the answer or feeds one bounded batch of tool results back to the model.
         while (!finalData) {
             if (this.finishCancelledRequest(signal)) {
                 return;
@@ -3191,18 +3183,10 @@ class DevMateChatViewProvider {
                     // The executor reports the validated tool error back to the model.
                 }
                 let execution;
-                const isFileMutation = toolCall.name === 'create_file'
-                    || toolCall.name === 'edit_file'
-                    || toolCall.name === 'delete_file'
-                    || toolCall.name === 'rename_file'
-                    || toolCall.name === 'move_file';
+                const isFileMutation = (0, agentTools_1.isFileMutationAgentTool)(toolCall.name);
                 const isCommand = toolCall.name === 'run_command';
                 const isDependencyInstall = toolCall.name === 'install_dependencies';
-                const isReadOnly = toolCall.name === 'list_files'
-                    || toolCall.name === 'read_file'
-                    || toolCall.name === 'search_code'
-                    || toolCall.name === 'get_diagnostics'
-                    || toolCall.name === 'read_terminal_errors';
+                const isReadOnly = (0, agentTools_1.isReadOnlyAgentTool)(toolCall.name);
                 const priorSignature = signature ? toolSignatures.get(signature) : undefined;
                 const repeatedAtCurrentRevision = priorSignature?.revision === workspaceRevision;
                 if (isReadOnly
@@ -7910,12 +7894,7 @@ class DevMateChatViewProvider {
     }
 }
 function createNonce() {
-    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    let nonce = '';
-    for (let index = 0; index < 32; index += 1) {
-        nonce += alphabet.charAt(Math.floor(Math.random() * alphabet.length));
-    }
-    return nonce;
+    return (0, crypto_1.randomBytes)(24).toString('base64');
 }
 function wait(milliseconds) {
     return new Promise((resolve) => setTimeout(resolve, milliseconds));

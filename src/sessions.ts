@@ -189,6 +189,7 @@ export function appendConversationSessionUserMessage(
   if (!normalizedUser || !activeConversationSession(store)) {
     return store;
   }
+  // Save the question before the provider call so a failed request still remains in the session.
   const sessions = boundStoreSessions(store.sessions.map((session) => {
     if (session.id !== store.activeSessionId) {
       return session;

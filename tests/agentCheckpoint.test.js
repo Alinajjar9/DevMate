@@ -13,11 +13,14 @@ test('parses a bounded workspace and session agent checkpoint', () => {
   assert.deepEqual(parseAgentRunCheckpoint(checkpoint, now), checkpoint);
 });
 
-test('accepts diagnostics and terminal-error tool history', () => {
+test('accepts every read-only tool in checkpoint history', () => {
   const checkpoint = validCheckpoint();
   checkpoint.toolHistory = [
     { ...toolStep(1), name: 'get_diagnostics', arguments: { path: '' } },
-    { ...toolStep(2), name: 'read_terminal_errors', arguments: { maxResults: 3 } }
+    { ...toolStep(2), name: 'read_terminal_errors', arguments: { maxResults: 3 } },
+    { ...toolStep(3), name: 'get_symbols', arguments: { path: 'main.py' } },
+    { ...toolStep(4), name: 'find_definition', arguments: { path: 'main.py', line: 4, column: 1 } },
+    { ...toolStep(5), name: 'find_references', arguments: { path: 'main.py', line: 4, column: 1 } }
   ];
   assert.deepEqual(parseAgentRunCheckpoint(checkpoint, now), checkpoint);
 });

@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -10,12 +10,16 @@ import {
   MAX_AGENT_COMMAND_CALLS,
   MAX_AGENT_DEPENDENCY_INSTALLS,
   MAX_AGENT_FILE_MUTATIONS,
+  FILE_MUTATION_AGENT_TOOL_NAMES,
+  READ_ONLY_AGENT_TOOL_NAMES,
   agentToolCallSignature,
   boundedAgentToolHistoryArguments,
   boundedAgentToolCallLimit,
   compactAgentToolHistory,
   consecutiveAgentInspectionCalls,
   isDeferredAgentPlanAnswer,
+  isFileMutationAgentTool,
+  isReadOnlyAgentTool,
   normalizeAgentToolCallForWorkspace,
   parseAgentToolCall,
   summarizedAgentToolArguments,
@@ -30,16 +34,6 @@ import {
   DEFAULT_READ_FILE_MAX_LINES,
   DEFAULT_SEARCH_CODE_MAX_RESULTS,
   DEFAULT_TERMINAL_ERRORS_MAX_RESULTS,
-  MAX_DIAGNOSTICS_MAX_RESULTS,
-  MAX_LIST_FILES_MAX_RESULTS,
-  MAX_READ_FILE_MAX_LINES,
-  MAX_SEARCH_CODE_MAX_RESULTS,
-  MAX_TERMINAL_ERRORS_MAX_RESULTS,
-  MIN_DIAGNOSTICS_MAX_RESULTS,
-  MIN_LIST_FILES_MAX_RESULTS,
-  MIN_READ_FILE_MAX_LINES,
-  MIN_SEARCH_CODE_MAX_RESULTS,
-  MIN_TERMINAL_ERRORS_MAX_RESULTS,
   normalizeAgentToolSettings
 } from './agentToolSettings';
 import type { AgentToolSettings } from './agentToolSettings';
@@ -3917,21 +3911,12 @@ class DevMateChatViewProvider implements
     commandCalls: number,
     dependencyInstallCalls: number
   ): AgentToolName[] {
-    const tools: AgentToolName[] = [
-      'list_files',
-      'read_file',
-      'search_code',
-      'get_symbols',
-      'find_definition',
-      'find_references',
-      'get_diagnostics',
-      'read_terminal_errors'
-    ];
+    const tools: AgentToolName[] = [...READ_ONLY_AGENT_TOOL_NAMES];
     if (mode === 'ideas' || !vscode.workspace.isTrusted) {
       return tools;
     }
     if (fileMutationCalls < MAX_AGENT_FILE_MUTATIONS) {
-      tools.push('create_file', 'edit_file', 'delete_file', 'rename_file', 'move_file');
+      tools.push(...FILE_MUTATION_AGENT_TOOL_NAMES);
     }
     if (dependencyInstallCalls < MAX_AGENT_DEPENDENCY_INSTALLS) {
       tools.push('install_dependencies');
@@ -4260,6 +4245,7 @@ class DevMateChatViewProvider implements
     });
     await persistCheckpoint();
 
+    // Each pass either finishes the answer or feeds one bounded batch of tool results back to the model.
     while (!finalData) {
       if (this.finishCancelledRequest(signal)) {
         return;
@@ -4442,18 +4428,10 @@ class DevMateChatViewProvider implements
           // The executor reports the validated tool error back to the model.
         }
         let execution: AgentToolExecution;
-        const isFileMutation = toolCall.name === 'create_file'
-          || toolCall.name === 'edit_file'
-          || toolCall.name === 'delete_file'
-          || toolCall.name === 'rename_file'
-          || toolCall.name === 'move_file';
+        const isFileMutation = isFileMutationAgentTool(toolCall.name);
         const isCommand = toolCall.name === 'run_command';
         const isDependencyInstall = toolCall.name === 'install_dependencies';
-        const isReadOnly = toolCall.name === 'list_files'
-          || toolCall.name === 'read_file'
-          || toolCall.name === 'search_code'
-          || toolCall.name === 'get_diagnostics'
-          || toolCall.name === 'read_terminal_errors';
+        const isReadOnly = isReadOnlyAgentTool(toolCall.name);
         const priorSignature = signature ? toolSignatures.get(signature) : undefined;
         const repeatedAtCurrentRevision = priorSignature?.revision === workspaceRevision;
         if (
@@ -9236,12 +9214,7 @@ class DevMateChatViewProvider implements
 }
 
 function createNonce(): string {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let nonce = '';
-  for (let index = 0; index < 32; index += 1) {
-    nonce += alphabet.charAt(Math.floor(Math.random() * alphabet.length));
-  }
-  return nonce;
+  return randomBytes(24).toString('base64');
 }
 
 function wait(milliseconds: number): Promise<void> {

@@ -87,8 +87,14 @@ export function validateProfileDraft(
   if (normalized.baseUrl) {
     try {
       const url = new URL(normalized.baseUrl);
-      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
-        return 'Use an HTTP or HTTPS base URL without embedded credentials.';
+      if (
+        !['http:', 'https:'].includes(url.protocol)
+        || url.username
+        || url.password
+        || url.search
+        || url.hash
+      ) {
+        return 'Use an HTTP or HTTPS base URL without credentials, query parameters, or fragments.';
       }
     } catch {
       return 'Enter a valid base URL.';
@@ -230,5 +236,5 @@ function isOfficialOpenAiProfile(profile: LlmProfile): boolean {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

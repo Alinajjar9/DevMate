@@ -236,6 +236,7 @@ class OpenAICompatibleProvider:
             raise ProviderError("The selected model profile is missing an API key.", 400)
 
         endpoint, headers, payload = _provider_request_parts(request, stream=True)
+        # Keep the final completion while forwarding small content events to the extension.
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         streamed_tool_calls: dict[int, dict[str, str]] = {}

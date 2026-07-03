@@ -1,3 +1,4 @@
+import { AGENT_TOOL_NAMES } from './agentTools';
 import type { AgentToolName } from './agentTools';
 import type { AgentToolStep, AssistantMode } from './api/types';
 
@@ -36,20 +37,7 @@ export type AgentRunCheckpoint = {
   updatedAt: number;
 };
 
-const toolNames = new Set<AgentToolName>([
-  'list_files',
-  'read_file',
-  'search_code',
-  'get_diagnostics',
-  'read_terminal_errors',
-  'create_file',
-  'edit_file',
-  'delete_file',
-  'rename_file',
-  'move_file',
-  'install_dependencies',
-  'run_command'
-]);
+const toolNames = new Set<AgentToolName>(AGENT_TOOL_NAMES);
 
 export function parseAgentRunCheckpoint(
   value: unknown,
@@ -195,6 +183,6 @@ function validTimestamp(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
-function isRecord(value: unknown): value is Record<string, any> {
+function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
