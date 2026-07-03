@@ -1,29 +1,18 @@
-# DevMate Requirements
+# System requirements
 
-## System prerequisites
+DevMate has two parts, so it needs both Node.js and Python during development.
 
-| Tool | Minimum version | Purpose |
+| Software | Minimum version | Used for |
 | --- | --- | --- |
-| Visual Studio Code | 1.96.2 | Run and debug the extension with its Secondary Side Bar view |
-| Node.js | 20 | Build the TypeScript extension |
-| npm | 9 | Install the locked Node.js dependencies and run scripts |
-| Python | 3.10 | Run the local FastAPI backend |
-| Git | Any current version | Clone and contribute to the project |
+| Visual Studio Code | 1.96.2 | Running the extension |
+| Node.js | 20 | Compiling the TypeScript extension |
+| npm | 9 | Installing Node dependencies and running scripts |
+| Python | 3.10 | Running the local backend |
+| Git | Recommended | Cloning the repository and keeping version history |
 
-The project has been verified with Node.js 24.16, npm 11.13, Python 3.14, and Visual Studio Code 1.125.
+The project was developed on Windows with PowerShell. Most of the code is platform independent, but the submission and setup instructions have been tested primarily on Windows.
 
-## Dependency files
-
-- `package.json` declares the Node.js development dependencies and supported tool versions.
-- `package-lock.json` locks the exact Node.js dependency tree; use `npm ci` for a reproducible install.
-- `backend/requirements.txt` contains the Python packages needed to run the backend.
-- `backend/requirements-dev.txt` includes the runtime packages plus the backend test client.
-- `.nvmrc` selects the recommended Node.js major version when using nvm.
-- `.python-version` selects the minimum supported Python version when using pyenv or another compatible version manager.
-
-Node.js itself cannot be installed through `requirements.txt`; that filename belongs to Python's package tooling. Install Node.js separately, then let npm install the packages declared by `package.json`.
-
-## Check installed versions
+## Check the installed versions
 
 ```powershell
 code --version
@@ -33,17 +22,15 @@ py --version
 git --version
 ```
 
-## Install project dependencies
+## Dependency files
 
-Install the Node.js dependencies:
+- `package.json` declares the extension's development dependencies and npm scripts.
+- `package-lock.json` locks the Node dependency versions. Use `npm ci` instead of `npm install` for a clean setup.
+- `backend/requirements.txt` contains the Python packages needed to run the backend.
+- `backend/requirements-dev.txt` includes the runtime requirements for development and testing.
+- `.nvmrc` records the expected Node.js major version.
+- `.python-version` records the minimum Python version.
 
-```powershell
-npm ci
-```
+Node.js packages and Python packages are separate. `npm ci` installs the extension dependencies, while `pip` installs the backend dependencies.
 
-Create the Python environment and install backend development dependencies:
-
-```powershell
-py -m venv .venv
-.venv\Scripts\python -m pip install -r backend\requirements-dev.txt
-```
+Continue with the [installation guide](docs/INSTALLATION.md).

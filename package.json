@@ -2,8 +2,9 @@
   "name": "devmate",
   "displayName": "DevMate",
   "description": "A VS Code assistant prototype for compact AI-supported project guidance.",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "publisher": "local",
+  "author": "Ali Najjar",
   "private": true,
   "engines": {
     "vscode": "^1.96.2",

@@ -1,221 +1,378 @@
 # DevMate
 
-DevMate is a VS Code extension prototype for AI-assisted project help.
+DevMate is a VS Code extension that can inspect a project, answer questions about its code, make approved file changes, and run a restricted set of verification commands. It is designed around a simple rule: the language model can request actions, but the extension keeps control of the local machine.
 
-## Current Features
+The project contains two applications:
 
-- Bottom-right Status Bar launcher that opens DevMate as a sidebar Webview View
-- Modes: Code (default), Ideas, Debug
-- Scope tabs: Project, File, Selection
-- Shows where DevMate will focus
-- Local FastAPI backend with `/health` and `/ask`
-- Managed local-backend startup, health monitoring, logs, restart controls, and configurable external backend URLs
-- Streamed OpenAI-compatible responses with non-streaming backend fallback
-- Iterative agent tools for project inspection, exact file edits, and approved verification commands
-- VS Code-powered document symbols, definition lookup, and reference lookup
-- Animated in-chat working state with real phases, elapsed time, selected model, and cancellation
-- Compact segmented mode controls and a top-right in-chat Settings dialog
-- Mode-aware prompts for Ideas, Code, and Debug
-- Enter-to-send composer with Shift+Enter for new lines, a compact send action, and a live approximate message-token count
-- Distinct You and DevMate message bubbles
-- Workspace-scoped in-chat approvals, native diff review, and exact-command remembering
-- Project-bound sessions with a global past-sessions landing screen
-- Bounded Selection and active File context with language and truncation metadata
-- Persistent workspace-local Project index with bounded chunk retrieval and deterministic fallback ranking
-- Workspace-only multi-file attachments with a compact expandable selected-file list
-- Built-in NVIDIA Nemotron model plus reusable custom OpenAI and Ollama profiles
-- API keys stored in VS Code SecretStorage instead of ordinary extension settings
+- A TypeScript VS Code extension for the chat interface, project context, tools, permissions, and sessions.
+- A local Python/FastAPI backend for prompt construction, provider requests, and response streaming.
 
-Local lexical RAG is connected for Project scope. Semantic embeddings and library-documentation retrieval are not connected yet.
+## Features
 
-## Local project retrieval
-
-The first Project-scope request creates a private index in VS Code's workspace storage. DevMate splits up to 500 eligible text files into overlapping, line-aware chunks and retrieves the strongest matching excerpt from each relevant file. Later requests reuse unchanged entries and automatically refresh files whose saved size or modification time changed.
-
-Retrieval is deterministic and runs entirely in the extension host using BM25-style lexical scoring; it does not send the project to a separate embedding provider. Explicit attachments remain first-class context and are excluded from automatic retrieval to avoid sending the same file twice. If the stored index is unavailable, incompatible, or has no useful match, DevMate falls back to the earlier path-and-keyword project ranking.
-
-## Agent tools
-
-DevMate can ask the extension host to inspect and improve the open project before answering. Read-only tools support `list_files`, ranged `read_file`, plain-text `search_code`, document structure through `get_symbols`, precise `find_definition` and `find_references` navigation, current VS Code Problems through `get_diagnostics`, and recent failed user-terminal commands through `read_terminal_errors`. In trusted workspaces, Code and Debug additionally receive `create_file`, exact-replacement `edit_file`, `delete_file`, `rename_file`, `move_file`, approved `run_command` verification, and manifest-based `install_dependencies` tools. Tool activity appears as compact cards in the chat. The per-request tool limit defaults to 16 and is configurable from 4 through 100; older results are compacted first when a longer loop approaches the bounded context budget.
-
-Code navigation uses the language provider already installed in VS Code for the target file. `get_symbols` returns declared symbol kinds, names, containers, and one-based positions. Definition and reference lookup accept a workspace-relative file plus a one-based line and column, then return only eligible locations inside the current workspace. External dependency definitions are deliberately excluded. Languages without an active symbol/reference provider return an empty result without interrupting the agent loop. The shared navigation result cap defaults to 100 and is configurable from 10 through 300 under **Settings → Agent tools**.
-
-`run_command` is reserved for verification and never performs filesystem management. Rejected `mkdir`, move, rename, copy, and deletion commands return guidance naming the appropriate dedicated file tool. `create_file` and `move_file` create missing parent directories automatically, so agents do not need placeholder files or separate directory commands.
-
-Each request immediately creates a working card in the chat. It displays the selected model, elapsed time, live tool usage such as **Tools 12 / 100**, actual lifecycle phases such as context collection and tool use, and a Cancel button. The active card remains pinned near the top of the chat viewport while tool and permission cards accumulate. Chat cards are non-shrinking flex items, so a long tool run scrolls normally instead of compressing and clipping the working card. Its deliberately restrained edge, sheen, indicator, and active-phase animations run on slower cycles and respect reduced-motion preferences. Routine progress no longer occupies the top status strip; that area is reserved for warnings and errors. The working card is removed when the final assistant message arrives, while completed tool activity remains visible.
-
-Before sending, the composer shows an approximate token count for the draft message. Once the backend assembles the real provider request, the working card switches to cumulative input and output usage across every agent round, including system instructions, conversation history, project context, tool definitions, and tool results. Streamed output updates the estimate live, the finished total remains beside the composer, and resumable checkpoints retain accumulated usage. Provider-reported usage is shown without an approximation marker when available; otherwise DevMate uses a clearly marked character-based estimate.
-
-Provider text now appears progressively in chronological DevMate narration bubbles through `/ask/stream`, outside the compact working card and between the tool cards that follow it. Intermediate updates are prompted as one short action sentence and locally compacted to at most two sentences and 220 characters, while final answers remain complete. The webview drains incoming text through a bounded preview queue, flushes buffered narration before a tool starts, and turns the final narration bubble into the completed answer without duplication. Internal reasoning text is never exposed; DevMate shows only a generic reasoning phase until answer text or a tool call arrives. Final answers use a DOM-built Markdown renderer with headings, lists, inline code, highlighted fenced code, copy actions, HTTP links, and workspace-bound clickable file references. Raw model HTML is never injected into the webview.
-
-Completed answers include a compact Codex-style file summary derived from successful mutations: created, updated, renamed, and moved files appear in green; deleted files appear in red. Paths remain workspace-relative, surviving session reloads without being added to the model-visible conversation history. Denied, rejected, and failed mutations never appear in the summary.
-
-Some OpenAI-compatible models, including Nemotron deployments, can serialize function calls as `<tool_call>` text instead of returning the native `tool_calls` field. DevMate recognizes only complete, response-wide blocks in that format, withholds them from the chat preview, converts them into the same validated tool pipeline, and rejects malformed or mixed-content blocks. Once tool work finishes, the model is instructed to return a concise human-readable summary rather than serialized tool syntax.
-
-Warnings from scope selection, health checks, and other UI actions do not end an active request. Only explicit success, failure, or cancellation events release the pending state and re-enable Send. Mode, scope, attachment, and model selectors remain locked for the duration, preventing context changes or a second request from colliding with work still running in the extension host.
-
-Temporary provider failures (`ResourceExhausted`, HTTP 429, 502, 503, or 504) are retried up to three times after 2, 5, and 10 seconds. The countdown appears as a real phase in the working card and can be cancelled. Authentication, invalid-model, malformed-response, and reasoning-budget errors are never retried. If every transient attempt fails, the stopped card offers **Retry now** without duplicating the user's message.
-
-Read-only tools run instantly because they cannot modify the project. They remain workspace-bound and use the same exclusions as automatic project context, so dependency/build folders, binary files, lock files, environment files, and credential/key files are unavailable. Diagnostics include only workspace errors and warnings. Terminal capture is memory-only, limited to failed commands run inside the first workspace after DevMate activates, requires VS Code Terminal Shell Integration, bounds retained output, and redacts common token/password patterns. DevMate-created verification terminals are excluded because their output already reaches the model directly. VS Code does not expose arbitrary historical Debug Console text through this extension API. File changes and commands remain in the extension host; the backend receives only bounded tool results and never receives direct filesystem access.
-
-Tool calls are normalized before loop detection, so formatting differences cannot make DevMate reread the same file indefinitely. Harmless model path mistakes—an absolute path inside the open workspace, a repeated workspace-folder prefix, or `./`—are converted back to workspace-relative paths before strict validation; outside paths and traversal remain rejected. One fresh repeated read is allowed at the same workspace revision so an agent can recover from a failed exact replacement, while further identical reads still trigger loop protection. Failed mutations do not consume the six-mutation execution budget.
-
-Tool-history arguments are compacted below the backend request limit before every follow-up round, including large 20-replacement edits and rejected provider calls. If FastAPI still rejects a request, the streaming client reads its bounded validation response and shows the failing field in chat; the backend log records only field locations and validation messages, never the rejected source content or credentials.
-
-Compacted create/edit arguments are labeled as internal history summaries, and both current and legacy omission markers are rejected at every file-write boundary. This prevents a provider from copying a compacted marker into a project file. DevMate also pauses after 16 consecutive read-only inspection calls without a successful mutation, installation, or verification command, preventing a raised numerical tool limit from enabling an unbounded inspection loop.
-
-If a model repeats another completed tool call or reaches the actual tool limit, DevMate performs a tools-off final turn. An empty response first retries with thinking disabled while retaining the remaining tools; a second empty response automatically escalates to a tools-off final-summary request instead of stopping mid-run. If the provider still requests tools or returns an unusable response during that required final turn, DevMate creates an honest local summary from completed changes, verification exit codes, and failed-call counts, saves it as the assistant response, and clears the exhausted checkpoint. Nemotron 3 requests normally reserve half of the response budget for reasoning. The default `devMate.maxTokens` is 16,384 so reasoning models and multi-file Code responses have room to finish.
-
-Code and Debug also reject short future-action preambles such as “I'll start by reading the files” when a provider returns them as a final answer without a tool call. DevMate retries once with tools and stronger guidance; a repeated preamble finalizes completed tool work locally or reports that the selected endpoint may not support tool calling instead of presenting the promise as successful work.
-
-DevMate opens on a past-sessions screen before showing the composer. The global catalog displays sessions from every project, labels each one with its project, and allows up to 20 sessions to be created, renamed, or deleted. Selecting a session opens its chat only when its saved project identity matches the currently open workspace; a foreign-project selection stays on the list and displays a warning. Existing workspace-local sessions are migrated into the catalog when that workspace is first opened.
-
-Each session retains up to 30 turns within bounded per-session and total storage budgets. A user message is persisted before provider or tool work begins, so it survives failures, cancellation, and closing the view; an eventual retry completes that pending turn without duplicating it. Only completed turns are included in the model's newest-six-turn, 20,000-character history. In-progress agent state is saved as one bounded, workspace- and session-specific checkpoint after every tool result. Failed or cancelled runs expose **Continue** beside the composer and can resume with their compacted tool history after a reload; completing the run or starting a replacement request removes the checkpoint. Permission prompts, working cards, and rendered tool activity remain transient.
-
-Directory deletion and movement, arbitrary dependency commands, arbitrary shells, Git commands, servers, generators, and writable formatters remain blocked.
-
-## DevMate view placement
-
-DevMate is contributed directly to VS Code's Secondary Side Bar in its own dedicated view container. Opening DevMate switches the right sidebar from Codex/Chat to DevMate; opening Codex or Chat hides DevMate in turn. It opens on the right without a placement prompt, and files opened from Explorer stay in the editor area.
-
-## DevMate settings
-
-Use the gear button in the top-right of the DevMate view to configure provider timeout, verification-command timeout, per-request tool-call limit, maximum output tokens, temperature, workspace-local create/update permissions, and remembered exact commands. The separate **Agent tools** screen controls read ranges and bounded list, search, diagnostic, terminal-error, and code-navigation results. File deletion, rename, and move always ask once and cannot be remembered. Ideas, Code, and Debug use a compact segmented control on the left side of the top bar.
-
-## Model profiles
-
-Nemotron 3 Ultra is always available as DevMate’s built-in default through NVIDIA’s OpenAI-compatible endpoint. On first use, DevMate asks for an NVIDIA API key and stores it through VS Code SecretStorage; no provider credential is bundled with the extension. A matching Nemotron profile created in an earlier version is migrated to the built-in entry together with its stored key.
-
-Use the model button beside **Ask** to open DevMate's styled model selector. It displays the selected and built-in states, provider, exact model ID, endpoint, and inline Configure/Edit actions. Adding or editing a custom profile opens a matching modal containing the display name, provider, exact model ID, optional custom base URL, and API key; custom-profile deletion uses an in-modal confirmation. The key is sent once from the modal to the extension host, cleared when the modal closes, and stored through VS Code SecretStorage. It is not kept in webview state or normal settings.
-
-Recognized reasoning models expose a compact icon-only **Intelligence** button beside the model selector. Clicking it opens a small Auto, Low, Medium, High, or Extra High menu, while the composer itself stays uncluttered. The selected preference is stored per profile. DevMate sends OpenAI's `reasoning_effort` only to recognized GPT-5/o-series models on the official OpenAI endpoint; Extra High appears only for supported newer GPT-5 versions. Nemotron 3 Ultra maps the same UI to its supported thinking, medium-effort, and reasoning-budget controls. Unknown OpenAI-compatible endpoints and ordinary Ollama models keep their provider defaults and do not display the button.
-
-Selecting **Manage model profiles** from the same menu lets you configure Nemotron’s key or choose, edit, and delete custom profiles. The built-in Nemotron entry cannot be deleted. Ollama profiles default to `http://127.0.0.1:11434` and do not require an API key in the current implementation.
-
-Profiles without a custom OpenAI base URL use `https://api.openai.com/v1`. OpenAI-compatible services can use a custom base URL; for example, NVIDIA NIM uses `https://integrate.api.nvidia.com/v1`. Ollama server-root URLs are automatically routed to `/v1/chat/completions`.
-
-Provider API keys are sent to the DevMate backend only when its configured URL points to the local computer (`localhost`, `127.x.x.x`, or `::1`). The backend forwards the key for that request without storing it, and provider redirects are disabled.
-
-## Code-mode changes
-
-Code and Debug can now inspect, edit, reorganize, verify, and repair in one bounded agent loop. New files use complete content, while existing files use sequential exact-text replacements. Exact replacements tolerate the LF-normalized text returned to the model when the underlying file uses CRLF, while preserving the file's original line-ending style. Individual eligible text files can also be deleted, renamed within a directory, or moved to a new workspace-relative path; recursive directory operations remain blocked. DevMate shows proposed changes in an in-chat permission card. Every file row includes **Review diff**, which opens VS Code's native diff editor before approval. Create/update requests offer **Deny**, **Allow once**, and **Always allow these**; lifecycle operations deliberately offer only **Deny** and **Allow once**. Approved changes use a VS Code workspace edit and participate in the editor's undo flow.
-
-Targets with pre-existing unsaved changes are rejected instead of being overwritten or silently saved. The extension rechecks file contents after permission is granted and rejects stale proposals. Mutations are disabled entirely in untrusted workspaces. The earlier final-JSON change format remains accepted for compatibility, while new Code requests use agent editing tools and finish with normal text.
-
-After applying a change set, DevMate opens the first created or updated file in the main left editor group instead of beside the DevMate tab.
-
-Only workspace-relative text files in the first open folder can be changed. Absolute paths, parent traversal, symbolic-link paths, duplicate paths, occupied move destinations, dependency/build folders, binary files, lock files, environment files, and credential/key files are rejected—even when instant permission is enabled. Dirty files and lifecycle operations whose source changed during approval are left untouched. A request is limited to six mutation calls, ten files, and the existing per-file and total content limits.
-
-## Verification commands
-
-`run_command` accepts an executable and argument array rather than a raw shell string. Each new exact command asks inside the chat; **Always allow this command** remembers only that executable, arguments, and working directory for the current workspace. Remembered commands can be revoked from Settings. Verification requires Workspace Trust and VS Code terminal shell integration.
-
-If a provider emits a common legacy command shape, DevMate can safely split it into an executable and arguments before validation. The parsed command still passes through the same strict registry and is executed through VS Code's executable/argument API; it is never passed to a shell as raw text.
-
-The first registry covers common test, lint, type-check, and build commands for JavaScript/TypeScript, Python, Rust, Go, .NET, Maven, and Gradle. Output streams into a bounded chat card, while **Open terminal** exposes the complete VS Code terminal. Commands default to a five-minute limit, can be configured from 10 through 1800 seconds, and are limited to three executions per request. Locally rejected requests do not consume that execution limit.
-
-The working directory is always workspace-relative; omitted values and `.`, `./`, or `.\\` all select the workspace root. If `pytest` is unavailable, the agent is instructed to convert compatible tests to the standard-library `unittest` format and run `python -m unittest <test-file> -v` instead of attempting package installation.
-
-For Python verification, DevMate automatically prefers `.venv`, `venv`, or `env` inside the requested working directory and then the workspace root. Symbolic-link environments are ignored. The interpreter is launched through a workspace-relative executable path, so Windows project folders containing spaces do not break PowerShell execution. If verification reports `ModuleNotFoundError`, Code or Debug can inspect or create a requirements manifest, request installation permission, install into the project environment, and then rerun verification.
-
-`install_dependencies` is deliberately narrower than a terminal command. It accepts only a workspace-relative `requirements.txt` or `requirements-*.txt` containing up to 100 simple registry requirements within 64 KB. URLs, local paths, editable installs, nested manifests, index options, environment markers, blocked directories, dirty files, symbolic links, and stale approvals are rejected. Installation always asks once in chat and can never be remembered. If no supported environment exists, DevMate creates `.venv`; package output streams into the tool card and remains cancellable with the configured command timeout. Packages may execute build or installation code, so the approval card states that risk explicitly.
-
-The tool-call limit controls inspection, edit, install, and command requests made during one chat turn. A low value can force the model to summarize before it has inspected, edited, and verified the change. A high value gives difficult repairs more room, but can increase latency, provider usage, context size, permission prompts, and the damage caused by a confused model loop. The recommended default is 16; file-mutation, dependency-installation, and verification-command limits remain independently enforced.
+- Dedicated chat view in VS Code's Secondary Side Bar.
+- Ideas, Code, and Debug modes.
+- Project, active-file, selection, and attached-file context.
+- Persistent sessions that are tied to their original workspace.
+- Built-in NVIDIA Nemotron profile plus custom OpenAI-compatible and Ollama profiles.
+- Streaming responses, cancellation, configurable timeouts, and retry handling.
+- Local lexical project retrieval with a private workspace index.
+- File listing, ranged reading, and plain-text code search.
+- VS Code diagnostics, document symbols, definitions, and references.
+- Access to recent failed terminal commands captured through VS Code Shell Integration.
+- File creation, exact-text editing, deletion, rename, and move operations.
+- In-chat permission cards and native VS Code diff review.
+- Approved test, lint, type-check, and build commands.
+- Python dependency installation from validated requirements files.
+- Bounded recovery for repeated tools, empty provider responses, and unfinished model answers.
 
 ## Requirements
 
-DevMate requires Visual Studio Code 1.96.2+, Node.js 20+, npm 9+, and Python 3.10+. Git is also recommended for development. See [REQUIREMENTS.md](REQUIREMENTS.md) for the complete tool list, version commands, and dependency-file overview.
+| Software | Minimum version |
+| --- | --- |
+| Visual Studio Code | 1.96.2 |
+| Node.js | 20 |
+| npm | 9 |
+| Python | 3.10 |
+| Git | Recommended |
 
-## Context behavior
+The project is developed and tested primarily on Windows with PowerShell.
 
-- **Selection** sends the currently highlighted text to the local backend.
-- **File** sends the active editor's current in-memory content, including unsaved changes.
-- Each context item is limited to the first 20,000 characters. DevMate displays when content was truncated.
-- The webview receives only scope metadata; source content stays in the extension-host-to-backend request path.
-- **Project** incrementally indexes up to 500 eligible text files. It stores at most the first 40,000 characters per file as overlapping 3,200-character chunks and sends at most five relevant excerpts.
-- Project context is limited to 8,000 characters per file and 40,000 characters in total.
-- The index is stored in VS Code's private workspace storage rather than inside the repository. Saved file changes are detected on the next Project request.
-- If indexed retrieval has no useful match, Project scope falls back to the original 200-file deterministic path-and-keyword ranking.
-- Dependency, build, cache, binary, lock, environment, credential, and private-key files are excluded from automatic discovery.
-- **Attach files** lists only eligible files from the folder opened in VS Code; it does not open a system-wide filesystem browser.
-- Up to five attached files can be added or removed and combined with Project, File, or Selection scope. Each attachment is capped at 8,000 characters within the shared 40,000-character budget.
+Check the installed versions with:
 
-## Run the backend
+```powershell
+code --version
+node --version
+npm --version
+py --version
+git --version
+```
 
-The backend requires Python 3.10 or newer. For development, create an isolated Python environment and install its dependencies:
+## Development setup
+
+Clone or extract the repository, open a terminal in its root directory, and install the Node dependencies:
+
+```powershell
+npm ci
+```
+
+Create a Python virtual environment and install the backend dependencies:
 
 ```powershell
 py -m venv .venv
 .venv\Scripts\python -m pip install -r backend\requirements-dev.txt
 ```
 
-DevMate now starts and monitors the local service automatically when `devMate.backendUrl` is a plain HTTP loopback address with an explicit port. It prefers `devMate.backendPythonPath`, then `.venv` or `venv` beside the extension, and finally Python on `PATH`. Managed launches deliberately omit `--reload`, so slow provider requests are not disconnected by a development source reload. DevMate never installs backend Python dependencies silently.
+On macOS or Linux, activate the environment with `.venv/bin/python` instead of `.venv\Scripts\python`.
 
-The toolbar backend dot shows checking, starting, online, restarting, or offline state. Click it to open the **DevMate Backend** output channel. Settings also provides **Restart backend** and **Open backend logs**. A server already listening at the configured address is adopted as external and is never terminated by DevMate; if it later disappears, managed startup takes over. Crash recovery is limited to three attempts in one minute.
+Compile the extension:
 
-To run the service manually without automatic management:
+```powershell
+npm run compile
+```
+
+## Running DevMate from source
+
+1. Open the repository folder in VS Code.
+2. Press `F5` or select **Run DevMate Extension** from the Run and Debug view.
+3. Wait for the Extension Development Host window to open.
+4. Click **DevMate** in the bottom-right status bar.
+
+The development extension is installed only in the Extension Development Host window. If a different demo project is needed, change the workspace path in `.vscode/launch.json` before pressing `F5`.
+
+The backend starts automatically when `devMate.manageLocalBackend` is enabled and `devMate.backendUrl` points to a local HTTP address. DevMate first looks for `.venv` or `venv` beside the extension and then falls back to Python on `PATH`.
+
+## Configuring a model
+
+DevMate does not include provider credentials.
+
+1. Open DevMate.
+2. Click the model selector beside the Ask button.
+3. Configure the built-in Nemotron profile or add a custom profile.
+4. Enter an API key if the selected provider requires one.
+
+Profile metadata is stored in VS Code global storage. API keys are stored separately through VS Code SecretStorage.
+
+### Built-in Nemotron
+
+The built-in profile uses NVIDIA's OpenAI-compatible endpoint:
+
+```text
+https://integrate.api.nvidia.com/v1
+```
+
+The user must provide their own NVIDIA API key.
+
+### OpenAI-compatible profiles
+
+A custom profile can use the default OpenAI endpoint or another compatible base URL. DevMate sends provider keys to the backend only when the configured backend address is local.
+
+### Ollama
+
+Ollama profiles default to:
+
+```text
+http://127.0.0.1:11434
+```
+
+The selected model must already be installed in Ollama. DevMate does not download Ollama models.
+
+### Intelligence levels
+
+Models recognised as reasoning models show an intelligence icon beside the model selector. The available Auto, Low, Medium, High, and Extra High choices depend on the selected model. Unknown compatible endpoints keep their provider defaults.
+
+## Using the chat
+
+Press `Enter` to send a message and `Shift+Enter` to insert a new line.
+
+### Modes
+
+- **Ideas** is read-only and focuses on approaches and trade-offs.
+- **Code** can inspect the project, edit files, and verify its work.
+- **Debug** focuses on failures, diagnostics, small fixes, and rerunning verification.
+
+### Context scopes
+
+- **Project** retrieves relevant chunks from the open workspace.
+- **File** sends the active editor's current content.
+- **Selection** sends the highlighted text.
+- **Add files** attaches specific workspace files to any scope.
+
+Source content is collected by the extension host. The webview receives labels and status information rather than direct filesystem access.
+
+### Sessions
+
+DevMate opens on a session list. Each session stores its project identity, messages, and final file-change summaries. A session cannot be opened while a different project is active.
+
+An unfinished tool run is stored as a bounded checkpoint. If the request fails or VS Code is reloaded, the **Continue** button can resume it with its saved tool history.
+
+## Project retrieval
+
+Project scope uses a local lexical index. DevMate:
+
+1. Finds eligible text files in the first workspace folder.
+2. Excludes dependencies, generated files, build output, credentials, lock files, and binary files.
+3. Splits files into overlapping, line-aware chunks.
+4. Scores chunks using paths, identifiers, keywords, and BM25-style text matching.
+5. Sends only the strongest bounded excerpts to the provider.
+
+The index is stored in VS Code's private workspace storage, not inside the repository. Changed files are refreshed on the next Project request.
+
+This version does not use embeddings. Lexical retrieval is predictable and works well for code identifiers, while semantic or hybrid retrieval remains possible future work.
+
+## Agent tools
+
+Read-only tools are available in every mode:
+
+- `list_files`
+- `read_file`
+- `search_code`
+- `get_symbols`
+- `find_definition`
+- `find_references`
+- `get_diagnostics`
+- `read_terminal_errors`
+
+Code and Debug can additionally request:
+
+- `create_file`
+- `edit_file`
+- `delete_file`
+- `rename_file`
+- `move_file`
+- `install_dependencies`
+- `run_command`
+
+The tool-call limit is configurable, but mutations, commands, installations, file counts, and changed characters have separate hard limits.
+
+## File changes and permissions
+
+File operations are executed by the extension, not the backend.
+
+- Create and update actions can be set to **Ask every time** or **Allow instantly** for each workspace.
+- Delete, rename, and move actions always require one-time approval.
+- Dependency installation always requires one-time approval.
+- Verification commands can be allowed once or remembered as an exact command for the workspace.
+- Proposed file changes can be reviewed in VS Code's native diff editor.
+
+Before applying a change, DevMate checks workspace trust, path boundaries, protected files, symbolic links, file size, binary content, unsaved editor changes, and stale proposals. Approved edits use `WorkspaceEdit` and participate in VS Code's normal undo behaviour.
+
+## Verification commands
+
+`run_command` is not a general terminal. It accepts an executable and an argument array, then validates them against a registry of test, lint, type-check, and build commands.
+
+The registry includes common commands for JavaScript/TypeScript, Python, Rust, Go, .NET, Maven, and Gradle. Shell composition, Git commands, installation commands, servers, generators, deployment commands, privilege escalation, and writable formatters are blocked.
+
+Command output is shown in a bounded chat card. The full output remains available in a dedicated VS Code terminal.
+
+## Python dependency recovery
+
+When Python verification reports a missing module, Code or Debug can use `install_dependencies`. The tool accepts only a simple workspace-relative `requirements.txt` or `requirements-*.txt` file.
+
+URLs, editable packages, local paths, nested manifests, custom indexes, and environment markers are rejected. Installation runs inside a project virtual environment and always asks for permission.
+
+## Backend management
+
+The default backend URL is:
+
+```text
+http://127.0.0.1:8000
+```
+
+The status indicator in the DevMate toolbar shows whether the backend is checking, starting, online, restarting, unmanaged, or offline. Click the indicator to open the backend output channel.
+
+The backend can also be started manually:
 
 ```powershell
 .venv\Scripts\python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Use `--reload` only while actively editing backend Python and when no long model request is running. The health endpoint is available at `http://127.0.0.1:8000/health`. The extension uses this address by default; change `devMate.backendUrl` if the backend runs elsewhere, disable management with `devMate.manageLocalBackend`, or select another interpreter with `devMate.backendPythonPath`.
+Check it at:
 
-If the backend connection drops during a request, DevMate attempts local recovery and stops the interrupted request with **Retry now**. It does not replay automatically because the disconnected request may already have produced a file mutation.
+```text
+http://127.0.0.1:8000/health
+```
 
-DevMate waits up to fifteen minutes for each model-provider call by default, and the extension automatically adds a 30-second transport buffer. Change **DevMate: Request Timeout Seconds** (`devMate.requestTimeoutSeconds`) in VS Code Settings to any value from 10 through 1800. The value is sent with every request and controls both sides, so changing it does not require a backend restart. `DEVMATE_PROVIDER_TIMEOUT_SECONDS` remains the backend fallback for older clients or requests that omit the setting.
+When an external server is already listening at the configured address, DevMate uses it without trying to stop or replace it.
 
-Long-running `/ask/stream` calls use a bounded Node HTTP transport instead of the built-in `fetch` header deadline, so slow providers can use the full configured timeout rather than disconnecting after five minutes. Cancellation still destroys the active request immediately, responses are capped at 4,000,000 bytes, and genuine connection failures remain eligible for managed-backend recovery. After fifteen seconds without a provider event, the working card changes from **Generating answer** to an explicit slow-model waiting phase; project tools can begin only after the provider returns its first tool call. Backends without the streaming endpoint fall back to `/ask`.
+## Settings
 
-Verification commands default to a five-minute maximum. Configure `devMate.commandTimeoutSeconds` from the in-chat Settings dialog or VS Code Settings. A model-requested shorter timeout is honored; it cannot exceed the configured maximum.
+The gear button in the DevMate toolbar opens the main settings dialog.
 
-Agent requests default to 16 tool calls. Configure `devMate.toolCallLimit` from 4 through 100 in the same dialog. Raising this value does not raise the separate six-mutation, one-installation, or three-command limits; 100 is intended as an escape hatch for unusually large inspection loops, not the recommended everyday setting.
+| Setting | Default | Range or behaviour |
+| --- | ---: | --- |
+| Provider timeout | 900 seconds | 10–1800 seconds |
+| Command timeout | 300 seconds | 10–1800 seconds |
+| Tool calls per request | 16 | 4–100 |
+| Maximum output tokens | 16384 | 128–32000 |
+| Temperature | 0.2 | 0–2 |
+| Create files | Ask | Workspace-specific |
+| Update files | Ask | Workspace-specific |
 
-Run the backend contract tests with:
+The separate **Agent tools** settings screen controls maximum read lines and result counts for listing, searching, diagnostics, terminal errors, symbols, definitions, and references.
+
+The same values can be edited through normal VS Code settings under the `devMate` namespace.
+
+## Running the tests
+
+Type-check the extension without writing output:
+
+```powershell
+npm run check
+```
+
+Run the extension test suite:
+
+```powershell
+npm test
+```
+
+Run the backend test suite:
 
 ```powershell
 .venv\Scripts\python -m unittest discover -s backend\tests -v
 ```
 
-## Run the extension
+The tests do not make paid provider requests. Provider behaviour is tested with mocked responses.
 
-1. Start VS Code.
-2. Open this project folder.
-3. Install dependencies:
+## Packaging a VSIX
 
-   ```powershell
-   npm ci
-   ```
+Install Microsoft's VS Code extension packaging tool:
 
-4. Compile:
-
-   ```bash
-   npm run compile
-   ```
-
-5. Check for errors:
-
-   ```bash
-   npm run check
-   ```
-
-   Run the frontend context tests with `npm test`.
-
-6. Press `F5`.
-7. In the new VS Code window, click `DevMate` in the bottom-right Status Bar.
-
-When testing an externally started backend, keep its terminal running. Otherwise allow DevMate to manage the process and inspect its output through **DevMate Backend**.
-
-Use the second window that opens after `F5`. That is the Extension Development Host.
-
-The F5 window opens this project by default. To test DevMate on another project, change the last path in `.vscode/launch.json`.
-
-Do not open another folder from inside the F5 window. VS Code may open it as a normal window, and DevMate will not be loaded there.
-
-You can also use the command palette:
-
-```text
-DevMate: Open Chat
+```powershell
+npm install --save-dev @vscode/vsce
 ```
 
-If `npm`, `node`, or `py` is not found, install the missing prerequisite listed in [REQUIREMENTS.md](REQUIREMENTS.md), then restart VS Code and the terminal.
+Inspect the files that will be included:
+
+```powershell
+npx @vscode/vsce ls
+```
+
+Create an installable VSIX:
+
+```powershell
+npm test
+npx @vscode/vsce package --out devmate.vsix
+```
+
+Install it with:
+
+```powershell
+code --install-extension .\devmate.vsix
+```
+
+It can also be installed from VS Code through **Extensions: Install from VSIX**.
+
+### Python environment for the installed extension
+
+The VSIX contains the backend source but does not bundle a Python virtual environment. Create an environment from this repository and install the runtime requirements:
+
+```powershell
+py -m venv .venv
+.venv\Scripts\python -m pip install -r backend\requirements.txt
+```
+
+Set **DevMate: Backend Python Path** in VS Code to the absolute path of `.venv\Scripts\python.exe`. The installed extension will use that interpreter when starting its packaged backend.
+
+## Repository structure
+
+| Path | Purpose |
+| --- | --- |
+| `src/extension.ts` | Extension activation, webview, agent loop, and tool execution |
+| `src/agentTools.ts` | Tool names, argument parsing, limits, and history compaction |
+| `src/agentToolSettings.ts` | Configurable per-tool result limits |
+| `src/api/` | Extension-to-backend HTTP transport and request types |
+| `src/backendManager.ts` | Local backend startup, monitoring, and restart logic |
+| `src/projectIndex.ts` | Local chunking and lexical retrieval |
+| `src/sessions.ts` | Project-bound conversation storage |
+| `src/permissions.ts` | File and command permission storage |
+| `backend/app/main.py` | FastAPI routes, validation, and tool schemas |
+| `backend/app/prompts.py` | Mode and agent-loop prompts |
+| `backend/app/providers.py` | OpenAI-compatible provider client |
+| `tests/` | Extension tests |
+| `backend/tests/` | Backend tests |
+| `out/` | Compiled JavaScript used by VS Code |
+
+## Troubleshooting
+
+### DevMate cannot reach the backend
+
+- Confirm that the selected Python interpreter exists.
+- Install `backend/requirements.txt` into that interpreter.
+- Check whether port 8000 is already in use.
+- Open the DevMate backend logs from the toolbar or settings.
+- Restart the backend from the settings dialog.
+
+### The provider times out
+
+Increase the provider timeout in DevMate settings. Slow reasoning models may need several minutes before returning the first tool call or text event.
+
+### A model returns no tools or only describes future work
+
+Check that the selected endpoint supports OpenAI-compatible function tools. DevMate can parse the native tool-call format and one bounded textual format used by some compatible models, but not every provider implements tools correctly.
+
+### Symbols, definitions, or references are empty
+
+Install the relevant VS Code language extension and open the target file once so its language server starts. Results outside the current workspace are filtered out.
+
+### Verification cannot start
+
+The workspace must be trusted and VS Code Terminal Shell Integration must be available. The requested command must also match DevMate's verification registry.
+
+## Known limitations
+
+- Only the first folder in a multi-root workspace is used.
+- Project retrieval is lexical rather than embedding-based.
+- Code navigation depends on installed VS Code language providers.
+- Completed change snapshots are kept in memory, so an old native diff may be unavailable after reloading VS Code.
+- The packaged extension requires a separately prepared Python environment.
+- Directory operations, arbitrary shells, Git commands, servers, generators, and deployment commands are not supported.
+
+## Security notes
+
+- Do not commit API keys or `.env` files.
+- Provider keys are stored in VS Code SecretStorage.
+- Keys are forwarded only through a loopback DevMate backend.
+- Provider redirects are disabled to avoid forwarding credentials to another host.
+- Project and tool content is treated as untrusted data in backend prompts.
+- The model never receives direct filesystem, terminal, or VS Code API access.

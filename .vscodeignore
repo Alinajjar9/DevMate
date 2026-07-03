@@ -6,6 +6,7 @@ node_modules/**
 venv/**
 tests/**
 backend/tests/**
+docs/**
 backend/requirements-dev.txt
 **/__pycache__/**
 *.map
