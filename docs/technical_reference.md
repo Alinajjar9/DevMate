@@ -262,17 +262,17 @@ the extension saves this state during tool work. if the webview reloads or a lon
 
 ## where to make common changes
 
-for sidebar layout, chat behavior, settings dialogs, tool cards, and browser-side state, start in `getHtml` inside `src/extension.ts`.
-for extension message handling and the complete agent request loop, use `handleMessage` and `answerQuestion` in `src/extension.ts`.
-for tool names, arguments, bounds, duplicate signatures, and compact history, use `src/agentTools.ts`.
-for exact replacement behavior, use `src/fileTools.ts`.
-for allowed verification commands, use `src/commandTools.ts` and update its tests at the same time.
-for dependency installation rules, use `src/dependencyTools.ts`.
-for project retrieval and chunk scoring, use `src/projectIndex.ts` and `src/projectContext.ts`.
-for model profile validation and reasoning choices, use `src/llmProfiles.ts`.
-for sessions and project binding, use `src/sessions.ts`.
-for backend lifecycle behavior, use `src/backendManager.ts`.
-for backend request schemas and tool definitions, use `backend/app/main.py`.
-for system messages and mode behavior, use `backend/app/prompts.py`.
-for provider payloads, streaming, token usage, and provider errors, use `backend/app/providers.py`.
-when a shared request field changes, check both `src/api/types.ts` and the pydantic models in `backend/app/main.py`.
+- for sidebar layout, chat behavior, settings dialogs, tool cards, and browser-side state, start in `getHtml` inside `src/extension.ts`.
+- for extension message handling and the complete agent request loop, use `handleMessage` and `answerQuestion` in `src/extension.ts`.
+- for tool names, arguments, bounds, duplicate signatures, and compact history, use `src/agentTools.ts`.
+- for exact replacement behavior, use `src/fileTools.ts`.
+- for allowed verification commands, use `src/commandTools.ts` and update its tests at the same time.
+- for dependency installation rules, use `src/dependencyTools.ts`.
+- for project retrieval and chunk scoring, use `src/projectIndex.ts` and `src/projectContext.ts`.
+- for model profile validation and reasoning choices, use `src/llmProfiles.ts`.
+- for sessions and project binding, use `src/sessions.ts`.
+- for backend lifecycle behavior, use `src/backendManager.ts`.
+- for backend request schemas and tool definitions, use `backend/app/main.py`.
+- for system messages and mode behavior, use `backend/app/prompts.py`.
+- for provider payloads, streaming, token usage, and provider errors, use `backend/app/providers.py`.
+- when a shared request field changes, check both `src/api/types.ts` and the pydantic models in `backend/app/main.py`.
