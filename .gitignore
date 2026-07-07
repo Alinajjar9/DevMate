@@ -9,5 +9,5 @@ __pycache__/
 backend-runtime/
 .vscode-test/
 *.vsix
-docs/
+
 IMPLEMENTATION_PLAN.local.md
