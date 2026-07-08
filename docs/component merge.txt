@@ -1,0 +1,34 @@
+List of every merge and change at components
+
+context.ts in projectContext.ts
+context.ts deleted
+
+conversation.ts in sessions.ts
+conversation.ts deleted
+
+dependencyTools.ts in agentTools.ts
+dependencyTools deleted
+
+errorContext.ts in commandTools.ts
+errorContext.ts deleted
+
+fileChanges.ts in fileTools.ts
+fileChanges.ts deleted
+
+retrypolicy.ts in agentTools.ts
+retrypolicy.ts deleted
+
+agentCheckpoint.ts in session.ts
+agentCheckpoint.ts deleted
+
+agentsToolSettings.ts in agentTools.ts
+agentsToolSettings.ts deleted
+
+projectContext.ts in projectIndex.ts
+projectContext.ts deleted
+
+pythonEnvironment.ts in backendManager.ts
+pythonEnvironment.ts deleted
+
+changeSummary.ts in fileTools.ts
+changeSummary.ts deleted

@@ -1,17 +1,20 @@
+import * as path from 'path';
+import type { ApiResult } from './api/types';
 import { createHash } from 'crypto';
-import { parseRunCommandArguments } from './commandTools';
-import { parseInstallDependenciesArguments } from './dependencyTools';
-import type { InstallDependenciesToolArguments } from './dependencyTools';
-import { agentHistoryOmissionMarker } from './fileChanges';
+import { parseRunCommandArguments, MAX_COMMAND_TIMEOUT_SECONDS, MIN_COMMAND_TIMEOUT_SECONDS } from './commandTools';
 import {
   parseCreateFileArguments,
   parseDeleteFileArguments,
   parseEditFileArguments,
   parseMoveFileArguments,
-  parseRenameFileArguments
+  parseRenameFileArguments,
+  agentHistoryOmissionMarker,
+  normalizeWorkspaceRelativePath
 } from './fileTools';
 import type { ExactTextReplacement, RelocateFileToolArguments } from './fileTools';
 
+export const MAX_DEPENDENCY_MANIFEST_BYTES = 64_000;
+export const MAX_DEPENDENCY_REQUIREMENTS = 100;
 export const DEFAULT_AGENT_TOOL_CALL_LIMIT = 16;
 export const MIN_AGENT_TOOL_CALL_LIMIT = 4;
 export const MAX_AGENT_TOOL_CALL_LIMIT = 100;
@@ -28,7 +31,218 @@ export const MAX_AGENT_TOOL_RESULT_CHARACTERS = 10_000;
 export const MAX_AGENT_TOOL_HISTORY_CHARACTERS = 80_000;
 export const MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS = 3_500;
 export const MAX_AGENT_CONSECUTIVE_INSPECTIONS = 16;
+export const PROVIDER_RETRY_DELAYS_MS = [2_000, 5_000, 10_000] as const;
+//from agentToolSettings.ts
+export const DEFAULT_READ_FILE_MAX_LINES = 400;
+export const MIN_READ_FILE_MAX_LINES = 100;
+export const MAX_READ_FILE_MAX_LINES = 1_000;
 
+export const DEFAULT_LIST_FILES_MAX_RESULTS = 200;
+export const MIN_LIST_FILES_MAX_RESULTS = 20;
+export const MAX_LIST_FILES_MAX_RESULTS = 500;
+
+export const DEFAULT_SEARCH_CODE_MAX_RESULTS = 50;
+export const MIN_SEARCH_CODE_MAX_RESULTS = 10;
+export const MAX_SEARCH_CODE_MAX_RESULTS = 200;
+
+export const DEFAULT_DIAGNOSTICS_MAX_RESULTS = 100;
+export const MIN_DIAGNOSTICS_MAX_RESULTS = 10;
+export const MAX_DIAGNOSTICS_MAX_RESULTS = 300;
+
+export const DEFAULT_TERMINAL_ERRORS_MAX_RESULTS = 5;
+export const MIN_TERMINAL_ERRORS_MAX_RESULTS = 1;
+export const MAX_TERMINAL_ERRORS_MAX_RESULTS = 10;
+
+export const DEFAULT_CODE_NAVIGATION_MAX_RESULTS = 100;
+export const MIN_CODE_NAVIGATION_MAX_RESULTS = 10;
+export const MAX_CODE_NAVIGATION_MAX_RESULTS = 300;
+
+export type AgentToolSettings = {
+  readFileMaxLines: number;
+  listFilesMaxResults: number;
+  searchCodeMaxResults: number;
+  diagnosticsMaxResults: number;
+  terminalErrorsMaxResults: number;
+  codeNavigationMaxResults: number;
+};
+
+export function normalizeAgentToolSettings(value: Partial<AgentToolSettings>): AgentToolSettings {
+  return {
+    readFileMaxLines: boundedIntegerSettings(
+      value.readFileMaxLines,
+      DEFAULT_READ_FILE_MAX_LINES,
+      MIN_READ_FILE_MAX_LINES,
+      MAX_READ_FILE_MAX_LINES
+    ),
+    listFilesMaxResults: boundedIntegerSettings(
+      value.listFilesMaxResults,
+      DEFAULT_LIST_FILES_MAX_RESULTS,
+      MIN_LIST_FILES_MAX_RESULTS,
+      MAX_LIST_FILES_MAX_RESULTS
+    ),
+    searchCodeMaxResults: boundedIntegerSettings(
+      value.searchCodeMaxResults,
+      DEFAULT_SEARCH_CODE_MAX_RESULTS,
+      MIN_SEARCH_CODE_MAX_RESULTS,
+      MAX_SEARCH_CODE_MAX_RESULTS
+    ),
+    diagnosticsMaxResults: boundedIntegerSettings(
+      value.diagnosticsMaxResults,
+      DEFAULT_DIAGNOSTICS_MAX_RESULTS,
+      MIN_DIAGNOSTICS_MAX_RESULTS,
+      MAX_DIAGNOSTICS_MAX_RESULTS
+    ),
+    terminalErrorsMaxResults: boundedIntegerSettings(
+      value.terminalErrorsMaxResults,
+      DEFAULT_TERMINAL_ERRORS_MAX_RESULTS,
+      MIN_TERMINAL_ERRORS_MAX_RESULTS,
+      MAX_TERMINAL_ERRORS_MAX_RESULTS
+    ),
+    codeNavigationMaxResults: boundedIntegerSettings(
+      value.codeNavigationMaxResults,
+      DEFAULT_CODE_NAVIGATION_MAX_RESULTS,
+      MIN_CODE_NAVIGATION_MAX_RESULTS,
+      MAX_CODE_NAVIGATION_MAX_RESULTS
+    )
+  };
+}
+
+function boundedIntegerSettings(
+  value: unknown,
+  fallback: number,
+  minimum: number,
+  maximum: number
+): number {
+  return typeof value === 'number' && Number.isInteger(value)
+    ? Math.min(maximum, Math.max(minimum, value))
+    : fallback;
+}
+
+// merge from retryPolicy.ts
+const retryableStatusCodes = new Set([429, 502, 503, 504]);
+
+export type EmptyResponseRecoveryAction =
+  | 'none'
+  | 'retry-without-thinking'
+  | 'force-final';
+
+export function emptyResponseRecoveryAction(
+  message: string,
+  recoveryAlreadyAttempted: boolean,
+  finalAnswerAlreadyForced: boolean
+): EmptyResponseRecoveryAction {
+  if (finalAnswerAlreadyForced || !isRecoverableEmptyModelResponse(message)) {
+    return 'none';
+  }
+  return recoveryAlreadyAttempted ? 'force-final' : 'retry-without-thinking';
+}
+
+export function isRecoverableEmptyModelResponse(message: string): boolean {
+  const normalized = message.toLocaleLowerCase();
+  return normalized.includes('response budget for reasoning')
+    || normalized.includes('empty final answer')
+    || normalized.includes('empty or invalid answer');
+}
+
+export function isRetryableProviderFailure(result: ApiResult<unknown>): boolean {
+  if (result.status !== 'error' || result.errorKind !== 'http') {
+    return false;
+  }
+  const message = result.message ?? '';
+  if (
+    /response budget for reasoning/i.test(message)
+    || /empty (?:or invalid |final )?answer/i.test(message)
+    || /file-change response/i.test(message)
+    || /invalid tool/i.test(message)
+    || /tool (?:after|call).*tool limit/i.test(message)
+    || /tool limit was reached/i.test(message)
+    || /tool when DevMate required a final answer/i.test(message)
+    || /non-json response/i.test(message)
+    || /returned a redirect/i.test(message)
+  ) {
+    return false;
+  }
+  if (result.statusCode !== undefined) {
+    return retryableStatusCodes.has(result.statusCode);
+  }
+  return /resource\s*exhausted/i.test(message);
+}
+
+export function providerRetryDelay(retryNumber: number): number | undefined {
+  return PROVIDER_RETRY_DELAYS_MS[retryNumber - 1];
+}
+
+// merge from dependencyTools.ts
+const blockedManifestDirectories = new Set([
+  '.git', '.venv', 'venv', 'env', 'node_modules', 'vendor', 'dist', 'build', 'target'
+]);
+const manifestNamePattern = /^requirements(?:-[a-z0-9._-]+)?\.txt$/i;
+const requirementPattern = /^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9_,.-]+\])?(?:\s*(?:(?:===|==|~=|!=|<=|>=|<|>)\s*[A-Za-z0-9*+!._-]+)(?:\s*,\s*(?:(?:===|==|~=|!=|<=|>=|<|>)\s*[A-Za-z0-9*+!._-]+))*)?$/;
+
+export type InstallDependenciesToolArguments = {
+  manifestPath: string;
+  cwd: string;
+  timeoutSeconds: number;
+};
+
+export function parseInstallDependenciesArguments(
+  value: Record<string, unknown>
+): InstallDependenciesToolArguments {
+  if (typeof value.manifestPath !== 'string') {
+    throw new Error('install_dependencies requires a requirements manifest path.');
+  }
+  const manifestPath = normalizeWorkspaceRelativePath(value.manifestPath);
+  const parts = manifestPath.split('/');
+  const fileName = parts.at(-1) ?? '';
+  if (!manifestNamePattern.test(fileName)) {
+    throw new Error('Dependency installation is limited to requirements*.txt manifests.');
+  }
+  if (parts.slice(0, -1).some((part) => blockedManifestDirectories.has(part.toLocaleLowerCase()))) {
+    throw new Error('The dependency manifest is inside a blocked directory.');
+  }
+  const timeoutSeconds = value.timeoutSeconds === undefined
+    ? MAX_COMMAND_TIMEOUT_SECONDS
+    : value.timeoutSeconds;
+  if (typeof timeoutSeconds !== 'number' || !Number.isInteger(timeoutSeconds)) {
+    throw new Error('Dependency timeoutSeconds must be an integer.');
+  }
+  return {
+    manifestPath,
+    cwd: path.posix.dirname(manifestPath) === '.' ? '' : path.posix.dirname(manifestPath),
+    timeoutSeconds: Math.min(
+      MAX_COMMAND_TIMEOUT_SECONDS,
+      Math.max(MIN_COMMAND_TIMEOUT_SECONDS, timeoutSeconds)
+    )
+  };
+}
+
+export function validatePythonRequirementsManifest(content: string): string[] {
+  if (Buffer.byteLength(content, 'utf8') > MAX_DEPENDENCY_MANIFEST_BYTES) {
+    throw new Error('The dependency manifest exceeds the 64 KB safety limit.');
+  }
+  const requirements: string[] = [];
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.replace(/\s+#.*$/, '').trim();
+    if (!line || line.startsWith('#')) {
+      continue;
+    }
+    if (line.length > 300 || !requirementPattern.test(line)) {
+      throw new Error(
+        'The dependency manifest contains an unsupported requirement. '
+        + 'URLs, local paths, editable installs, nested manifests, options, and environment markers are blocked.'
+      );
+    }
+    requirements.push(line);
+    if (requirements.length > MAX_DEPENDENCY_REQUIREMENTS) {
+      throw new Error(`A dependency installation is limited to ${MAX_DEPENDENCY_REQUIREMENTS} requirements.`);
+    }
+  }
+  if (requirements.length === 0) {
+    throw new Error('The dependency manifest does not contain any installable requirements.');
+  }
+  return requirements;
+}
+//merge ends
 export function boundedAgentToolCallLimit(value: unknown): number {
   if (typeof value !== 'number' || !Number.isInteger(value)) {
     return DEFAULT_AGENT_TOOL_CALL_LIMIT;

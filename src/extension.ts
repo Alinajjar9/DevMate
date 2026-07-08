@@ -35,13 +35,13 @@ import {
   DEFAULT_SEARCH_CODE_MAX_RESULTS,
   DEFAULT_TERMINAL_ERRORS_MAX_RESULTS,
   normalizeAgentToolSettings
-} from './agentToolSettings';
-import type { AgentToolSettings } from './agentToolSettings';
+} from './agentTools';
+import type { AgentToolSettings } from './agentTools';
 import {
   AGENT_CHECKPOINT_STORAGE_KEY,
   parseAgentRunCheckpoint
-} from './agentCheckpoint';
-import type { AgentRunCheckpoint } from './agentCheckpoint';
+} from './sessions';
+import type { AgentRunCheckpoint } from './sessions';
 import { ask, askStream, health } from './api/client';
 import { backendStatusLabel, LocalBackendManager } from './backendManager';
 import type { ManagedBackendStatus } from './backendManager';
@@ -55,11 +55,11 @@ import type {
   AssistantMode,
   TokenUsage
 } from './api/types';
-import { createBoundedContextItem } from './context';
+import { createBoundedContextItem } from './projectIndex';
 import {
   collectFileChangeSummary,
   parseAppliedFileChangeOutcome
-} from './changeSummary';
+} from './fileTools';
 import {
   CONVERSATION_SESSIONS_STORAGE_KEY,
   LEGACY_CONVERSATION_SESSIONS_STORAGE_KEY,
@@ -92,25 +92,24 @@ import {
   formatCapturedTerminalErrors,
   MAX_CAPTURED_TERMINAL_ERRORS,
   sanitizeCapturedTerminalText
-} from './errorContext';
-import type { CapturedTerminalError } from './errorContext';
+} from './commandTools';
+import type { CapturedTerminalError } from './commandTools';
 import {
   MAX_DEPENDENCY_MANIFEST_BYTES,
   validatePythonRequirementsManifest
-} from './dependencyTools';
+} from './agentTools';
 import {
   extractMissingPythonModule,
   isPythonVerificationCommand,
   workspacePythonCandidates,
   workspacePythonExecutable
-} from './pythonEnvironment';
-import {
-  MAX_FILE_CHANGE_CHARACTERS,
-  MAX_TOTAL_CHANGE_CHARACTERS,
-  validateFileChanges
-} from './fileChanges';
-import type { ValidatedFileChange } from './fileChanges';
-import { applyExactReplacements } from './fileTools';
+} from './backendManager';
+import type { ValidatedFileChange } from './fileTools';
+import { applyExactReplacements,
+         MAX_FILE_CHANGE_CHARACTERS,
+         MAX_TOTAL_CHANGE_CHARACTERS,
+         validateFileChanges 
+} from './fileTools';
 import {
   ACTIVE_LLM_PROFILE_STORAGE_KEY,
   BUILT_IN_NEMOTRON_PROFILE,
@@ -164,8 +163,8 @@ import {
   PROJECT_EXCLUDE_GLOB,
   selectProjectContext,
   shouldSkipProjectFile
-} from './projectContext';
-import type { ProjectFileCandidate } from './projectContext';
+} from './projectIndex';
+import type { ProjectFileCandidate } from './projectIndex';
 import {
   createEmptyProjectIndex,
   createIndexedProjectFile,
@@ -180,7 +179,7 @@ import {
   isRetryableProviderFailure,
   providerRetryDelay,
   PROVIDER_RETRY_DELAYS_MS
-} from './retryPolicy';
+} from './agentTools';
 
 type ScopeKind = 'project' | 'activeFile' | 'selection';
 

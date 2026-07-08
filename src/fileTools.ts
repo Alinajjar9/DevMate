@@ -1,14 +1,32 @@
-import {
-  MAX_FILE_CHANGE_CHARACTERS,
-  MAX_TOTAL_CHANGE_CHARACTERS,
-  isAgentHistoryOmissionMarker,
-  normalizeWorkspaceRelativePath,
-  validateFileChanges
-} from './fileChanges';
-import { shouldSkipProjectFile } from './projectContext';
+import { shouldSkipProjectFile } from './projectIndex';
 
 export const MAX_EDIT_REPLACEMENTS = 20;
+export const MAX_FILE_CHANGES = 10;
+export const MAX_FILE_CHANGE_CHARACTERS = 200_000;
+export const MAX_TOTAL_CHANGE_CHARACTERS = 500_000;
+//from changeSummary.ts
+export const MAX_FILE_CHANGE_SUMMARY_ITEMS = 20;
+//from fileChanges.ts
+export type ValidatedFileChange = {
+  path: string;
+  content: string;
+};
+//end
+//from changeSummary.ts
+export type FileChangeSummaryKind =
+  | 'created'
+  | 'updated'
+  | 'deleted'
+  | 'renamed'
+  | 'moved';
 
+export type FileChangeSummaryItem = {
+  kind: FileChangeSummaryKind;
+  path: string;
+  previousPath?: string;
+  diffId?: string;
+};
+//end
 export type ExactTextReplacement = {
   oldText: string;
   newText: string;
@@ -18,6 +36,279 @@ export type RelocateFileToolArguments = {
   path: string;
   newPath: string;
 };
+//from changeSummary.ts
+type FileChangeToolStep = {
+  name: string;
+  arguments: Record<string, unknown>;
+  isError: boolean;
+};
+
+export function collectFileChangeSummary(
+  steps: FileChangeToolStep[],
+  additionalChanges: FileChangeSummaryItem[] = []
+): FileChangeSummaryItem[] {
+  const changes = new Map<string, FileChangeSummaryItem>();
+  for (const step of steps) {
+    if (step.isError) {
+      continue;
+    }
+    const path = safePath(step.arguments.path);
+    if (!path) {
+      continue;
+    }
+    if (step.name === 'create_file') {
+      applyCreated(changes, path);
+    } else if (step.name === 'edit_file') {
+      applyUpdated(changes, path);
+    } else if (step.name === 'delete_file') {
+      applyDeleted(changes, path);
+    } else if (step.name === 'rename_file' || step.name === 'move_file') {
+      const newPath = safePath(step.arguments.newPath);
+      if (newPath) {
+        applyRelocated(changes, path, newPath, step.name === 'rename_file' ? 'renamed' : 'moved');
+      }
+    }
+  }
+  for (const change of parseFileChangeSummary(additionalChanges)) {
+    if (change.kind === 'created') {
+      applyCreated(changes, change.path);
+    } else if (change.kind === 'updated') {
+      applyUpdated(changes, change.path);
+    } else if (change.kind === 'deleted') {
+      applyDeleted(changes, change.path);
+    } else if (change.previousPath) {
+      applyRelocated(changes, change.previousPath, change.path, change.kind);
+    }
+  }
+  return [...changes.values()].slice(0, MAX_FILE_CHANGE_SUMMARY_ITEMS);
+}
+
+export function parseAppliedFileChangeOutcome(value: string): FileChangeSummaryItem[] {
+  if (!value.startsWith('Applied file changes:')) {
+    return [];
+  }
+  const parsed: FileChangeSummaryItem[] = [];
+  for (const line of value.split(/\r?\n/).slice(1)) {
+    const match = /^- (Created|Updated) (.+)$/.exec(line.trim());
+    if (!match) {
+      continue;
+    }
+    const path = safePath(match[2]);
+    if (path) {
+      parsed.push({
+        kind: match[1] === 'Created' ? 'created' : 'updated',
+        path
+      });
+    }
+  }
+  return parsed.slice(0, MAX_FILE_CHANGE_SUMMARY_ITEMS);
+}
+
+export function parseFileChangeSummary(value: unknown): FileChangeSummaryItem[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const parsed: FileChangeSummaryItem[] = [];
+  for (const candidate of value.slice(0, MAX_FILE_CHANGE_SUMMARY_ITEMS)) {
+    if (!isRecordS(candidate) || !isKind(candidate.kind)) {
+      continue;
+    }
+    const path = safePath(candidate.path);
+    const previousPath = safePath(candidate.previousPath);
+    const diffId = safeDiffId(candidate.diffId);
+    if (!path || (candidate.kind === 'renamed' || candidate.kind === 'moved') && !previousPath) {
+      continue;
+    }
+    parsed.push({
+      kind: candidate.kind,
+      path,
+      ...(previousPath ? { previousPath } : {}),
+      ...(diffId ? { diffId } : {})
+    });
+  }
+  return parsed;
+}
+
+function safeDiffId(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[a-zA-Z0-9_-]{1,120}$/.test(value)
+    ? value
+    : undefined;
+}
+
+function applyCreated(changes: Map<string, FileChangeSummaryItem>, path: string): void {
+  changes.set(key(path), { kind: 'created', path });
+}
+
+function applyUpdated(changes: Map<string, FileChangeSummaryItem>, path: string): void {
+  const existing = changes.get(key(path));
+  if (existing?.kind === 'created' || existing?.kind === 'renamed' || existing?.kind === 'moved') {
+    return;
+  }
+  changes.set(key(path), { kind: 'updated', path });
+}
+
+function applyDeleted(changes: Map<string, FileChangeSummaryItem>, path: string): void {
+  const existing = changes.get(key(path));
+  if (existing?.kind === 'created') {
+    changes.delete(key(path));
+    return;
+  }
+  if ((existing?.kind === 'renamed' || existing?.kind === 'moved') && existing.previousPath) {
+    changes.delete(key(path));
+    changes.set(key(existing.previousPath), { kind: 'deleted', path: existing.previousPath });
+    return;
+  }
+  changes.set(key(path), { kind: 'deleted', path });
+}
+
+function applyRelocated(
+  changes: Map<string, FileChangeSummaryItem>,
+  path: string,
+  newPath: string,
+  kind: 'renamed' | 'moved'
+): void {
+  const existing = changes.get(key(path));
+  changes.delete(key(path));
+  if (existing?.kind === 'created') {
+    changes.set(key(newPath), { kind: 'created', path: newPath });
+    return;
+  }
+  const previousPath = existing?.previousPath ?? path;
+  if (key(previousPath) === key(newPath)) {
+    if (existing?.kind === 'updated') {
+      changes.set(key(newPath), { kind: 'updated', path: newPath });
+    }
+    return;
+  }
+  changes.set(key(newPath), { kind, path: newPath, previousPath });
+}
+
+function safePath(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length > 2_048) {
+    return undefined;
+  }
+  try {
+    return normalizeWorkspaceRelativePath(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function key(value: string): string {
+  return process.platform === 'win32' ? value.toLocaleLowerCase() : value;
+}
+
+function isKind(value: unknown): value is FileChangeSummaryKind {
+  return value === 'created'
+    || value === 'updated'
+    || value === 'deleted'
+    || value === 'renamed'
+    || value === 'moved';
+}
+
+function isRecordS(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+//end of merge from changeSummary.ts
+
+//from fileChanges.ts
+const windowsReservedNames = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
+const windowsInvalidCharacters = /[<>:"|?*]/;
+const legacyHistoryMarker = /^\[(?:omitted after execution: )?\d+ characters, sha256 [0-9a-f]{16}\]$/i;
+const internalHistoryMarker = /^\[DevMate internal history summary: (?:content|text) omitted after execution; \d+ characters; sha256 [0-9a-f]{16}; never use as file content\]$/i;
+
+export function agentHistoryOmissionMarker(
+  kind: 'content' | 'text',
+  characters: number,
+  hash: string
+): string {
+  return `[DevMate internal history summary: ${kind} omitted after execution; `
+    + `${characters} characters; sha256 ${hash}; never use as file content]`;
+}
+
+export function isAgentHistoryOmissionMarker(value: string): boolean {
+  return legacyHistoryMarker.test(value.trim()) || internalHistoryMarker.test(value.trim());
+}
+
+export function validateFileChanges(value: unknown): ValidatedFileChange[] {
+  if (!Array.isArray(value)) {
+    throw new Error('The backend returned an invalid file-change list.');
+  }
+  if (value.length > MAX_FILE_CHANGES) {
+    throw new Error(`DevMate can apply at most ${MAX_FILE_CHANGES} files at once.`);
+  }
+
+  const changes: ValidatedFileChange[] = [];
+  const seenPaths = new Set<string>();
+  let totalCharacters = 0;
+  for (const candidate of value) {
+    if (!isRecordC(candidate) || typeof candidate.path !== 'string' || typeof candidate.content !== 'string') {
+      throw new Error('The backend returned an invalid file change.');
+    }
+
+    const path = normalizeWorkspaceRelativePath(candidate.path);
+    const comparablePath = path.toLocaleLowerCase();
+    if (seenPaths.has(comparablePath)) {
+      throw new Error(`DevMate proposed ${path} more than once.`);
+    }
+    if (shouldSkipProjectFile(path)) {
+      throw new Error(`DevMate will not write to the protected or unsupported path ${path}.`);
+    }
+    if (candidate.content.includes('\0')) {
+      throw new Error(`DevMate will not write binary content to ${path}.`);
+    }
+    if (isAgentHistoryOmissionMarker(candidate.content)) {
+      throw new Error(
+        `DevMate rejected an internal tool-history marker as the contents of ${path}. `
+        + 'Read or move the real file instead.'
+      );
+    }
+    if (candidate.content.length > MAX_FILE_CHANGE_CHARACTERS) {
+      throw new Error(`${path} exceeds the per-file change limit.`);
+    }
+
+    totalCharacters += candidate.content.length;
+    if (totalCharacters > MAX_TOTAL_CHANGE_CHARACTERS) {
+      throw new Error('The proposed file changes exceed the total size limit.');
+    }
+
+    seenPaths.add(comparablePath);
+    changes.push({ path, content: candidate.content });
+  }
+
+  return changes;
+}
+
+export function normalizeWorkspaceRelativePath(value: string): string {
+  const path = value.trim();
+  if (
+    !path
+    || path.startsWith('/')
+    || path.startsWith('\\')
+    || /^[A-Za-z]:/.test(path)
+  ) {
+    throw new Error('Every proposed file must use a workspace-relative path.');
+  }
+
+  const normalized = path.replace(/\\/g, '/');
+  const parts = normalized.split('/');
+  if (parts.some((part) =>
+    !part
+    || part === '.'
+    || part === '..'
+    || part.endsWith(' ')
+    || part.endsWith('.')
+    || windowsInvalidCharacters.test(part)
+    || windowsReservedNames.test(part)
+  )) {
+    throw new Error(`The proposed path ${value} contains unsafe or invalid segments.`);
+  }
+  return parts.join('/');
+}
+
+function isRecordC(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
 
 export function parseCreateFileArguments(value: Record<string, unknown>): {
   path: string;
