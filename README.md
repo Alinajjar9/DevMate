@@ -317,7 +317,10 @@ The Python backend source remains in the package as a fallback for development o
 
 | Path | Purpose |
 | --- | --- |
-| `src/extension.ts` | Extension activation, webview, agent loop, and tool execution |
+| `src/extension.ts` | Extension activation, chat controller, agent loop, and tool execution |
+| `src/webview.ts` | CSP-protected webview shell and packaged asset URLs |
+| `media/webview.css` | Sidebar layout and visual styles |
+| `media/webview.js` | Browser-side chat state, rendering, and interactions |
 | `src/agentTools.ts` | Tool names, argument parsing, limits, and history compaction |
 | `src/agentToolSettings.ts` | Configurable per-tool result limits |
 | `src/api/` | Extension-to-backend HTTP transport and request types |

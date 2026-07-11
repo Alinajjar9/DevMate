@@ -1,6 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MAX_MODEL_COMMAND_OUTPUT_CHARACTERS = exports.MAX_CHAT_COMMAND_OUTPUT_CHARACTERS = exports.MAX_COMMAND_ARGUMENTS = exports.MAX_COMMAND_TIMEOUT_SECONDS = exports.MIN_COMMAND_TIMEOUT_SECONDS = exports.DEFAULT_COMMAND_TIMEOUT_SECONDS = void 0;
+exports.MAX_CAPTURED_TERMINAL_OUTPUT_CHARACTERS = exports.MAX_CAPTURED_TERMINAL_ERRORS = exports.MAX_MODEL_COMMAND_OUTPUT_CHARACTERS = exports.MAX_CHAT_COMMAND_OUTPUT_CHARACTERS = exports.MAX_COMMAND_ARGUMENTS = exports.MAX_COMMAND_TIMEOUT_SECONDS = exports.MIN_COMMAND_TIMEOUT_SECONDS = exports.DEFAULT_COMMAND_TIMEOUT_SECONDS = void 0;
+exports.sanitizeCapturedTerminalText = sanitizeCapturedTerminalText;
+exports.formatCapturedTerminalErrors = formatCapturedTerminalErrors;
 exports.parseRunCommandArguments = parseRunCommandArguments;
 exports.commandSignature = commandSignature;
 exports.commandLabel = commandLabel;
@@ -13,6 +15,8 @@ exports.MAX_COMMAND_TIMEOUT_SECONDS = 1_800;
 exports.MAX_COMMAND_ARGUMENTS = 50;
 exports.MAX_CHAT_COMMAND_OUTPUT_CHARACTERS = 20_000;
 exports.MAX_MODEL_COMMAND_OUTPUT_CHARACTERS = 10_000;
+exports.MAX_CAPTURED_TERMINAL_ERRORS = 5;
+exports.MAX_CAPTURED_TERMINAL_OUTPUT_CHARACTERS = 8_000;
 const packageScriptPattern = /(^|:)(test|lint|check|type-?check|build)(:|$)/i;
 const forbiddenArgumentPattern = /[\0\r\n;&|<>`$'"(){}!^%]/;
 const forbiddenBehaviorPattern = /(^|[-_:])(install|add|remove|uninstall|publish|deploy|serve|server|start|watch|dev|fix|write|generate|generator)([-_:]|$)/i;
@@ -20,6 +24,42 @@ const blockedWorkingDirectories = new Set([
     '.git', 'node_modules', '.venv', 'venv', 'out', 'dist', 'build', 'coverage',
     '.cache', '__pycache__', '.next', 'target', 'vendor'
 ]);
+function sanitizeCapturedTerminalText(value) {
+    const sanitized = sanitizeCommandOutput(value)
+        .replace(/(authorization\s*:\s*(?:bearer|basic)\s+)[^\s]+/gi, '$1[REDACTED]')
+        .replace(/((?:api[_-]?key|access[_-]?token|auth[_-]?token|password|secret)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s]+)/gi, '$1[REDACTED]')
+        .replace(/(--(?:api-key|token|password|secret)(?:=|\s+))[^\s]+/gi, '$1[REDACTED]')
+        .replace(/([a-z][a-z0-9+.-]*:\/\/[^:\s/]+:)[^@\s/]+@/gi, '$1[REDACTED]@')
+        .replace(/\b(?:sk|nvapi)-[a-z0-9_-]{12,}\b/gi, '[REDACTED]');
+    return tailError(sanitized, exports.MAX_CAPTURED_TERMINAL_OUTPUT_CHARACTERS);
+}
+function formatCapturedTerminalErrors(entries, maxResults) {
+    const selected = entries.slice(0, Math.max(1, Math.min(exports.MAX_CAPTURED_TERMINAL_ERRORS, maxResults)));
+    if (selected.length === 0) {
+        return [
+            'No failed workspace terminal commands have been captured.',
+            'DevMate can only capture commands run after activation when VS Code Terminal Shell Integration is available.'
+        ].join('\n');
+    }
+    const sections = selected.map((entry, index) => [
+        `Failure ${index + 1}:`,
+        `Command: ${sanitizeCapturedTerminalText(entry.command) || '(unavailable)'}`,
+        `Terminal: ${sanitizeCapturedTerminalText(entry.terminalName) || '(unnamed)'}`,
+        `Working directory: ${entry.cwd || '.'}`,
+        `Exit code: ${entry.exitCode}`,
+        entry.output
+            ? `Output:\n${sanitizeCapturedTerminalText(entry.output)}`
+            : 'Output: (none captured)'
+    ].join('\n'));
+    return `Recent failed workspace terminal commands (${selected.length}, newest first):\n\n${sections.join('\n\n')}`;
+}
+function tailError(value, maximum) {
+    if (value.length <= maximum) {
+        return value;
+    }
+    const marker = '[Earlier output omitted]\n';
+    return `${marker}${value.slice(-(maximum - marker.length))}`;
+}
 function parseRunCommandArguments(value) {
     let executableValue = value.executable;
     let argumentsValue = value.args ?? value.arguments;

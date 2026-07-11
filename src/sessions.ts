@@ -1,6 +1,6 @@
 import type { ConversationTurn, AgentToolStep, AssistantMode } from './api/types';
-import { parseFileChangeSummary } from './changeSummary';
-import type { FileChangeSummaryItem } from './changeSummary';
+import { parseFileChangeSummary } from './fileTools';
+import type { FileChangeSummaryItem } from './fileTools';
 import { AGENT_TOOL_NAMES } from './agentTools';
 import type { AgentToolName } from './agentTools';
 

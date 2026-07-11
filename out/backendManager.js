@@ -34,6 +34,10 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.LocalBackendManager = exports.BACKEND_RESTART_WINDOW_MS = exports.MAX_BACKEND_RESTARTS = exports.BACKEND_START_POLL_MS = exports.BACKEND_START_ATTEMPTS = exports.BACKEND_HEALTH_INTERVAL_MS = void 0;
+exports.isPythonVerificationCommand = isPythonVerificationCommand;
+exports.workspacePythonCandidates = workspacePythonCandidates;
+exports.workspacePythonExecutable = workspacePythonExecutable;
+exports.extractMissingPythonModule = extractMissingPythonModule;
 exports.parseLocalBackendTarget = parseLocalBackendTarget;
 exports.pythonLaunchCandidates = pythonLaunchCandidates;
 exports.bundledBackendLaunchCandidate = bundledBackendLaunchCandidate;
@@ -46,6 +50,47 @@ exports.BACKEND_START_ATTEMPTS = 20;
 exports.BACKEND_START_POLL_MS = 400;
 exports.MAX_BACKEND_RESTARTS = 3;
 exports.BACKEND_RESTART_WINDOW_MS = 60_000;
+//merge from pythonEnvironment.ts
+function isPythonVerificationCommand(command) {
+    const executable = command.executable.replace(/\\/g, '/').split('/').at(-1)?.toLocaleLowerCase();
+    return executable === 'python'
+        || executable === 'python.exe'
+        || executable === 'python3'
+        || executable === 'python3.exe'
+        || executable === 'py'
+        || executable === 'py.exe';
+}
+function workspacePythonCandidates(cwd, platform = process.platform) {
+    const normalizedCwd = cwd.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    const roots = normalizedCwd ? [normalizedCwd, ''] : [''];
+    const environments = ['.venv', 'venv', 'env'];
+    const executables = platform === 'win32'
+        ? ['Scripts/python.exe']
+        : ['bin/python', 'bin/python3'];
+    const candidates = [];
+    for (const root of roots) {
+        for (const environment of environments) {
+            for (const executable of executables) {
+                const candidate = [root, environment, executable].filter(Boolean).join('/');
+                if (!candidates.includes(candidate)) {
+                    candidates.push(candidate);
+                }
+            }
+        }
+    }
+    return candidates;
+}
+function workspacePythonExecutable(candidate, cwd) {
+    const normalizedCandidate = candidate.replace(/\\/g, '/');
+    const normalizedCwd = cwd.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') || '.';
+    const relative = path.posix.relative(normalizedCwd, normalizedCandidate);
+    return relative.startsWith('../') ? relative : `./${relative.replace(/^\.\//, '')}`;
+}
+function extractMissingPythonModule(output) {
+    const match = output.match(/ModuleNotFoundError:\s*No module named\s*['"]([A-Za-z0-9_.-]+)['"]/i);
+    return match?.[1];
+}
+//merge ends
 function parseLocalBackendTarget(value) {
     try {
         const url = new URL(value);

@@ -3,25 +3,44 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-test('embedded DevMate webview script has valid JavaScript syntax', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'extension.ts'),
-    'utf8'
+function readSource(...segments) {
+  return fs.readFileSync(path.join(__dirname, '..', ...segments), 'utf8');
+}
+
+function readDevMateSource() {
+  return [
+    readSource('src', 'extension.ts'),
+    readSource('src', 'webview.ts'),
+    readSource('media', 'webview.css'),
+    readSource('media', 'webview.js')
+  ].join('\n');
+}
+
+test('DevMate webview script has valid JavaScript syntax', () => {
+  const script = readSource('media', 'webview.js');
+  assert.doesNotThrow(() => new Function(script));
+});
+
+test('extension delegates webview markup to packaged UI assets', () => {
+  const extensionSource = readSource('src', 'extension.ts');
+  const shellSource = readSource('src', 'webview.ts');
+
+  assert.match(extensionSource, /getChatWebviewHtml\(webviewView\.webview, this\.extensionUri\)/);
+  assert.match(
+    extensionSource,
+    /localResourceRoots:\s*\[vscode\.Uri\.joinPath\(this\.extensionUri, 'media'\)\]/
   );
-  const marker = '<script nonce="${nonce}">';
-  const start = source.indexOf(marker);
-  const end = source.indexOf('</script>', start);
-  assert.ok(start >= 0 && end > start, 'webview script block was not found');
-  const script = source.slice(start + marker.length, end);
-  const cookedScript = new Function('return `' + script + '`;')();
-  assert.doesNotThrow(() => new Function(cookedScript));
+  assert.doesNotMatch(extensionSource, /<style>|<script/);
+  assert.match(shellSource, /asWebviewUri\([\s\S]*?'media', 'webview\.css'/);
+  assert.match(shellSource, /asWebviewUri\([\s\S]*?'media', 'webview\.js'/);
+  assert.match(shellSource, /style-src \$\{webview\.cspSource\}/);
+  assert.match(shellSource, /script-src 'nonce-\$\{nonce\}'/);
+  assert.match(shellSource, /<link rel="stylesheet" href="\$\{stylesheetUri\}">/);
+  assert.match(shellSource, /<script nonce="\$\{nonce\}" src="\$\{scriptUri\}"><\/script>/);
 });
 
 test('working card has visible motion with a reduced-motion fallback', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'extension.ts'),
-    'utf8'
-  );
+  const source = readDevMateSource();
   for (const animation of [
     'working-card-sheen',
     'working-edge-travel',
@@ -39,16 +58,7 @@ test('working card has visible motion with a reduced-motion fallback', () => {
 });
 
 test('narration compaction preserves letters while normalizing whitespace', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'extension.ts'),
-    'utf8'
-  );
-  const marker = '<script nonce="' + '$' + '{nonce}">';
-  const start = source.indexOf(marker);
-  const end = source.indexOf('</script>', start);
-  const script = source.slice(start + marker.length, end);
-  const tick = String.fromCharCode(96);
-  const cookedScript = new Function('return ' + tick + script + tick + ';')();
+  const cookedScript = readSource('media', 'webview.js');
   const functionStart = cookedScript.indexOf('function compactProviderNarration(value)');
   const functionEnd = cookedScript.indexOf('function completeAssistantResponse', functionStart);
   const functionSource = cookedScript.slice(functionStart, functionEnd);
@@ -63,29 +73,20 @@ test('narration compaction preserves letters while normalizing whitespace', () =
 });
 
 test('settings expose the bounded tool-call limit', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'extension.ts'),
-    'utf8'
-  );
+  const source = readDevMateSource();
   assert.match(source, /id="settingsToolCallLimit"[^>]+min="4"[^>]+max="100"/);
   assert.match(source, /toolCallLimit:\s*16/);
 });
 
 test('dependency installation permission cannot be remembered', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'extension.ts'),
-    'utf8'
-  );
+  const source = readDevMateSource();
   assert.match(source, /Permission required to install Python dependencies/);
   assert.match(source, /rememberable:\s*false/);
   assert.match(source, /if \(message\.rememberable !== false\)/);
 });
 
 test('file lifecycle permissions are always one-time and reviewable', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'extension.ts'),
-    'utf8'
-  );
+  const source = readDevMateSource();
   assert.match(source, /action === 'create' \|\| action === 'update'/);
   assert.match(source, /delete: 'Delete'/);
   assert.match(source, /rename: 'Rename'/);
@@ -94,10 +95,7 @@ test('file lifecycle permissions are always one-time and reviewable', () => {
 });
 
 test('only explicit request events release the pending UI state', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'extension.ts'),
-    'utf8'
-  );
+  const source = readDevMateSource();
   assert.doesNotMatch(source, /const terminalStatus = message\.level/);
   assert.match(source, /if \(message\.command === 'requestFailed'\)[\s\S]*?state\.askPending = false/);
   assert.match(source, /postRequestFailure\('Open a file first\.|message\.scope\.kind === 'selection'/);
@@ -108,10 +106,7 @@ test('only explicit request events release the pending UI state', () => {
 });
 
 test('managed backend state and recovery controls are exposed in the UI', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'extension.ts'),
-    'utf8'
-  );
+  const source = readDevMateSource();
   const managerSource = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'backendManager.ts'),
     'utf8'
@@ -125,20 +120,14 @@ test('managed backend state and recovery controls are exposed in the UI', () => 
 });
 
 test('slow provider calls replace the static generating phase with a waiting heartbeat', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'extension.ts'),
-    'utf8'
-  );
+  const source = readDevMateSource();
   assert.match(source, /Waiting for model response — the selected model is still working/);
   assert.match(source, /}, 15_000\);/);
   assert.match(source, /clearTimeout\(waitingTimer\)/);
 });
 
 test('provider streaming and safe rich answer rendering are wired into the chat', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'extension.ts'),
-    'utf8'
-  );
+  const source = readDevMateSource();
   const clientSource = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'api', 'client.ts'),
     'utf8'
@@ -155,10 +144,7 @@ test('provider streaming and safe rich answer rendering are wired into the chat'
 });
 
 test('streamed output is visibly drained before the final answer replaces it', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'extension.ts'),
-    'utf8'
-  );
+  const source = readDevMateSource();
   assert.match(source, /streamQueue:\s*''/);
   assert.match(source, /pendingAssistantResponse:\s*undefined/);
   assert.match(source, /function pumpProviderStream\(\)/);
@@ -174,10 +160,7 @@ test('streamed output is visibly drained before the final answer replaces it', (
 });
 
 test('composer shows a live token estimate and a compact ask action', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'extension.ts'),
-    'utf8'
-  );
+  const source = readDevMateSource();
   assert.match(source, /id="tokenEstimate"/);
   assert.match(source, /class="action-button primary ask-button"/);
   assert.doesNotMatch(source, /ask-button-icon/);
@@ -190,10 +173,7 @@ test('composer shows a live token estimate and a compact ask action', () => {
 });
 
 test('built-in Nemotron setup locks provider fields while keeping the API key configurable', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'extension.ts'),
-    'utf8'
-  );
+  const source = readDevMateSource();
   assert.match(source, /profile\?\.builtIn === true/);
   assert.match(source, /llmProfileNameEl\.disabled = isBuiltIn/);
   assert.match(source, /llmProfileProviderEl\.disabled = isBuiltIn/);
@@ -203,10 +183,7 @@ test('built-in Nemotron setup locks provider fields while keeping the API key co
 });
 
 test('model selection uses a DevMate-styled modal instead of a native Quick Pick', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'extension.ts'),
-    'utf8'
-  );
+  const source = readDevMateSource();
   assert.match(source, /id="llmProfilePickerDialog"/);
   assert.match(source, /class="profile-dialog model-picker-dialog"/);
   assert.match(source, /command: 'showLlmProfilePicker'/);
@@ -221,10 +198,7 @@ test('model selection uses a DevMate-styled modal instead of a native Quick Pick
 });
 
 test('recognized reasoning models expose a compact icon intelligence menu beside the model', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'extension.ts'),
-    'utf8'
-  );
+  const source = readDevMateSource();
   assert.match(source, /id="intelligenceButton"/);
   assert.match(source, /class="intelligence-icon-button"/);
   assert.match(source, /id="intelligenceMenu"/);
@@ -238,10 +212,7 @@ test('recognized reasoning models expose a compact icon intelligence menu beside
 });
 
 test('settings expose a separate bounded agent-tool limits dialog', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'extension.ts'),
-    'utf8'
-  );
+  const source = readDevMateSource();
   assert.match(source, /id="openAgentToolSettings"/);
   assert.match(source, /id="agentToolSettingsDialog"/);
   assert.match(source, /id="settingsReadFileMaxLines"[^>]*max="1000"/);
@@ -250,10 +221,7 @@ test('settings expose a separate bounded agent-tool limits dialog', () => {
 });
 
 test('working UI exposes tool usage and resumable agent checkpoints', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'extension.ts'),
-    'utf8'
-  );
+  const source = readDevMateSource();
   assert.match(source, /className = 'working-tool-usage'/);
   assert.match(source, /Tools ' \+ state\.toolUsage\.used \+ ' \/ '/);
   assert.match(source, /id="continueAgent"/);
@@ -264,10 +232,7 @@ test('working UI exposes tool usage and resumable agent checkpoints', () => {
 });
 
 test('agent can inspect workspace diagnostics and captured terminal failures', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'extension.ts'),
-    'utf8'
-  );
+  const source = readDevMateSource();
   const backendSource = fs.readFileSync(
     path.join(__dirname, '..', 'backend', 'app', 'main.py'),
     'utf8'
@@ -283,10 +248,7 @@ test('agent can inspect workspace diagnostics and captured terminal failures', (
 });
 
 test('agent can navigate symbols, definitions, and references through VS Code providers', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'extension.ts'),
-    'utf8'
-  );
+  const source = readDevMateSource();
   const backendSource = fs.readFileSync(
     path.join(__dirname, '..', 'backend', 'app', 'main.py'),
     'utf8'
@@ -301,10 +263,7 @@ test('agent can navigate symbols, definitions, and references through VS Code pr
 });
 
 test('completed answers show persistent green and red file-change summaries', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'extension.ts'),
-    'utf8'
-  );
+  const source = readDevMateSource();
   assert.match(source, /className = 'file-change-summary'/);
   assert.match(source, /className = 'file-change-row'/);
   assert.match(source, /gitDecoration-addedResourceForeground/);
@@ -318,10 +277,7 @@ test('completed answers show persistent green and red file-change summaries', ()
 });
 
 test('project-bound sessions open from a dedicated landing screen', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'extension.ts'),
-    'utf8'
-  );
+  const source = readDevMateSource();
   assert.match(source, /id="sessionSelector"/);
   assert.match(source, /id="newSessionButton"/);
   assert.match(source, /id="sessionHome"/);
@@ -339,10 +295,7 @@ test('project-bound sessions open from a dedicated landing screen', () => {
 });
 
 test('new user messages persist independently from failed assistant requests', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'extension.ts'),
-    'utf8'
-  );
+  const source = readDevMateSource();
   assert.match(source, /appendConversationSessionUserMessage\(/);
   assert.match(source, /isNewTurn:\s*true/);
   assert.match(source, /isNewTurn:\s*false/);
@@ -350,10 +303,7 @@ test('new user messages persist independently from failed assistant requests', (
 });
 
 test('exhausted agent runs finalize locally instead of looping checkpoints', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'extension.ts'),
-    'utf8'
-  );
+  const source = readDevMateSource();
   assert.match(source, /consecutiveAgentInspectionCalls\(toolHistory\)/);
   assert.match(source, /Finalizing from completed project-tool work/);
   assert.match(source, /summarizeAgentToolHistory\(toolHistory, errorMessage\)/);

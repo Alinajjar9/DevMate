@@ -22,7 +22,10 @@ the backend does not edit files or run commands. local actions are done by the e
 
 | component | responsibility |
 | --- | --- |
-| `src/extension.ts` | webview, messages, agent loop, local tool execution, diffs, permissions |
+| `src/extension.ts` | activation, messages, agent loop, local tool execution, diffs, permissions |
+| `src/webview.ts` | csp-protected webview shell and packaged asset urls |
+| `media/webview.css` | sidebar layout and visual styles |
+| `media/webview.js` | browser-side state, rendering, and interactions |
 | `src/backendManager.ts` | starts, checks, restarts, and stops the local backend |
 | `src/agentTools.ts` | tool types, parsing, limits, duplicate detection, compact history |
 | `src/fileTools.ts` | file arguments and exact replacements |
@@ -239,7 +242,10 @@ the extension saves this state during tool work. if the webview reloads or a lon
 ## short file map
 
 - `package.json`: extension metadata, settings, commands, and scripts
-- `src/extension.ts`: main extension controller, webview, tools, permissions, and agent loop
+- `src/extension.ts`: main extension controller, tools, permissions, and agent loop
+- `src/webview.ts`: webview html shell, csp, and packaged asset urls
+- `media/webview.css`: sidebar layout and visual styles
+- `media/webview.js`: browser-side chat state, rendering, and interactions
 - `src/backendManager.ts`: backend startup, monitoring, restart, and shutdown
 - `src/agentTools.ts`: tool types, parsing, limits, history, and duplicate signatures
 - `src/fileTools.ts`: file tool arguments and exact replacements
@@ -262,7 +268,8 @@ the extension saves this state during tool work. if the webview reloads or a lon
 
 ## where to make common changes
 
-- for sidebar layout, chat behavior, settings dialogs, tool cards, and browser-side state, start in `getHtml` inside `src/extension.ts`.
+- for sidebar layout and visual styles, use `media/webview.css`.
+- for chat behavior, settings dialogs, tool cards, and browser-side state, use `media/webview.js`; the html shell and csp live in `src/webview.ts`.
 - for extension message handling and the complete agent request loop, use `handleMessage` and `answerQuestion` in `src/extension.ts`.
 - for tool names, arguments, bounds, duplicate signatures, and compact history, use `src/agentTools.ts`.
 - for exact replacement behavior, use `src/fileTools.ts`.

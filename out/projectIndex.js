@@ -33,7 +33,12 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PROJECT_CHUNK_OVERLAP_CHARACTERS = exports.MAX_PROJECT_CHUNK_CHARACTERS = exports.MAX_PROJECT_INDEX_FILE_CHARACTERS = exports.MAX_PROJECT_INDEX_FILES = exports.PROJECT_INDEX_FILE_NAME = exports.PROJECT_INDEX_VERSION = void 0;
+exports.PROJECT_EXCLUDE_GLOB = exports.MAX_ATTACHED_FILES = exports.MAX_ATTACHMENT_CANDIDATES = exports.MAX_PROJECT_CONTEXT_CHARACTERS = exports.MAX_PROJECT_FILE_CHARACTERS = exports.MAX_PROJECT_FILES = exports.MAX_PROJECT_FILE_BYTES = exports.MAX_PROJECT_CANDIDATES = exports.MAX_CONTEXT_CHARACTERS = exports.PROJECT_CHUNK_OVERLAP_CHARACTERS = exports.MAX_PROJECT_CHUNK_CHARACTERS = exports.MAX_PROJECT_INDEX_FILE_CHARACTERS = exports.MAX_PROJECT_INDEX_FILES = exports.PROJECT_INDEX_FILE_NAME = exports.PROJECT_INDEX_VERSION = void 0;
+exports.selectProjectContext = selectProjectContext;
+exports.shouldSkipProjectFile = shouldSkipProjectFile;
+exports.containsBinaryData = containsBinaryData;
+exports.languageIdForPath = languageIdForPath;
+exports.createBoundedContextItem = createBoundedContextItem;
 exports.createEmptyProjectIndex = createEmptyProjectIndex;
 exports.createIndexedProjectFile = createIndexedProjectFile;
 exports.splitProjectContent = splitProjectContent;
@@ -46,12 +51,202 @@ exports.MAX_PROJECT_INDEX_FILES = 500;
 exports.MAX_PROJECT_INDEX_FILE_CHARACTERS = 40_000;
 exports.MAX_PROJECT_CHUNK_CHARACTERS = 3_200;
 exports.PROJECT_CHUNK_OVERLAP_CHARACTERS = 320;
+//from projectContext.ts
+exports.MAX_CONTEXT_CHARACTERS = 20_000;
+exports.MAX_PROJECT_CANDIDATES = 200;
+exports.MAX_PROJECT_FILE_BYTES = 200_000;
+exports.MAX_PROJECT_FILES = 5;
+exports.MAX_PROJECT_FILE_CHARACTERS = 8_000;
+exports.MAX_PROJECT_CONTEXT_CHARACTERS = 40_000;
+exports.MAX_ATTACHMENT_CANDIDATES = 1_000;
+exports.MAX_ATTACHED_FILES = 5;
+exports.PROJECT_EXCLUDE_GLOB = '**/{.git,node_modules,.venv,venv,out,dist,build,coverage,.cache,__pycache__,.next,target,vendor}/**';
 const retrievalStopWords = new Set([
     'a', 'an', 'and', 'are', 'can', 'could', 'do', 'does', 'for', 'from', 'how',
     'i', 'in', 'is', 'it', 'me', 'my', 'of', 'on', 'or', 'please', 'project',
     'should', 'that', 'the', 'this', 'to', 'what', 'when', 'where', 'which', 'with',
     'would', 'you'
 ]);
+//from projectContext.ts
+const ignoredDirectoryNames = new Set([
+    '.git',
+    'node_modules',
+    '.venv',
+    'venv',
+    'out',
+    'dist',
+    'build',
+    'coverage',
+    '.cache',
+    '__pycache__',
+    '.next',
+    'target',
+    'vendor'
+]);
+const ignoredFileNames = new Set([
+    '.env',
+    '.npmrc',
+    '.pypirc',
+    'credentials',
+    'credentials.json',
+    'package-lock.json',
+    'pnpm-lock.yaml',
+    'secrets.json',
+    'yarn.lock',
+    'poetry.lock'
+]);
+const binaryExtensions = new Set([
+    '.7z', '.avi', '.bmp', '.class', '.dll', '.doc', '.docx', '.eot', '.exe', '.gif',
+    '.gz', '.ico', '.jar', '.jpeg', '.jpg', '.key', '.lockb', '.mov', '.mp3', '.mp4', '.o',
+    '.obj', '.otf', '.p12', '.pdf', '.pem', '.pfx', '.png', '.pyc', '.rar', '.so', '.tar', '.ttf', '.wav',
+    '.webm', '.webp', '.woff', '.woff2', '.xls', '.xlsx', '.zip'
+]);
+const stopWords = new Set([
+    'a', 'an', 'and', 'are', 'can', 'does', 'explain', 'for', 'from', 'how', 'in',
+    'is', 'it', 'me', 'of', 'on', 'please', 'project', 'show', 'that', 'the', 'this',
+    'to', 'what', 'where', 'which', 'with'
+]);
+const baselineScores = {
+    'readme.md': 8,
+    'package.json': 7,
+    'pyproject.toml': 7,
+    'requirements.txt': 6,
+    'cargo.toml': 7,
+    'go.mod': 7,
+    'pom.xml': 7,
+    'build.gradle': 7,
+    'settings.gradle': 6,
+    'tsconfig.json': 5
+};
+const languageByExtension = {
+    '.c': 'c',
+    '.cpp': 'cpp',
+    '.cs': 'csharp',
+    '.css': 'css',
+    '.go': 'go',
+    '.html': 'html',
+    '.java': 'java',
+    '.js': 'javascript',
+    '.json': 'json',
+    '.jsx': 'javascriptreact',
+    '.kt': 'kotlin',
+    '.md': 'markdown',
+    '.php': 'php',
+    '.py': 'python',
+    '.rb': 'ruby',
+    '.rs': 'rust',
+    '.scss': 'scss',
+    '.sh': 'shellscript',
+    '.sql': 'sql',
+    '.swift': 'swift',
+    '.toml': 'toml',
+    '.ts': 'typescript',
+    '.tsx': 'typescriptreact',
+    '.xml': 'xml',
+    '.yaml': 'yaml',
+    '.yml': 'yaml'
+};
+function selectProjectContext(candidates, question, limits = {}) {
+    const maxFiles = Math.min(Math.max(0, limits.maxFiles ?? exports.MAX_PROJECT_FILES), exports.MAX_PROJECT_FILES);
+    const maxCharacters = Math.min(Math.max(0, limits.maxCharacters ?? exports.MAX_PROJECT_CONTEXT_CHARACTERS), exports.MAX_PROJECT_CONTEXT_CHARACTERS);
+    const tokens = tokenizeQuestion(question);
+    const rankedCandidates = candidates
+        .filter((candidate) => candidate.content.trim().length > 0)
+        .map((candidate) => ({
+        candidate,
+        score: scoreCandidate(candidate, tokens)
+    }))
+        .sort((left, right) => right.score - left.score || left.candidate.relativePath.localeCompare(right.candidate.relativePath));
+    const items = [];
+    let remainingCharacters = maxCharacters;
+    for (const { candidate } of rankedCandidates) {
+        if (items.length >= maxFiles || remainingCharacters <= 0) {
+            break;
+        }
+        const itemLimit = Math.min(exports.MAX_PROJECT_FILE_CHARACTERS, remainingCharacters);
+        const item = createBoundedContextItem('file', candidate.filePath, candidate.languageId, candidate.content, itemLimit);
+        items.push(item);
+        remainingCharacters -= item.includedCharacters;
+    }
+    return items;
+}
+function shouldSkipProjectFile(relativePath) {
+    const normalizedPath = relativePath.replace(/\\/g, '/').toLowerCase();
+    const parts = normalizedPath.split('/');
+    const fileName = parts.at(-1) ?? '';
+    const extension = path.extname(fileName);
+    return parts.slice(0, -1).some((part) => ignoredDirectoryNames.has(part))
+        || ignoredFileNames.has(fileName)
+        || fileName.startsWith('.env.')
+        || fileName.endsWith('.min.js')
+        || fileName.endsWith('.min.css')
+        || fileName.endsWith('.map')
+        || binaryExtensions.has(extension);
+}
+function containsBinaryData(bytes) {
+    const inspectedLength = Math.min(bytes.length, 8_000);
+    for (let index = 0; index < inspectedLength; index += 1) {
+        if (bytes[index] === 0) {
+            return true;
+        }
+    }
+    return false;
+}
+function languageIdForPath(filePath) {
+    return languageByExtension[path.extname(filePath).toLowerCase()] ?? 'plaintext';
+}
+// merge from context.ts
+function createBoundedContextItem(source, filePath, languageId, content, maxCharacters = exports.MAX_CONTEXT_CHARACTERS) {
+    const safeLimit = Math.min(Math.max(0, maxCharacters), exports.MAX_CONTEXT_CHARACTERS);
+    const boundedContent = content.slice(0, safeLimit);
+    return {
+        source,
+        filePath,
+        languageId,
+        content: boundedContent,
+        includedCharacters: boundedContent.length,
+        totalCharacters: content.length,
+        truncated: boundedContent.length < content.length
+    };
+}
+// merge ends
+function tokenizeQuestion(question) {
+    const words = question.toLocaleLowerCase().match(/[\p{L}\p{N}_-]+/gu) ?? [];
+    return [...new Set(words.filter((word) => word.length >= 2 && !stopWords.has(word)))].slice(0, 16);
+}
+function scoreCandidate(candidate, tokens) {
+    const normalizedPath = candidate.relativePath.replace(/\\/g, '/').toLocaleLowerCase();
+    const fileName = path.basename(normalizedPath);
+    const content = candidate.content.toLocaleLowerCase();
+    let score = baselineScores[fileName] ?? (normalizedPath.startsWith('src/') ? 1 : 0);
+    for (const token of tokens) {
+        if (fileName === token) {
+            score += 20;
+        }
+        else if (fileName.includes(token)) {
+            score += 12;
+        }
+        if (normalizedPath.includes(token)) {
+            score += 6;
+        }
+        score += Math.min(countOccurrences(content, token), 5) * 2;
+    }
+    return score;
+}
+function countOccurrences(content, token) {
+    let count = 0;
+    let offset = 0;
+    while (count < 5) {
+        const index = content.indexOf(token, offset);
+        if (index < 0) {
+            break;
+        }
+        count += 1;
+        offset = index + token.length;
+    }
+    return count;
+}
+//end of merge from context.ts
 function createEmptyProjectIndex(workspacePath) {
     return {
         version: exports.PROJECT_INDEX_VERSION,

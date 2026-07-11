@@ -98,7 +98,7 @@ provider compatibility is not always equal. some models support normal function 
 - devmate currently uses the first workspace folder only.
 - the project index is lexical, not semantic.
 - language navigation depends on installed vs code language support.
-- the embedded interface makes the main extension file large.
+- the extension controller is still large because it owns sessions, context, permissions, tools, and the agent loop.
 - the bundled backend must be built separately for each operating system and processor architecture.
 - the quality of tool use and final answers still depends on the selected model provider.
 - view port on different window sizes can be different

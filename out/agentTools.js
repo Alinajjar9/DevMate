@@ -1,6 +1,46 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.FILE_MUTATION_AGENT_TOOL_NAMES = exports.READ_ONLY_AGENT_TOOL_NAMES = exports.AGENT_TOOL_NAMES = exports.MAX_AGENT_CONSECUTIVE_INSPECTIONS = exports.MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = exports.MAX_AGENT_READ_LINES = exports.MAX_AGENT_CODE_NAVIGATION_RESULTS = exports.MAX_AGENT_TERMINAL_ERROR_RESULTS = exports.MAX_AGENT_DIAGNOSTIC_RESULTS = exports.MAX_AGENT_SEARCH_RESULTS = exports.MAX_AGENT_LIST_RESULTS = exports.MAX_AGENT_DEPENDENCY_INSTALLS = exports.MAX_AGENT_COMMAND_CALLS = exports.MAX_AGENT_FILE_MUTATIONS = exports.MAX_AGENT_TOOL_CALL_LIMIT = exports.MIN_AGENT_TOOL_CALL_LIMIT = exports.DEFAULT_AGENT_TOOL_CALL_LIMIT = void 0;
+exports.FILE_MUTATION_AGENT_TOOL_NAMES = exports.READ_ONLY_AGENT_TOOL_NAMES = exports.AGENT_TOOL_NAMES = exports.MAX_CODE_NAVIGATION_MAX_RESULTS = exports.MIN_CODE_NAVIGATION_MAX_RESULTS = exports.DEFAULT_CODE_NAVIGATION_MAX_RESULTS = exports.MAX_TERMINAL_ERRORS_MAX_RESULTS = exports.MIN_TERMINAL_ERRORS_MAX_RESULTS = exports.DEFAULT_TERMINAL_ERRORS_MAX_RESULTS = exports.MAX_DIAGNOSTICS_MAX_RESULTS = exports.MIN_DIAGNOSTICS_MAX_RESULTS = exports.DEFAULT_DIAGNOSTICS_MAX_RESULTS = exports.MAX_SEARCH_CODE_MAX_RESULTS = exports.MIN_SEARCH_CODE_MAX_RESULTS = exports.DEFAULT_SEARCH_CODE_MAX_RESULTS = exports.MAX_LIST_FILES_MAX_RESULTS = exports.MIN_LIST_FILES_MAX_RESULTS = exports.DEFAULT_LIST_FILES_MAX_RESULTS = exports.MAX_READ_FILE_MAX_LINES = exports.MIN_READ_FILE_MAX_LINES = exports.DEFAULT_READ_FILE_MAX_LINES = exports.PROVIDER_RETRY_DELAYS_MS = exports.MAX_AGENT_CONSECUTIVE_INSPECTIONS = exports.MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_HISTORY_CHARACTERS = exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = exports.MAX_AGENT_READ_LINES = exports.MAX_AGENT_CODE_NAVIGATION_RESULTS = exports.MAX_AGENT_TERMINAL_ERROR_RESULTS = exports.MAX_AGENT_DIAGNOSTIC_RESULTS = exports.MAX_AGENT_SEARCH_RESULTS = exports.MAX_AGENT_LIST_RESULTS = exports.MAX_AGENT_DEPENDENCY_INSTALLS = exports.MAX_AGENT_COMMAND_CALLS = exports.MAX_AGENT_FILE_MUTATIONS = exports.MAX_AGENT_TOOL_CALL_LIMIT = exports.MIN_AGENT_TOOL_CALL_LIMIT = exports.DEFAULT_AGENT_TOOL_CALL_LIMIT = exports.MAX_DEPENDENCY_REQUIREMENTS = exports.MAX_DEPENDENCY_MANIFEST_BYTES = void 0;
+exports.normalizeAgentToolSettings = normalizeAgentToolSettings;
+exports.emptyResponseRecoveryAction = emptyResponseRecoveryAction;
+exports.isRecoverableEmptyModelResponse = isRecoverableEmptyModelResponse;
+exports.isRetryableProviderFailure = isRetryableProviderFailure;
+exports.providerRetryDelay = providerRetryDelay;
+exports.parseInstallDependenciesArguments = parseInstallDependenciesArguments;
+exports.validatePythonRequirementsManifest = validatePythonRequirementsManifest;
 exports.boundedAgentToolCallLimit = boundedAgentToolCallLimit;
 exports.isDeferredAgentPlanAnswer = isDeferredAgentPlanAnswer;
 exports.compactAgentToolHistory = compactAgentToolHistory;
@@ -15,11 +55,12 @@ exports.consecutiveAgentInspectionCalls = consecutiveAgentInspectionCalls;
 exports.summarizeAgentToolHistory = summarizeAgentToolHistory;
 exports.normalizeAgentToolPath = normalizeAgentToolPath;
 exports.truncateAgentToolResult = truncateAgentToolResult;
+const path = __importStar(require("path"));
 const crypto_1 = require("crypto");
 const commandTools_1 = require("./commandTools");
-const dependencyTools_1 = require("./dependencyTools");
-const fileChanges_1 = require("./fileChanges");
 const fileTools_1 = require("./fileTools");
+exports.MAX_DEPENDENCY_MANIFEST_BYTES = 64_000;
+exports.MAX_DEPENDENCY_REQUIREMENTS = 100;
 exports.DEFAULT_AGENT_TOOL_CALL_LIMIT = 16;
 exports.MIN_AGENT_TOOL_CALL_LIMIT = 4;
 exports.MAX_AGENT_TOOL_CALL_LIMIT = 100;
@@ -36,6 +77,135 @@ exports.MAX_AGENT_TOOL_RESULT_CHARACTERS = 10_000;
 exports.MAX_AGENT_TOOL_HISTORY_CHARACTERS = 80_000;
 exports.MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS = 3_500;
 exports.MAX_AGENT_CONSECUTIVE_INSPECTIONS = 16;
+exports.PROVIDER_RETRY_DELAYS_MS = [2_000, 5_000, 10_000];
+//from agentToolSettings.ts
+exports.DEFAULT_READ_FILE_MAX_LINES = 400;
+exports.MIN_READ_FILE_MAX_LINES = 100;
+exports.MAX_READ_FILE_MAX_LINES = 1_000;
+exports.DEFAULT_LIST_FILES_MAX_RESULTS = 200;
+exports.MIN_LIST_FILES_MAX_RESULTS = 20;
+exports.MAX_LIST_FILES_MAX_RESULTS = 500;
+exports.DEFAULT_SEARCH_CODE_MAX_RESULTS = 50;
+exports.MIN_SEARCH_CODE_MAX_RESULTS = 10;
+exports.MAX_SEARCH_CODE_MAX_RESULTS = 200;
+exports.DEFAULT_DIAGNOSTICS_MAX_RESULTS = 100;
+exports.MIN_DIAGNOSTICS_MAX_RESULTS = 10;
+exports.MAX_DIAGNOSTICS_MAX_RESULTS = 300;
+exports.DEFAULT_TERMINAL_ERRORS_MAX_RESULTS = 5;
+exports.MIN_TERMINAL_ERRORS_MAX_RESULTS = 1;
+exports.MAX_TERMINAL_ERRORS_MAX_RESULTS = 10;
+exports.DEFAULT_CODE_NAVIGATION_MAX_RESULTS = 100;
+exports.MIN_CODE_NAVIGATION_MAX_RESULTS = 10;
+exports.MAX_CODE_NAVIGATION_MAX_RESULTS = 300;
+function normalizeAgentToolSettings(value) {
+    return {
+        readFileMaxLines: boundedIntegerSettings(value.readFileMaxLines, exports.DEFAULT_READ_FILE_MAX_LINES, exports.MIN_READ_FILE_MAX_LINES, exports.MAX_READ_FILE_MAX_LINES),
+        listFilesMaxResults: boundedIntegerSettings(value.listFilesMaxResults, exports.DEFAULT_LIST_FILES_MAX_RESULTS, exports.MIN_LIST_FILES_MAX_RESULTS, exports.MAX_LIST_FILES_MAX_RESULTS),
+        searchCodeMaxResults: boundedIntegerSettings(value.searchCodeMaxResults, exports.DEFAULT_SEARCH_CODE_MAX_RESULTS, exports.MIN_SEARCH_CODE_MAX_RESULTS, exports.MAX_SEARCH_CODE_MAX_RESULTS),
+        diagnosticsMaxResults: boundedIntegerSettings(value.diagnosticsMaxResults, exports.DEFAULT_DIAGNOSTICS_MAX_RESULTS, exports.MIN_DIAGNOSTICS_MAX_RESULTS, exports.MAX_DIAGNOSTICS_MAX_RESULTS),
+        terminalErrorsMaxResults: boundedIntegerSettings(value.terminalErrorsMaxResults, exports.DEFAULT_TERMINAL_ERRORS_MAX_RESULTS, exports.MIN_TERMINAL_ERRORS_MAX_RESULTS, exports.MAX_TERMINAL_ERRORS_MAX_RESULTS),
+        codeNavigationMaxResults: boundedIntegerSettings(value.codeNavigationMaxResults, exports.DEFAULT_CODE_NAVIGATION_MAX_RESULTS, exports.MIN_CODE_NAVIGATION_MAX_RESULTS, exports.MAX_CODE_NAVIGATION_MAX_RESULTS)
+    };
+}
+function boundedIntegerSettings(value, fallback, minimum, maximum) {
+    return typeof value === 'number' && Number.isInteger(value)
+        ? Math.min(maximum, Math.max(minimum, value))
+        : fallback;
+}
+// merge from retryPolicy.ts
+const retryableStatusCodes = new Set([429, 502, 503, 504]);
+function emptyResponseRecoveryAction(message, recoveryAlreadyAttempted, finalAnswerAlreadyForced) {
+    if (finalAnswerAlreadyForced || !isRecoverableEmptyModelResponse(message)) {
+        return 'none';
+    }
+    return recoveryAlreadyAttempted ? 'force-final' : 'retry-without-thinking';
+}
+function isRecoverableEmptyModelResponse(message) {
+    const normalized = message.toLocaleLowerCase();
+    return normalized.includes('response budget for reasoning')
+        || normalized.includes('empty final answer')
+        || normalized.includes('empty or invalid answer');
+}
+function isRetryableProviderFailure(result) {
+    if (result.status !== 'error' || result.errorKind !== 'http') {
+        return false;
+    }
+    const message = result.message ?? '';
+    if (/response budget for reasoning/i.test(message)
+        || /empty (?:or invalid |final )?answer/i.test(message)
+        || /file-change response/i.test(message)
+        || /invalid tool/i.test(message)
+        || /tool (?:after|call).*tool limit/i.test(message)
+        || /tool limit was reached/i.test(message)
+        || /tool when DevMate required a final answer/i.test(message)
+        || /non-json response/i.test(message)
+        || /returned a redirect/i.test(message)) {
+        return false;
+    }
+    if (result.statusCode !== undefined) {
+        return retryableStatusCodes.has(result.statusCode);
+    }
+    return /resource\s*exhausted/i.test(message);
+}
+function providerRetryDelay(retryNumber) {
+    return exports.PROVIDER_RETRY_DELAYS_MS[retryNumber - 1];
+}
+// merge from dependencyTools.ts
+const blockedManifestDirectories = new Set([
+    '.git', '.venv', 'venv', 'env', 'node_modules', 'vendor', 'dist', 'build', 'target'
+]);
+const manifestNamePattern = /^requirements(?:-[a-z0-9._-]+)?\.txt$/i;
+const requirementPattern = /^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9_,.-]+\])?(?:\s*(?:(?:===|==|~=|!=|<=|>=|<|>)\s*[A-Za-z0-9*+!._-]+)(?:\s*,\s*(?:(?:===|==|~=|!=|<=|>=|<|>)\s*[A-Za-z0-9*+!._-]+))*)?$/;
+function parseInstallDependenciesArguments(value) {
+    if (typeof value.manifestPath !== 'string') {
+        throw new Error('install_dependencies requires a requirements manifest path.');
+    }
+    const manifestPath = (0, fileTools_1.normalizeWorkspaceRelativePath)(value.manifestPath);
+    const parts = manifestPath.split('/');
+    const fileName = parts.at(-1) ?? '';
+    if (!manifestNamePattern.test(fileName)) {
+        throw new Error('Dependency installation is limited to requirements*.txt manifests.');
+    }
+    if (parts.slice(0, -1).some((part) => blockedManifestDirectories.has(part.toLocaleLowerCase()))) {
+        throw new Error('The dependency manifest is inside a blocked directory.');
+    }
+    const timeoutSeconds = value.timeoutSeconds === undefined
+        ? commandTools_1.MAX_COMMAND_TIMEOUT_SECONDS
+        : value.timeoutSeconds;
+    if (typeof timeoutSeconds !== 'number' || !Number.isInteger(timeoutSeconds)) {
+        throw new Error('Dependency timeoutSeconds must be an integer.');
+    }
+    return {
+        manifestPath,
+        cwd: path.posix.dirname(manifestPath) === '.' ? '' : path.posix.dirname(manifestPath),
+        timeoutSeconds: Math.min(commandTools_1.MAX_COMMAND_TIMEOUT_SECONDS, Math.max(commandTools_1.MIN_COMMAND_TIMEOUT_SECONDS, timeoutSeconds))
+    };
+}
+function validatePythonRequirementsManifest(content) {
+    if (Buffer.byteLength(content, 'utf8') > exports.MAX_DEPENDENCY_MANIFEST_BYTES) {
+        throw new Error('The dependency manifest exceeds the 64 KB safety limit.');
+    }
+    const requirements = [];
+    for (const rawLine of content.split(/\r?\n/)) {
+        const line = rawLine.replace(/\s+#.*$/, '').trim();
+        if (!line || line.startsWith('#')) {
+            continue;
+        }
+        if (line.length > 300 || !requirementPattern.test(line)) {
+            throw new Error('The dependency manifest contains an unsupported requirement. '
+                + 'URLs, local paths, editable installs, nested manifests, options, and environment markers are blocked.');
+        }
+        requirements.push(line);
+        if (requirements.length > exports.MAX_DEPENDENCY_REQUIREMENTS) {
+            throw new Error(`A dependency installation is limited to ${exports.MAX_DEPENDENCY_REQUIREMENTS} requirements.`);
+        }
+    }
+    if (requirements.length === 0) {
+        throw new Error('The dependency manifest does not contain any installable requirements.');
+    }
+    return requirements;
+}
+//merge ends
 function boundedAgentToolCallLimit(value) {
     if (typeof value !== 'number' || !Number.isInteger(value)) {
         return exports.DEFAULT_AGENT_TOOL_CALL_LIMIT;
@@ -237,7 +407,7 @@ function parseAgentToolCall(call) {
         return {
             id: call.id,
             name: call.name,
-            arguments: (0, dependencyTools_1.parseInstallDependenciesArguments)(call.arguments)
+            arguments: parseInstallDependenciesArguments(call.arguments)
         };
     }
     if (call.name === 'run_command') {
@@ -302,7 +472,7 @@ function summarizedAgentToolArguments(call) {
     if (call.name === 'create_file') {
         return boundedAgentToolHistoryArguments(call.name, {
             path: call.arguments.path,
-            content: (0, fileChanges_1.agentHistoryOmissionMarker)('content', call.arguments.content.length, hashText(call.arguments.content))
+            content: (0, fileTools_1.agentHistoryOmissionMarker)('content', call.arguments.content.length, hashText(call.arguments.content))
         });
     }
     if (call.name === 'edit_file') {
@@ -310,7 +480,7 @@ function summarizedAgentToolArguments(call) {
         return boundedAgentToolHistoryArguments(call.name, {
             path: call.arguments.path,
             replacementCount: call.arguments.replacements.length,
-            replacements: (0, fileChanges_1.agentHistoryOmissionMarker)('text', serializedReplacements.length, hashText(serializedReplacements))
+            replacements: (0, fileTools_1.agentHistoryOmissionMarker)('text', serializedReplacements.length, hashText(serializedReplacements))
         });
     }
     return boundedAgentToolHistoryArguments(call.name, call.arguments);
@@ -327,7 +497,7 @@ function boundedAgentToolHistoryArguments(name, argumentsValue) {
         return argumentsValue;
     }
     return {
-        summary: (0, fileChanges_1.agentHistoryOmissionMarker)('content', serialized.length, hashText(`${name}:${serialized}`))
+        summary: (0, fileTools_1.agentHistoryOmissionMarker)('content', serialized.length, hashText(`${name}:${serialized}`))
     };
 }
 function consecutiveAgentInspectionCalls(steps) {

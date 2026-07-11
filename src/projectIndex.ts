@@ -242,7 +242,7 @@ export function containsBinaryData(bytes: Uint8Array): boolean {
 export function languageIdForPath(filePath: string): string {
   return languageByExtension[path.extname(filePath).toLowerCase()] ?? 'plaintext';
 }
-// merge from context.ts 
+// merge from context.ts
 export function createBoundedContextItem(
   source: ContextSource,
   filePath: string,
