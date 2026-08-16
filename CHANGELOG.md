@@ -2,6 +2,22 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-16 — Extract the chat provider from the composition root
+
+### Changed
+
+- Moved `DevMateChatViewProvider` and its existing helpers from `src/extension.ts` to `src/chatViewProvider.ts` without changing their behavior.
+- Reduced `src/extension.ts` from 5,001 lines to 89 lines containing activation, registrations, backend composition, and disposal wiring.
+- Kept a compatibility re-export for the provider while consumers migrate.
+- Updated source-based tests and architecture documentation for the new file boundary.
+
+### Verification
+
+- `npm run verify` — 142 extension tests and 71 backend tests passed; 13 cross-language contracts and 13 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-16 — Characterize pre-refactor behavior
 
 ### Changed

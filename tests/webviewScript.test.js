@@ -7,9 +7,16 @@ function readSource(...segments) {
   return fs.readFileSync(path.join(__dirname, '..', ...segments), 'utf8');
 }
 
-function readDevMateSource() {
+function readExtensionHostSource() {
   return [
     readSource('src', 'extension.ts'),
+    readSource('src', 'chatViewProvider.ts')
+  ].join('\n');
+}
+
+function readDevMateSource() {
+  return [
+    readExtensionHostSource(),
     readSource('src', 'webview.ts'),
     readSource('media', 'webview.css'),
     readSource('media', 'webview.js')
@@ -21,16 +28,16 @@ test('DevMate webview script has valid JavaScript syntax', () => {
   assert.doesNotThrow(() => new Function(script));
 });
 
-test('extension delegates webview markup to packaged UI assets', () => {
-  const extensionSource = readSource('src', 'extension.ts');
+test('chat view provider delegates webview markup to packaged UI assets', () => {
+  const providerSource = readSource('src', 'chatViewProvider.ts');
   const shellSource = readSource('src', 'webview.ts');
 
-  assert.match(extensionSource, /getChatWebviewHtml\(webviewView\.webview, this\.extensionUri\)/);
+  assert.match(providerSource, /getChatWebviewHtml\(webviewView\.webview, this\.extensionUri\)/);
   assert.match(
-    extensionSource,
+    providerSource,
     /localResourceRoots:\s*\[vscode\.Uri\.joinPath\(this\.extensionUri, 'media'\)\]/
   );
-  assert.doesNotMatch(extensionSource, /<style>|<script/);
+  assert.doesNotMatch(providerSource, /<style>|<script/);
   assert.match(shellSource, /asWebviewUri\([\s\S]*?'media', 'webview\.css'/);
   assert.match(shellSource, /asWebviewUri\([\s\S]*?'media', 'webview\.js'/);
   assert.match(shellSource, /style-src \$\{webview\.cspSource\}/);

@@ -321,7 +321,8 @@ The Python backend source remains in the package as a fallback for development o
 
 | Path | Purpose |
 | --- | --- |
-| `src/extension.ts` | Extension activation, chat controller, agent loop, and tool execution |
+| `src/extension.ts` | Extension activation, registrations, and dependency composition |
+| `src/chatViewProvider.ts` | Chat view lifecycle, message routing, agent loop, and local tool execution |
 | `src/webview.ts` | CSP-protected webview shell and packaged asset URLs |
 | `media/webview.css` | Sidebar layout and visual styles |
 | `media/webview.js` | Browser-side chat state, rendering, and interactions |

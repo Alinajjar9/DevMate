@@ -22,7 +22,8 @@ the backend does not edit files or run commands. local actions are done by the e
 
 | component | responsibility |
 | --- | --- |
-| `src/extension.ts` | activation, messages, agent loop, local tool execution, diffs, permissions |
+| `src/extension.ts` | activation, registrations, and dependency composition |
+| `src/chatViewProvider.ts` | messages, agent loop, local tool execution, diffs, and permissions |
 | `src/webview.ts` | csp-protected webview shell and packaged asset urls |
 | `media/webview.css` | sidebar layout and visual styles |
 | `media/webview.js` | browser-side state, rendering, and interactions |
@@ -178,7 +179,7 @@ unfinished tool work can be stored as an agent checkpoint. checkpoints contain b
 
 ## the agent loop
 
-the main agent loop is inside `answerQuestion` in `src/extension.ts`.
+the main agent loop is inside `answerQuestion` in `src/chatViewProvider.ts`.
 
 ```text
 question and project context
@@ -242,7 +243,8 @@ the extension saves this state during tool work. if the webview reloads or a lon
 ## short file map
 
 - `package.json`: extension metadata, settings, commands, and scripts
-- `src/extension.ts`: main extension controller, tools, permissions, and agent loop
+- `src/extension.ts`: extension activation, registrations, and dependency composition
+- `src/chatViewProvider.ts`: chat controller, tools, permissions, and agent loop
 - `src/webview.ts`: webview html shell, csp, and packaged asset urls
 - `media/webview.css`: sidebar layout and visual styles
 - `media/webview.js`: browser-side chat state, rendering, and interactions
@@ -270,7 +272,7 @@ the extension saves this state during tool work. if the webview reloads or a lon
 
 - for sidebar layout and visual styles, use `media/webview.css`.
 - for chat behavior, settings dialogs, tool cards, and browser-side state, use `media/webview.js`; the html shell and csp live in `src/webview.ts`.
-- for extension message handling and the complete agent request loop, use `handleMessage` and `answerQuestion` in `src/extension.ts`.
+- for extension message handling and the complete agent request loop, use `handleMessage` and `answerQuestion` in `src/chatViewProvider.ts`.
 - for tool names, arguments, bounds, duplicate signatures, and compact history, use `src/agentTools.ts`.
 - for exact replacement behavior, use `src/fileTools.ts`.
 - for allowed verification commands, use `src/commandTools.ts` and update its tests at the same time.
