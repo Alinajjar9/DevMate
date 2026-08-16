@@ -1,0 +1,24 @@
+stages:
+  - test
+
+node:
+  stage: test
+  image: node:${NODE_VERSION}-bookworm
+  parallel:
+    matrix:
+      - NODE_VERSION: ["20", "24"]
+  before_script:
+    - npm ci
+  script:
+    - npm run check
+    - npm run test:extension
+    - npm run test:contracts
+    - npm run verify:out
+
+backend:
+  stage: test
+  image: python:3.10-bookworm
+  before_script:
+    - python -m pip install -r backend/requirements.txt
+  script:
+    - python -m unittest discover -s backend/tests -p "test_*.py" -v

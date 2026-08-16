@@ -4,7 +4,7 @@ const test = require('node:test');
 const {
   MAX_CONTEXT_CHARACTERS,
   createBoundedContextItem
-} = require('../out/context');
+} = require('../out/projectIndex');
 
 test('keeps normal file content unchanged', () => {
   const content = 'export const answer = 42;';

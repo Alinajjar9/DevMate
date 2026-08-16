@@ -2,6 +2,28 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-16 — Repair clean build and test verification
+
+### Changed
+
+- Added a cross-platform clean compile that removes `out` before emitting JavaScript.
+- Switched extension tests to automatic Node test discovery supported by the declared runtime.
+- Added one `npm run verify` command for TypeScript checks, clean extension tests, Python backend tests, TypeScript/Python contract checks, and emitted-file integrity.
+- Added GitLab CI coverage for Node.js 20 and 24 plus the Python 3.10 backend.
+- Added a backend test launcher that prefers the repository virtual environment.
+
+### Fixed
+
+- Updated 11 tests that still imported deleted source modules through orphaned compiled JavaScript.
+- Removed the 22 obsolete JavaScript and source-map artifacts exposed by a clean build.
+
+### Verification
+
+- `npm run verify` — 134 extension tests and 70 backend tests passed; 13 cross-language contracts and 12 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-07-11 — Extract webview UI from the extension controller
 
 ### Changed

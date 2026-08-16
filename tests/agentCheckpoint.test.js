@@ -4,7 +4,7 @@ const test = require('node:test');
 const {
   MAX_AGENT_CHECKPOINT_AGE_MS,
   parseAgentRunCheckpoint
-} = require('../out/agentCheckpoint');
+} = require('../out/sessions');
 
 const now = 1_800_000_000_000;
 

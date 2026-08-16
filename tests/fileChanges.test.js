@@ -5,7 +5,7 @@ const {
   MAX_FILE_CHANGE_CHARACTERS,
   normalizeWorkspaceRelativePath,
   validateFileChanges
-} = require('../out/fileChanges');
+} = require('../out/fileTools');
 
 test('accepts and normalizes safe workspace-relative changes', () => {
   const changes = validateFileChanges([

@@ -5,7 +5,7 @@ const {
   appendConversationTurn,
   MAX_CONVERSATION_HISTORY_CHARACTERS,
   MAX_CONVERSATION_TURNS
-} = require('../out/conversation');
+} = require('../out/sessions');
 
 test('keeps the newest bounded conversation turns', () => {
   let history = [];

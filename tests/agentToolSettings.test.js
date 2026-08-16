@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { normalizeAgentToolSettings } = require('../out/agentToolSettings');
+const { normalizeAgentToolSettings } = require('../out/agentTools');
 
 test('keeps valid configurable agent-tool limits', () => {
   assert.deepEqual(normalizeAgentToolSettings({
