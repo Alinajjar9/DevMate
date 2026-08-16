@@ -2,6 +2,25 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-16 — Characterize pre-refactor behavior
+
+### Changed
+
+- Added behavioral coverage for session loading, legacy migration, and persistence through the extension host.
+- Characterized active-file, selection, attachment, and current lexical-ranking behavior.
+- Characterized webview ask routing, concurrent-request rejection, and checkpoint resume routing.
+- Captured the exact agent request built from model settings, session history, and resumed checkpoint state.
+- Added tool validation and dispatch coverage plus an explicit workspace-trust mutation boundary test.
+- Added concurrent backend-start serialization and the exact six-turn backend conversation boundary.
+- Exported the existing chat view provider as a test seam without changing its runtime behavior.
+
+### Verification
+
+- `npm run verify` — 142 extension tests and 71 backend tests passed; 13 cross-language contracts and 12 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-16 — Repair clean build and test verification
 
 ### Changed

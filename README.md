@@ -260,17 +260,21 @@ Type-check the extension without writing output:
 npm run check
 ```
 
-Run the extension test suite:
+Run the complete clean verification suite (TypeScript compilation, extension tests, backend tests, cross-language contracts, and emitted-file integrity):
 
 ```powershell
-npm test
+npm run verify
 ```
 
-Run the backend test suite:
+Run only one part of the suite when iterating locally:
 
 ```powershell
-.venv\Scripts\python -m unittest discover -s backend\tests -v
+npm run test:extension
+npm run test:backend
+npm run test:contracts
 ```
+
+`npm test` is an alias for the complete verification suite. The backend test launcher prefers the repository's `.venv` and falls back to Python on `PATH`.
 
 The tests do not make paid provider requests. Provider behaviour is tested with mocked responses.
 

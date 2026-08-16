@@ -693,6 +693,33 @@ class DevMateApiTests(unittest.TestCase):
         response = self.client.post("/ask", json=payload)
         self.assertEqual(response.status_code, 422)
 
+    def test_ask_accepts_six_conversation_turns_and_rejects_the_seventh(self) -> None:
+        payload = self._ask_payload(scope_type="project", items=[], mode="debug")
+        payload["conversationHistory"] = [
+            {"user": f"Question {index}", "assistant": f"Answer {index}"}
+            for index in range(6)
+        ]
+
+        response = self.client.post("/ask", json=payload)
+
+        self.assertEqual(response.status_code, 200)
+        messages = self.provider.requests[-1].messages
+        self.assertEqual(
+            [message.content for message in messages[1:13:2]],
+            [f"Question {index}" for index in range(6)],
+        )
+        self.assertEqual(
+            [message.content for message in messages[2:14:2]],
+            [f"Answer {index}" for index in range(6)],
+        )
+
+        payload["conversationHistory"].append({
+            "user": "Question 6",
+            "assistant": "Answer 6",
+        })
+        response = self.client.post("/ask", json=payload)
+        self.assertEqual(response.status_code, 422)
+
     def test_ask_explains_reasoning_only_responses(self) -> None:
         self.provider.answer = ChatCompletion(
             content=None,

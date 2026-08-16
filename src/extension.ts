@@ -430,7 +430,7 @@ export function deactivate(): void {
   // VS Code disposes registered views and subscriptions.
 }
 
-class DevMateChatViewProvider implements
+export class DevMateChatViewProvider implements
   vscode.WebviewViewProvider,
   vscode.TextDocumentContentProvider,
   vscode.Disposable {

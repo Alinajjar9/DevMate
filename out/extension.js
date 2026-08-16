@@ -33,6 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.DevMateChatViewProvider = void 0;
 exports.activate = activate;
 exports.deactivate = deactivate;
 const crypto_1 = require("crypto");
@@ -3460,6 +3461,7 @@ class DevMateChatViewProvider {
         this.view?.webview.postMessage(message);
     }
 }
+exports.DevMateChatViewProvider = DevMateChatViewProvider;
 function wait(milliseconds) {
     return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

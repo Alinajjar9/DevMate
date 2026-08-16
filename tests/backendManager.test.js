@@ -64,6 +64,36 @@ test('adopts a healthy existing backend without claiming ownership', async () =>
   }
 });
 
+test('serializes concurrent lifecycle starts into one health check', async () => {
+  let resolveHealth;
+  let healthChecks = 0;
+  const manager = new LocalBackendManager({
+    extensionPath: 'C:\\DevMate',
+    getBackendUrl: () => 'http://127.0.0.1:8000',
+    isManagementEnabled: () => true,
+    getConfiguredPythonPath: () => '',
+    healthCheck: () => {
+      healthChecks += 1;
+      return new Promise((resolve) => { resolveHealth = resolve; });
+    },
+    fileExists: () => false,
+    onStatus: () => undefined,
+    onOutput: () => undefined
+  });
+  try {
+    const first = manager.start();
+    const second = manager.start();
+    assert.equal(first, second);
+    assert.equal(healthChecks, 1);
+    resolveHealth(true);
+    assert.equal(await first, true);
+    assert.equal(await second, true);
+    assert.equal(manager.status.state, 'online');
+  } finally {
+    manager.dispose();
+  }
+});
+
 test('reports missing bundled backend files without launching a process', async () => {
   const manager = new LocalBackendManager({
     extensionPath: 'C:\\DevMate',

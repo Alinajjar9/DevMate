@@ -57,6 +57,29 @@ test('retrieves the strongest matching chunk and keeps file results diverse', ()
   assert.equal(results.reduce((total, result) => total + result.content.length, 0) <= 8_000, true);
 });
 
+test('characterizes lexical path boosts, deterministic ties, and stop-word queries', () => {
+  const pathBoostIndex = createEmptyProjectIndex('C:/repo');
+  pathBoostIndex.files = [
+    indexedFile('src/session/store.ts', 'export function saveState() {}'),
+    indexedFile('src/util.ts', 'session session session session session')
+  ];
+  assert.equal(
+    retrieveProjectChunks(pathBoostIndex, 'session')[0].relativePath,
+    'src/session/store.ts'
+  );
+
+  const tiedIndex = createEmptyProjectIndex('C:/repo');
+  tiedIndex.files = [
+    indexedFile('src/b.ts', 'export const needle = true;'),
+    indexedFile('src/a.ts', 'export const needle = true;')
+  ];
+  assert.deepEqual(
+    retrieveProjectChunks(tiedIndex, 'needle').map((result) => result.relativePath),
+    ['src/a.ts', 'src/b.ts']
+  );
+  assert.deepEqual(retrieveProjectChunks(tiedIndex, 'the and this'), []);
+});
+
 test('excludes explicitly attached files from local retrieval', () => {
   const index = createEmptyProjectIndex('C:/repo');
   const authFile = indexedFile('src/auth.ts', 'export function authenticateUser() {}');
