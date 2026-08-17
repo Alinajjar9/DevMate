@@ -10,7 +10,11 @@ function readSource(...segments) {
 function readExtensionHostSource() {
   return [
     readSource('src', 'extension.ts'),
-    readSource('src', 'chatViewProvider.ts')
+    readSource('src', 'agentRunController.ts'),
+    readSource('src', 'chatViewProvider.ts'),
+    readSource('src', 'toolExecutor.ts'),
+    readSource('src', 'workspaceContext.ts'),
+    readSource('src', 'workspaceMutations.ts')
   ].join('\n');
 }
 

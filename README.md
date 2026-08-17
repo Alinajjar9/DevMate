@@ -322,12 +322,15 @@ The Python backend source remains in the package as a fallback for development o
 | Path | Purpose |
 | --- | --- |
 | `src/extension.ts` | Extension activation, registrations, and dependency composition |
-| `src/chatViewProvider.ts` | Chat view lifecycle, message routing, agent loop, and local tool execution |
+| `src/chatViewProvider.ts` | Chat lifecycle, request preflight/finalization, sessions, permissions, and UI forwarding |
+| `src/agentRunController.ts` | Provider retries, checkpointed agent-loop policy, recovery, and tool iteration |
+| `src/toolExecutor.ts` | Validated tool dispatch, workspace inspection, terminal execution, and mutation routing |
+| `src/workspaceContext.ts` | Workspace identity, scope collection, attachments, and project-index orchestration |
+| `src/workspaceMutations.ts` | File writes, trust checks, symlink protection, and pre-apply revalidation |
 | `src/webview.ts` | CSP-protected webview shell and packaged asset URLs |
 | `media/webview.css` | Sidebar layout and visual styles |
 | `media/webview.js` | Browser-side chat state, rendering, and interactions |
 | `src/agentTools.ts` | Tool names, argument parsing, limits, and history compaction |
-| `src/agentToolSettings.ts` | Configurable per-tool result limits |
 | `src/api/` | Extension-to-backend HTTP transport and request types |
 | `src/backendManager.ts` | Local backend startup, monitoring, and restart logic |
 | `src/projectIndex.ts` | Local chunking and lexical retrieval |
