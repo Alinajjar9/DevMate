@@ -15,7 +15,6 @@ export type ValidatedCommand = {
   cwd: string;
   timeoutSeconds: number;
 };
-// from errorContext.ts
 export type CapturedTerminalError = {
   command: string;
   cwd: string;

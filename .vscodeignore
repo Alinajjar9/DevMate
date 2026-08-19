@@ -22,5 +22,6 @@ scripts/**
 **/__pycache__/**
 **/*.map
 *.vsix
+*.zip
 tsconfig.json
 VSIX_README.md

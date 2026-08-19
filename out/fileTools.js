@@ -19,7 +19,6 @@ exports.MAX_EDIT_REPLACEMENTS = 20;
 exports.MAX_FILE_CHANGES = 10;
 exports.MAX_FILE_CHANGE_CHARACTERS = 200_000;
 exports.MAX_TOTAL_CHANGE_CHARACTERS = 500_000;
-//from changeSummary.ts
 exports.MAX_FILE_CHANGE_SUMMARY_ITEMS = 20;
 function collectFileChangeSummary(steps, additionalChanges = []) {
     const changes = new Map();
@@ -175,8 +174,6 @@ function isKind(value) {
 function isRecordS(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
-//end of merge from changeSummary.ts
-//from fileChanges.ts
 const windowsReservedNames = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 const windowsInvalidCharacters = /[<>:"|?*]/;
 const legacyHistoryMarker = /^\[(?:omitted after execution: )?\d+ characters, sha256 [0-9a-f]{16}\]$/i;

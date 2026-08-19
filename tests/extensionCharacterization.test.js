@@ -61,7 +61,7 @@ Module._load = function loadWithVscodeMock(request, parent, isMain) {
   }
   return originalModuleLoad.call(this, request, parent, isMain);
 };
-const { DevMateChatViewProvider } = require('../out/extension');
+const { DevMateChatViewProvider } = require('../out/chatViewProvider');
 const { AgentRunController } = require('../out/agentRunController');
 const {
   StartedCommandError,

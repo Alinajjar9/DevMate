@@ -33,7 +33,6 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DevMateChatViewProvider = void 0;
 exports.activate = activate;
 exports.deactivate = deactivate;
 const fs = __importStar(require("fs"));
@@ -41,8 +40,6 @@ const vscode = __importStar(require("vscode"));
 const client_1 = require("./api/client");
 const backendManager_1 = require("./backendManager");
 const chatViewProvider_1 = require("./chatViewProvider");
-var chatViewProvider_2 = require("./chatViewProvider");
-Object.defineProperty(exports, "DevMateChatViewProvider", { enumerable: true, get: function () { return chatViewProvider_2.DevMateChatViewProvider; } });
 function activate(context) {
     const backendOutput = vscode.window.createOutputChannel('DevMate Backend');
     let chatViewProvider;

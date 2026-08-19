@@ -198,11 +198,6 @@
       white-space: nowrap;
     }
 
-    .session-selector-chevron {
-      flex: 0 0 auto;
-      font-size: 8px;
-    }
-
     .toolbar-new-session,
     .toolbar-settings,
     .backend-status {

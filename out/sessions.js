@@ -33,7 +33,6 @@ exports.MAX_CONVERSATION_TURN_CHARACTERS = 6_000;
 exports.MAX_CONVERSATION_HISTORY_CHARACTERS = 20_000;
 exports.AGENT_CHECKPOINT_STORAGE_KEY = 'devMate.agentCheckpoint.v1';
 exports.MAX_AGENT_CHECKPOINT_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
-//merge from agentCheckpoint.ts
 const toolNames = new Set(agentTools_1.AGENT_TOOL_NAMES);
 function parseAgentRunCheckpoint(value, now = Date.now()) {
     if (!isRecordCP(value)
@@ -171,7 +170,6 @@ function validTimestamp(value) {
 function isRecordCP(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
-// merge from conversation.ts
 function appendConversationTurn(history, user, assistant) {
     const turn = {
         user: user.trim().slice(0, exports.MAX_CONVERSATION_TURN_CHARACTERS),
@@ -205,7 +203,6 @@ function boundConversationHistory(history) {
     }
     return bounded.reverse();
 }
-// merge ends
 function createEmptyConversationSessionStore() {
     return { version: 2, activeSessionId: '', sessions: [] };
 }

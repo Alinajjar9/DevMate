@@ -1,5 +1,4 @@
 export const FILE_PERMISSION_POLICY_STORAGE_KEY = 'devMate.filePermissionPolicy.v2';
-export const LEGACY_FILE_PERMISSION_POLICY_STORAGE_KEY = 'devMate.filePermissionPolicy.v1';
 export const REMEMBERED_COMMANDS_STORAGE_KEY = 'devMate.rememberedCommands.v1';
 export const MAX_REMEMBERED_COMMANDS = 50;
 

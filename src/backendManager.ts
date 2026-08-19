@@ -51,7 +51,6 @@ export type LocalBackendManagerOptions = {
   onOutput: (value: string) => void;
 };
 
-//merge from pythonEnvironment.ts
 export function isPythonVerificationCommand(command: ValidatedCommand): boolean {
   const executable = command.executable.replace(/\\/g, '/').split('/').at(-1)?.toLocaleLowerCase();
   return executable === 'python'
@@ -97,8 +96,6 @@ export function extractMissingPythonModule(output: string): string | undefined {
   const match = output.match(/ModuleNotFoundError:\s*No module named\s*['"]([A-Za-z0-9_.-]+)['"]/i);
   return match?.[1];
 }
-//merge ends
-
 export function parseLocalBackendTarget(value: string): LocalBackendTarget | undefined {
   try {
     const url = new URL(value);

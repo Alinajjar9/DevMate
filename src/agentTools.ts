@@ -32,7 +32,6 @@ export const MAX_AGENT_TOOL_HISTORY_CHARACTERS = 80_000;
 export const MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS = 3_500;
 export const MAX_AGENT_CONSECUTIVE_INSPECTIONS = 16;
 export const PROVIDER_RETRY_DELAYS_MS = [2_000, 5_000, 10_000] as const;
-//from agentToolSettings.ts
 export const DEFAULT_READ_FILE_MAX_LINES = 400;
 export const MIN_READ_FILE_MAX_LINES = 100;
 export const MAX_READ_FILE_MAX_LINES = 1_000;
@@ -118,7 +117,6 @@ function boundedIntegerSettings(
     : fallback;
 }
 
-// merge from retryPolicy.ts
 const retryableStatusCodes = new Set([429, 502, 503, 504]);
 
 export type EmptyResponseRecoveryAction =
@@ -172,7 +170,6 @@ export function providerRetryDelay(retryNumber: number): number | undefined {
   return PROVIDER_RETRY_DELAYS_MS[retryNumber - 1];
 }
 
-// merge from dependencyTools.ts
 const blockedManifestDirectories = new Set([
   '.git', '.venv', 'venv', 'env', 'node_modules', 'vendor', 'dist', 'build', 'target'
 ]);
@@ -242,7 +239,6 @@ export function validatePythonRequirementsManifest(content: string): string[] {
   }
   return requirements;
 }
-//merge ends
 export function boundedAgentToolCallLimit(value: unknown): number {
   if (typeof value !== 'number' || !Number.isInteger(value)) {
     return DEFAULT_AGENT_TOOL_CALL_LIMIT;

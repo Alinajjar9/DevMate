@@ -51,7 +51,6 @@ exports.MAX_PROJECT_INDEX_FILES = 500;
 exports.MAX_PROJECT_INDEX_FILE_CHARACTERS = 40_000;
 exports.MAX_PROJECT_CHUNK_CHARACTERS = 3_200;
 exports.PROJECT_CHUNK_OVERLAP_CHARACTERS = 320;
-//from projectContext.ts
 exports.MAX_CONTEXT_CHARACTERS = 20_000;
 exports.MAX_PROJECT_CANDIDATES = 200;
 exports.MAX_PROJECT_FILE_BYTES = 200_000;
@@ -67,7 +66,6 @@ const retrievalStopWords = new Set([
     'should', 'that', 'the', 'this', 'to', 'what', 'when', 'where', 'which', 'with',
     'would', 'you'
 ]);
-//from projectContext.ts
 const ignoredDirectoryNames = new Set([
     '.git',
     'node_modules',
@@ -195,7 +193,6 @@ function containsBinaryData(bytes) {
 function languageIdForPath(filePath) {
     return languageByExtension[path.extname(filePath).toLowerCase()] ?? 'plaintext';
 }
-// merge from context.ts
 function createBoundedContextItem(source, filePath, languageId, content, maxCharacters = exports.MAX_CONTEXT_CHARACTERS) {
     const safeLimit = Math.min(Math.max(0, maxCharacters), exports.MAX_CONTEXT_CHARACTERS);
     const boundedContent = content.slice(0, safeLimit);
@@ -209,7 +206,6 @@ function createBoundedContextItem(source, filePath, languageId, content, maxChar
         truncated: boundedContent.length < content.length
     };
 }
-// merge ends
 function tokenizeQuestion(question) {
     const words = question.toLocaleLowerCase().match(/[\p{L}\p{N}_-]+/gu) ?? [];
     return [...new Set(words.filter((word) => word.length >= 2 && !stopWords.has(word)))].slice(0, 16);
@@ -246,7 +242,6 @@ function countOccurrences(content, token) {
     }
     return count;
 }
-//end of merge from context.ts
 function createEmptyProjectIndex(workspacePath) {
     return {
         version: exports.PROJECT_INDEX_VERSION,

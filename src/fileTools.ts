@@ -4,15 +4,11 @@ export const MAX_EDIT_REPLACEMENTS = 20;
 export const MAX_FILE_CHANGES = 10;
 export const MAX_FILE_CHANGE_CHARACTERS = 200_000;
 export const MAX_TOTAL_CHANGE_CHARACTERS = 500_000;
-//from changeSummary.ts
 export const MAX_FILE_CHANGE_SUMMARY_ITEMS = 20;
-//from fileChanges.ts
 export type ValidatedFileChange = {
   path: string;
   content: string;
 };
-//end
-//from changeSummary.ts
 export type FileChangeSummaryKind =
   | 'created'
   | 'updated'
@@ -36,7 +32,6 @@ export type RelocateFileToolArguments = {
   path: string;
   newPath: string;
 };
-//from changeSummary.ts
 type FileChangeToolStep = {
   name: string;
   arguments: Record<string, unknown>;
@@ -209,9 +204,6 @@ function isKind(value: unknown): value is FileChangeSummaryKind {
 function isRecordS(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
-//end of merge from changeSummary.ts
-
-//from fileChanges.ts
 const windowsReservedNames = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 const windowsInvalidCharacters = /[<>:"|?*]/;
 const legacyHistoryMarker = /^\[(?:omitted after execution: )?\d+ characters, sha256 [0-9a-f]{16}\]$/i;

@@ -2,6 +2,22 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-19 — Remove obsolete artifacts and compatibility remnants
+
+### Changed
+
+- Removed the old tracked release ZIP and excluded future ZIP archives from source control and VSIX packaging.
+- Removed the obsolete component-merge ledger and source comments that only described already-completed file merges.
+- Removed an unused legacy permission storage key and an unused webview CSS rule.
+- Removed the temporary `DevMateChatViewProvider` re-export from the extension entry point and updated its characterization test to import the provider directly.
+
+### Verification
+
+- `npm run verify` — 154 extension tests and 71 backend tests passed; 13 cross-language contracts and 17 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-16 — Refactor chat provider responsibilities
 
 ### Changed

@@ -4,8 +4,6 @@ import { health } from './api/client';
 import { LocalBackendManager } from './backendManager';
 import { DevMateChatViewProvider, getBackendUrl } from './chatViewProvider';
 
-export { DevMateChatViewProvider } from './chatViewProvider';
-
 export function activate(context: vscode.ExtensionContext): void {
   const backendOutput = vscode.window.createOutputChannel('DevMate Backend');
   let chatViewProvider: DevMateChatViewProvider | undefined;

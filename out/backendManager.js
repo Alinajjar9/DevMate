@@ -50,7 +50,6 @@ exports.BACKEND_START_ATTEMPTS = 20;
 exports.BACKEND_START_POLL_MS = 400;
 exports.MAX_BACKEND_RESTARTS = 3;
 exports.BACKEND_RESTART_WINDOW_MS = 60_000;
-//merge from pythonEnvironment.ts
 function isPythonVerificationCommand(command) {
     const executable = command.executable.replace(/\\/g, '/').split('/').at(-1)?.toLocaleLowerCase();
     return executable === 'python'
@@ -90,7 +89,6 @@ function extractMissingPythonModule(output) {
     const match = output.match(/ModuleNotFoundError:\s*No module named\s*['"]([A-Za-z0-9_.-]+)['"]/i);
     return match?.[1];
 }
-//merge ends
 function parseLocalBackendTarget(value) {
     try {
         const url = new URL(value);

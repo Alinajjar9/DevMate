@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DEFAULT_FILE_PERMISSION_POLICY = exports.MAX_REMEMBERED_COMMANDS = exports.REMEMBERED_COMMANDS_STORAGE_KEY = exports.LEGACY_FILE_PERMISSION_POLICY_STORAGE_KEY = exports.FILE_PERMISSION_POLICY_STORAGE_KEY = void 0;
+exports.DEFAULT_FILE_PERMISSION_POLICY = exports.MAX_REMEMBERED_COMMANDS = exports.REMEMBERED_COMMANDS_STORAGE_KEY = exports.FILE_PERMISSION_POLICY_STORAGE_KEY = void 0;
 exports.parseFilePermissionPolicy = parseFilePermissionPolicy;
 exports.permissionBehaviorForAction = permissionBehaviorForAction;
 exports.allowActions = allowActions;
@@ -9,7 +9,6 @@ exports.parseRememberedCommands = parseRememberedCommands;
 exports.rememberCommand = rememberCommand;
 exports.revokeRememberedCommand = revokeRememberedCommand;
 exports.FILE_PERMISSION_POLICY_STORAGE_KEY = 'devMate.filePermissionPolicy.v2';
-exports.LEGACY_FILE_PERMISSION_POLICY_STORAGE_KEY = 'devMate.filePermissionPolicy.v1';
 exports.REMEMBERED_COMMANDS_STORAGE_KEY = 'devMate.rememberedCommands.v1';
 exports.MAX_REMEMBERED_COMMANDS = 50;
 exports.DEFAULT_FILE_PERMISSION_POLICY = {
