@@ -2,6 +2,7 @@
 
 ## High priority
 - api keys can be sent over unencrypted http. custom profiles accept remote http:// addresses, and the backend sends the key to them.
+- create and update operations check symbolic-link paths before permission, but do not check them again immediately before applying the approved change. delete, rename, and move operations already perform the second check.
 
 ## Normal priority
 - malformed bad backend responses are accepted this can cause blank answers or runtime errors instead of reporting an invalid backend response.

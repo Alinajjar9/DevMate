@@ -23,7 +23,11 @@ the backend does not edit files or run commands. local actions are done by the e
 | component | responsibility |
 | --- | --- |
 | `src/extension.ts` | activation, registrations, and dependency composition |
-| `src/chatViewProvider.ts` | messages, agent loop, local tool execution, diffs, and permissions |
+| `src/chatViewProvider.ts` | messages, request preflight/finalization, sessions, diffs, settings, and permission presentation |
+| `src/agentRunController.ts` | provider retries, checkpointed agent-loop policy, recovery, and tool iteration |
+| `src/toolExecutor.ts` | validated tool dispatch, workspace inspection, terminal execution, and mutation routing |
+| `src/workspaceContext.ts` | workspace identity, scope collection, file candidates, and project-index orchestration |
+| `src/workspaceMutations.ts` | file application, trust and symlink checks, and pre-apply revalidation |
 | `src/webview.ts` | csp-protected webview shell and packaged asset urls |
 | `media/webview.css` | sidebar layout and visual styles |
 | `media/webview.js` | browser-side state, rendering, and interactions |
@@ -52,11 +56,11 @@ the backend does not edit files or run commands. local actions are done by the e
 
 1. `handleMessage` receives the user request.
 2. `answerQuestion` saves the user turn and checks the backend.
-3. `collectScope` gathers project, file, selection, and attached-file context.
-4. `askStream` sends the request to `/ask/stream`.
+3. `WorkspaceContext.collectScope` gathers project, file, selection, and attached-file context.
+4. `AgentRunController` builds the bounded model request and `askStream` sends it to `/ask/stream`.
 5. the backend validates `AskRequest`, builds messages, and calls the provider.
 6. final text ends the request.
-7. tool calls are parsed by `parseAgentToolCall` and executed by `runAgentTool`.
+7. `ToolExecutor.execute` validates and executes requested tool calls.
 8. tool results are added to bounded history and sent in the next provider request.
 9. the completed answer and file summary are saved to the session.
 
@@ -169,7 +173,8 @@ full command output remains in a dedicated terminal. bounded sanitized output is
 
 ## context retrieval
 
-project files are filtered, split into overlapping line aware chunks, and stored in extension workspace storage.
+`WorkspaceContext` finds eligible project files and coordinates the local index stored in extension workspace storage.
+project files are filtered and split into overlapping line aware chunks by `src/projectIndex.ts`.
 `retrieveProjectChunks` ranks chunks using words, identifiers, paths, and bm25-style scoring. the current system is lexical, not embedding-based.
 
 ## sessions and recovery
@@ -179,7 +184,7 @@ unfinished tool work can be stored as an agent checkpoint. checkpoints contain b
 
 ## the agent loop
 
-the main agent loop is inside `answerQuestion` in `src/chatViewProvider.ts`.
+`answerQuestion` in `src/chatViewProvider.ts` performs request preflight and finalization. the checkpointed provider/tool loop is in `AgentRunController.run`.
 
 ```text
 question and project context
@@ -204,14 +209,14 @@ save a bounded tool result
           +-----------------------------> next provider request
 ```
 
-this loop at the beginning it validates the question, saves a new user turn, selects the active model, ensures the backend is healthy, collects context, loads the api key, reads settings, and restores an agent checkpoint when a request is being resumed.
+the provider validates the question, saves a new user turn, selects the active model, ensures the backend is healthy, collects context, and loads settings and the api key. it then passes an immutable input to the controller, which restores checkpoint state when a request is being resumed.
 the loop sends a request and waits for one of two useful results. the first result is a final answer. the second result is a list of tool calls.
-when tool calls arrive, the extension normalizes workspace paths and validates every call with `parseAgentToolCall` from `src/agentTools.ts`. it checks call ids, arguments, path rules, ranges, maximum results, replacement counts, command data, and tool-specific limits.
-the extension also checks total tool calls, file mutations, verification commands, dependency installations, repeated signatures, and consecutive inspection calls. `agentToolCallSignature` creates a stable signature for duplicate detection. `consecutiveAgentInspectionCalls` helps stop a model that keeps reading without acting.
+when tool calls arrive, the extension normalizes workspace paths and `ToolExecutor` validates every call with `parseAgentToolCall` from `src/agentTools.ts`. it checks call ids, arguments, path rules, ranges, maximum results, replacement counts, command data, and tool-specific limits before dispatching local work.
+the controller separately checks total tool calls, file mutations, verification commands, dependency installations, repeated signatures, and consecutive inspection calls. `agentToolCallSignature` creates a stable signature for duplicate detection. `consecutiveAgentInspectionCalls` helps stop a model that keeps reading without acting.
 after a tool finishes, its bounded result is added to tool history and sent back to the model on the next loop. large results are shortened by `truncateAgentToolResult` and old history can be compacted by `compactAgentToolHistory`.
 the loop continues until the model gives a final answer, a limit is reached, the user cancels, or a non-recoverable error occurs. when the model cannot produce a final answer after useful tool work, `summarizeAgentToolHistory` can build an honest local summary instead of losing the work.
 ## checkpoints and recovery
-agent checkpoint validation is in `src/agentCheckpoint.ts`. a checkpoint stores the question, mode, scope, bounded tool history, used files, tool signatures, counters, workspace revision, recovery flags, token usage, and timestamps.
+agent checkpoint validation is in `src/sessions.ts`. a checkpoint stores the question, mode, scope, bounded tool history, used files, tool signatures, counters, workspace revision, recovery flags, token usage, and timestamps.
 the extension saves this state during tool work. if the webview reloads or a long request is interrupted, it can offer to continue from the saved state. old, oversized, malformed, duplicated, or cross-workspace checkpoint data is rejected.
 
 
@@ -244,7 +249,11 @@ the extension saves this state during tool work. if the webview reloads or a lon
 
 - `package.json`: extension metadata, settings, commands, and scripts
 - `src/extension.ts`: extension activation, registrations, and dependency composition
-- `src/chatViewProvider.ts`: chat controller, tools, permissions, and agent loop
+- `src/chatViewProvider.ts`: chat lifecycle, preflight/finalization, sessions, permissions, settings, and UI forwarding
+- `src/agentRunController.ts`: provider retries, checkpoint state, recovery, limits, and agent-loop policy
+- `src/toolExecutor.ts`: validated tool dispatch, workspace inspection, terminals, and mutation routing
+- `src/workspaceContext.ts`: workspace identity, context collection, attachments, and project-index orchestration
+- `src/workspaceMutations.ts`: file writes, lifecycle operations, and workspace safety checks
 - `src/webview.ts`: webview html shell, csp, and packaged asset urls
 - `media/webview.css`: sidebar layout and visual styles
 - `media/webview.js`: browser-side chat state, rendering, and interactions
@@ -252,7 +261,6 @@ the extension saves this state during tool work. if the webview reloads or a lon
 - `src/agentTools.ts`: tool types, parsing, limits, history, and duplicate signatures
 - `src/fileTools.ts`: file tool arguments and exact replacements
 - `src/commandTools.ts`: safe verification command registry
-- `src/projectContext.ts`: file filtering and simple project ranking
 - `src/projectIndex.ts`: chunking, persistence, and lexical retrieval
 - `src/sessions.ts`: project-bound session storage
 - `src/permissions.ts`: file policies and remembered command approvals
@@ -272,12 +280,15 @@ the extension saves this state during tool work. if the webview reloads or a lon
 
 - for sidebar layout and visual styles, use `media/webview.css`.
 - for chat behavior, settings dialogs, tool cards, and browser-side state, use `media/webview.js`; the html shell and csp live in `src/webview.ts`.
-- for extension message handling and the complete agent request loop, use `handleMessage` and `answerQuestion` in `src/chatViewProvider.ts`.
+- for extension message handling, request preflight, and final response presentation, use `handleMessage` and `answerQuestion` in `src/chatViewProvider.ts`.
+- for provider retries, checkpointed run state, recovery, limits, and model/tool iteration, use `src/agentRunController.ts`.
 - for tool names, arguments, bounds, duplicate signatures, and compact history, use `src/agentTools.ts`.
+- for validated tool dispatch, workspace reads, code navigation, terminal execution, and mutation routing, use `src/toolExecutor.ts`.
 - for exact replacement behavior, use `src/fileTools.ts`.
+- for applying file changes and enforcing trust, symlink, dirty-document, and pre-apply checks, use `src/workspaceMutations.ts`.
 - for allowed verification commands, use `src/commandTools.ts` and update its tests at the same time.
-- for dependency installation rules, use `src/dependencyTools.ts`.
-- for project retrieval and chunk scoring, use `src/projectIndex.ts` and `src/projectContext.ts`.
+- for dependency installation execution, use `src/toolExecutor.ts`; manifest validation rules live in `src/agentTools.ts`.
+- for workspace scope collection and index orchestration, use `src/workspaceContext.ts`; for chunking and lexical scoring, use `src/projectIndex.ts`.
 - for model profile validation and reasoning choices, use `src/llmProfiles.ts`.
 - for sessions and project binding, use `src/sessions.ts`.
 - for backend lifecycle behavior, use `src/backendManager.ts`.
