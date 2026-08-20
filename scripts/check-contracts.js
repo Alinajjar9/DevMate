@@ -37,6 +37,15 @@ function numericConstant(source, name, language) {
   return Number(expression.replaceAll('_', ''));
 }
 
+function stringConstant(source, name, language) {
+  const prefix = language === 'typescript' ? `export const ${name} =` : `${name} =`;
+  return capture(
+    source,
+    new RegExp(`${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*["']([^"']+)["']`),
+    `${language} constant ${name}`
+  );
+}
+
 const apiTypes = read('src/api/types.ts');
 const agentTools = read('src/agentTools.ts');
 const projectIndex = read('src/projectIndex.ts');
@@ -64,6 +73,11 @@ const literalContracts = [
     label: 'AgentToolName',
     typeScript: quotedValues(capture(agentTools, /export const AGENT_TOOL_NAMES\s*=\s*\[([\s\S]*?)\]\s*as const;/, 'TypeScript agent tools')),
     python: quotedValues(capture(backendMain, /AgentToolName\s*=\s*Literal\[([\s\S]*?)\]/, 'Python agent tools'))
+  },
+  {
+    label: 'BackendCapability',
+    typeScript: quotedValues(capture(apiTypes, /export const DEVMATE_BACKEND_CAPABILITIES\s*=\s*\[([\s\S]*?)\]\s*as const;/, 'TypeScript backend capabilities')),
+    python: quotedValues(capture(backendMain, /BackendCapability\s*=\s*Literal\[([^\]]+)\]/, 'Python backend capabilities'))
   }
 ];
 
@@ -72,6 +86,7 @@ for (const contract of literalContracts) {
 }
 
 const numericContracts = [
+  ['DEVMATE_BACKEND_PROTOCOL_VERSION', apiTypes],
   ['MAX_CONTEXT_CHARACTERS', projectIndex],
   ['MAX_PROJECT_FILE_CHARACTERS', projectIndex],
   ['MAX_PROJECT_CONTEXT_CHARACTERS', projectIndex],
@@ -91,4 +106,10 @@ for (const [name, typeScriptSource] of numericContracts) {
   }
 }
 
-console.log(`Verified ${literalContracts.length + numericContracts.length} TypeScript/Python API contracts.`);
+const typeScriptService = stringConstant(apiTypes, 'DEVMATE_BACKEND_SERVICE', 'typescript');
+const pythonService = stringConstant(backendMain, 'DEVMATE_BACKEND_SERVICE', 'python');
+if (typeScriptService !== pythonService) {
+  throw new Error(`DEVMATE_BACKEND_SERVICE differs between TypeScript (${typeScriptService}) and Python (${pythonService}).`);
+}
+
+console.log(`Verified ${literalContracts.length + numericContracts.length + 1} TypeScript/Python API contracts.`);

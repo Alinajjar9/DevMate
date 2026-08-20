@@ -3,6 +3,9 @@ export type ScopeType = 'project' | 'file' | 'selection';
 export type ContextSource = 'file' | 'selection' | 'attachment';
 export type ApiStatus = 'ok' | 'error';
 export type BackendState = 'online' | 'offline' | 'mock';
+export const DEVMATE_BACKEND_SERVICE = 'devmate-backend';
+export const DEVMATE_BACKEND_PROTOCOL_VERSION = 1;
+export const DEVMATE_BACKEND_CAPABILITIES = ['chat', 'streaming'] as const;
 export type ApiErrorKind =
   | 'cancelled'
   | 'configuration'
@@ -20,8 +23,11 @@ export type ApiResult<T> = {
 };
 
 export type HealthResponse = {
-  backend: BackendState;
-  version?: string;
+  service: typeof DEVMATE_BACKEND_SERVICE;
+  protocolVersion: typeof DEVMATE_BACKEND_PROTOCOL_VERSION;
+  capabilities: string[];
+  backend: 'online';
+  version: string;
 };
 
 export type LlmSettings = {

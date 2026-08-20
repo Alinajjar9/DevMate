@@ -2,6 +2,11 @@ import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
 import type { ClientRequest, IncomingMessage } from 'http';
 import { StringDecoder } from 'string_decoder';
+import {
+  DEVMATE_BACKEND_CAPABILITIES,
+  DEVMATE_BACKEND_PROTOCOL_VERSION,
+  DEVMATE_BACKEND_SERVICE
+} from './types';
 import type { ApiResult, AskRequest, AskResponse, HealthResponse, TokenUsage } from './types';
 
 const HEALTH_TIMEOUT_MS = 2_000;
@@ -21,7 +26,30 @@ export type AskStreamResult = {
 };
 
 export async function health(backendUrl: string): Promise<ApiResult<HealthResponse>> {
-  return fetchJsonRequest<HealthResponse>(backendUrl, '/health', { method: 'GET' }, HEALTH_TIMEOUT_MS);
+  const result = await fetchJsonRequest<unknown>(
+    backendUrl,
+    '/health',
+    { method: 'GET' },
+    HEALTH_TIMEOUT_MS
+  );
+  if (result.status !== 'ok') {
+    return {
+      status: 'error',
+      message: result.message,
+      statusCode: result.statusCode,
+      errorKind: result.errorKind
+    };
+  }
+
+  const response = parseCompatibleHealthResponse(result.data);
+  if (!response) {
+    return {
+      status: 'error',
+      message: 'The service did not identify itself as a compatible DevMate backend.',
+      errorKind: 'invalid-response'
+    };
+  }
+  return { status: 'ok', data: response };
 }
 
 export async function ask(
@@ -591,6 +619,37 @@ function safeTokenCount(value: unknown): value is number {
     && Number.isInteger(value)
     && value >= 0
     && value <= 200_000_000;
+}
+
+function parseCompatibleHealthResponse(value: unknown): HealthResponse | undefined {
+  if (!isRecord(value)
+    || value.service !== DEVMATE_BACKEND_SERVICE
+    || value.protocolVersion !== DEVMATE_BACKEND_PROTOCOL_VERSION
+    || value.backend !== 'online'
+    || typeof value.version !== 'string'
+    || value.version.trim().length === 0
+    || value.version.length > 120
+    || !Array.isArray(value.capabilities)) {
+    return undefined;
+  }
+  const capabilities = value.capabilities;
+  if (capabilities.length > 32
+    || !capabilities.every(isValidBackendCapability)
+    || new Set(capabilities).size !== capabilities.length
+    || !DEVMATE_BACKEND_CAPABILITIES.every((capability) => capabilities.includes(capability))) {
+    return undefined;
+  }
+  return {
+    service: DEVMATE_BACKEND_SERVICE,
+    protocolVersion: DEVMATE_BACKEND_PROTOCOL_VERSION,
+    capabilities: [...value.capabilities],
+    backend: 'online',
+    version: value.version
+  };
+}
+
+function isValidBackendCapability(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 64;
 }
 
 function createEndpoint(backendUrl: string, path: string): string | undefined {

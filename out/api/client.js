@@ -8,13 +8,31 @@ exports.isLoopbackBackendUrl = isLoopbackBackendUrl;
 const http_1 = require("http");
 const https_1 = require("https");
 const string_decoder_1 = require("string_decoder");
+const types_1 = require("./types");
 const HEALTH_TIMEOUT_MS = 2_000;
 exports.DEFAULT_ASK_TIMEOUT_MS = 930_000;
 const PROVIDER_KEY_HEADER = 'X-DevMate-Provider-Key';
 const MAX_BACKEND_RESPONSE_BYTES = 4_000_000;
 const MAX_BACKEND_ERROR_RESPONSE_BYTES = 64_000;
 async function health(backendUrl) {
-    return fetchJsonRequest(backendUrl, '/health', { method: 'GET' }, HEALTH_TIMEOUT_MS);
+    const result = await fetchJsonRequest(backendUrl, '/health', { method: 'GET' }, HEALTH_TIMEOUT_MS);
+    if (result.status !== 'ok') {
+        return {
+            status: 'error',
+            message: result.message,
+            statusCode: result.statusCode,
+            errorKind: result.errorKind
+        };
+    }
+    const response = parseCompatibleHealthResponse(result.data);
+    if (!response) {
+        return {
+            status: 'error',
+            message: 'The service did not identify itself as a compatible DevMate backend.',
+            errorKind: 'invalid-response'
+        };
+    }
+    return { status: 'ok', data: response };
 }
 async function ask(backendUrl, askRequest, providerApiKey, timeoutMilliseconds = exports.DEFAULT_ASK_TIMEOUT_MS, signal) {
     if (providerApiKey && !isLoopbackBackendUrl(backendUrl)) {
@@ -519,6 +537,35 @@ function safeTokenCount(value) {
         && Number.isInteger(value)
         && value >= 0
         && value <= 200_000_000;
+}
+function parseCompatibleHealthResponse(value) {
+    if (!isRecord(value)
+        || value.service !== types_1.DEVMATE_BACKEND_SERVICE
+        || value.protocolVersion !== types_1.DEVMATE_BACKEND_PROTOCOL_VERSION
+        || value.backend !== 'online'
+        || typeof value.version !== 'string'
+        || value.version.trim().length === 0
+        || value.version.length > 120
+        || !Array.isArray(value.capabilities)) {
+        return undefined;
+    }
+    const capabilities = value.capabilities;
+    if (capabilities.length > 32
+        || !capabilities.every(isValidBackendCapability)
+        || new Set(capabilities).size !== capabilities.length
+        || !types_1.DEVMATE_BACKEND_CAPABILITIES.every((capability) => capabilities.includes(capability))) {
+        return undefined;
+    }
+    return {
+        service: types_1.DEVMATE_BACKEND_SERVICE,
+        protocolVersion: types_1.DEVMATE_BACKEND_PROTOCOL_VERSION,
+        capabilities: [...value.capabilities],
+        backend: 'online',
+        version: value.version
+    };
+}
+function isValidBackendCapability(value) {
+    return typeof value === 'string' && value.length > 0 && value.length <= 64;
 }
 function createEndpoint(backendUrl, path) {
     try {

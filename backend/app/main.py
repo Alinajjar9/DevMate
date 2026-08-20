@@ -31,6 +31,13 @@ logger = logging.getLogger(__name__)
 
 
 DEVMATE_BACKEND_VERSION = "1.0.0"
+DEVMATE_BACKEND_SERVICE = "devmate-backend"
+DEVMATE_BACKEND_PROTOCOL_VERSION = 1
+BackendCapability = Literal["chat", "streaming"]
+DEVMATE_BACKEND_CAPABILITIES: tuple[BackendCapability, ...] = (
+    "chat",
+    "streaming",
+)
 ContextSource = Literal["file", "selection", "attachment"]
 MAX_CONTEXT_CHARACTERS = 20_000
 MAX_PROJECT_CONTEXT_FILES = 5
@@ -220,6 +227,9 @@ class AskRequest(BaseModel):
 
 
 class HealthData(BaseModel):
+    service: Literal["devmate-backend"]
+    protocolVersion: Literal[1]
+    capabilities: list[BackendCapability]
     backend: Literal["online"]
     version: str
 
@@ -635,7 +645,13 @@ async def request_validation_error(
 async def health() -> HealthResult:
     return HealthResult(
         status="ok",
-        data=HealthData(backend="online", version=app.version),
+        data=HealthData(
+            service=DEVMATE_BACKEND_SERVICE,
+            protocolVersion=DEVMATE_BACKEND_PROTOCOL_VERSION,
+            capabilities=list(DEVMATE_BACKEND_CAPABILITIES),
+            backend="online",
+            version=app.version,
+        ),
     )
 
 

@@ -47,7 +47,7 @@ the backend does not edit files or run commands. local actions are done by the e
 
 1. vs code calls `activate` in `src/extension.ts`.
 2. `LocalBackendManager` checks `devMate.backendUrl`.
-3. it uses an existing healthy backend or starts a bundled runtime.
+3. it accepts an existing backend only when `/health` identifies the expected service, protocol version, and capabilities; otherwise it starts a bundled runtime when management is enabled.
 4. source development falls back to a configured or local python environment.
 5. `DevMateChatViewProvider` registers the dedicated sidebar view.
 

@@ -68,7 +68,13 @@ class DevMateApiTests(unittest.TestCase):
             response.json(),
             {
                 "status": "ok",
-                "data": {"backend": "online", "version": "1.0.0"},
+                "data": {
+                    "service": "devmate-backend",
+                    "protocolVersion": 1,
+                    "capabilities": ["chat", "streaming"],
+                    "backend": "online",
+                    "version": "1.0.0",
+                },
             },
         )
 

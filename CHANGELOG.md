@@ -2,6 +2,22 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-20 — Verify the backend identity handshake
+
+### Changed
+
+- Added an explicit DevMate service identity, protocol version, and capability list to `/health`.
+- Strictly decoded health data in the extension and rejected generic, malformed, incompatible, or incomplete listeners before treating them as healthy.
+- Added shared TypeScript/Python contract checks and handshake characterization coverage.
+- Documented that cryptographic request authentication remains the next security increment.
+
+### Verification
+
+- `npm run verify` — 160 extension tests and 71 backend tests passed; 16 cross-language contracts and 17 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-19 — Remove obsolete artifacts and compatibility remnants
 
 ### Changed

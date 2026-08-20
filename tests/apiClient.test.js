@@ -6,6 +6,7 @@ const {
   ask,
   askStream,
   DEFAULT_ASK_TIMEOUT_MS,
+  health,
   isLoopbackBackendUrl
 } = require('../out/api/client');
 
@@ -23,6 +24,60 @@ test('recognizes only loopback backend URLs for provider-key handoff', () => {
   assert.equal(isLoopbackBackendUrl('http://127.999.0.1:8000'), false);
   assert.equal(isLoopbackBackendUrl('file:///tmp/backend'), false);
   assert.equal(isLoopbackBackendUrl('not a URL'), false);
+});
+
+test('accepts a backend with the expected identity, protocol, and capabilities', async () => {
+  await withServer((_request, response) => {
+    sendJson(response, 200, compatibleHealthResult());
+  }, async (backendUrl) => {
+    const result = await health(backendUrl);
+
+    assert.deepEqual(result, compatibleHealthResult());
+  });
+});
+
+test('rejects a generic healthy listener that does not identify as DevMate', async () => {
+  await withServer((_request, response) => {
+    sendJson(response, 200, {
+      status: 'ok',
+      data: { backend: 'online', version: '1.0.0' }
+    });
+  }, async (backendUrl) => {
+    const result = await health(backendUrl);
+
+    assert.equal(result.status, 'error');
+    assert.equal(result.errorKind, 'invalid-response');
+    assert.match(result.message, /compatible DevMate backend/);
+  });
+});
+
+test('rejects incompatible protocols and missing required capabilities', async (context) => {
+  const incompatibleData = [
+    {
+      ...compatibleHealthResult().data,
+      protocolVersion: 2
+    },
+    {
+      ...compatibleHealthResult().data,
+      capabilities: ['chat']
+    },
+    {
+      ...compatibleHealthResult().data,
+      capabilities: ['chat', 'streaming', 'streaming']
+    }
+  ];
+
+  for (const data of incompatibleData) {
+    await context.test(JSON.stringify(data), async () => {
+      await withServer((_request, response) => {
+        sendJson(response, 200, { status: 'ok', data });
+      }, async (backendUrl) => {
+        const result = await health(backendUrl);
+        assert.equal(result.status, 'error');
+        assert.equal(result.errorKind, 'invalid-response');
+      });
+    });
+  }
 });
 
 test('refuses to send a provider key to a remote backend', async () => {
@@ -250,6 +305,19 @@ function askRequest() {
       maxTokens: 1200,
       temperature: 0.2,
       timeoutSeconds: 900
+    }
+  };
+}
+
+function compatibleHealthResult() {
+  return {
+    status: 'ok',
+    data: {
+      service: 'devmate-backend',
+      protocolVersion: 1,
+      capabilities: ['chat', 'streaming'],
+      backend: 'online',
+      version: '1.0.0'
     }
   };
 }
