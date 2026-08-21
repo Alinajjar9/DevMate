@@ -16,6 +16,35 @@ test('escalates empty model responses through bounded recovery stages', () => {
 });
 
 test('retries only transient provider HTTP failures', () => {
+  for (const errorCode of [
+    'provider_rate_limited',
+    'provider_timeout',
+    'provider_unavailable'
+  ]) {
+    assert.equal(isRetryableProviderFailure({
+      status: 'error',
+      statusCode: 502,
+      errorKind: 'http',
+      errorCode,
+      message: 'Stable coded provider error'
+    }), true);
+  }
+  for (const errorCode of [
+    'provider_configuration',
+    'provider_authentication_failed',
+    'provider_not_found',
+    'provider_invalid_response',
+    'model_invalid_response'
+  ]) {
+    assert.equal(isRetryableProviderFailure({
+      status: 'error',
+      statusCode: 502,
+      errorKind: 'http',
+      errorCode,
+      message: 'Stable coded permanent error'
+    }), false);
+  }
+
   for (const statusCode of [429, 502, 503, 504]) {
     assert.equal(isRetryableProviderFailure({
       status: 'error',

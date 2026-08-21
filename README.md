@@ -378,5 +378,6 @@ The workspace must be trusted and VS Code Terminal Shell Integration must be ava
 - Provider redirects are disabled to avoid forwarding credentials to another host.
 - Remote model-provider endpoints require HTTPS; plain HTTP is limited to loopback hosts.
 - Provider hostnames are resolved before each request, every answer must be public (or exact loopback for a local provider), and the connection is pinned to a checked address while retaining the original TLS identity.
+- Backend protocol version 2 uses strictly decoded success and streaming schemas plus stable machine-readable error codes; malformed responses are rejected without displaying untrusted error text.
 - Project and tool content is treated as untrusted data in backend prompts.
 - The model never receives direct filesystem, terminal, or VS Code API access.

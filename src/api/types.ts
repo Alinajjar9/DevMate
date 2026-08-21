@@ -4,11 +4,26 @@ export type ContextSource = 'file' | 'selection' | 'attachment';
 export type ApiStatus = 'ok' | 'error';
 export type BackendState = 'online' | 'offline' | 'mock';
 export const DEVMATE_BACKEND_SERVICE = 'devmate-backend';
-export const DEVMATE_BACKEND_PROTOCOL_VERSION = 1;
+export const DEVMATE_BACKEND_PROTOCOL_VERSION = 2;
 export const DEVMATE_BACKEND_CAPABILITIES = [
   'chat',
   'streaming',
-  'request-authentication'
+  'request-authentication',
+  'strict-response-contracts'
+] as const;
+export const DEVMATE_BACKEND_ERROR_CODES = [
+  'backend_authentication_failed',
+  'request_validation_failed',
+  'route_unavailable',
+  'provider_configuration',
+  'provider_authentication_failed',
+  'provider_not_found',
+  'provider_rate_limited',
+  'provider_timeout',
+  'provider_unavailable',
+  'provider_invalid_response',
+  'model_invalid_response',
+  'internal_error'
 ] as const;
 export const DEVMATE_BACKEND_TOKEN_HEADER = 'X-DevMate-Backend-Token';
 export const DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE = 'DEVMATE_BACKEND_TOKEN';
@@ -21,6 +36,7 @@ export type ApiErrorKind =
   | 'invalid-response'
   | 'network'
   | 'timeout';
+export type BackendErrorCode = typeof DEVMATE_BACKEND_ERROR_CODES[number];
 
 export type ApiResult<T> = {
   status: ApiStatus;
@@ -28,6 +44,7 @@ export type ApiResult<T> = {
   message?: string;
   statusCode?: number;
   errorKind?: ApiErrorKind;
+  errorCode?: BackendErrorCode;
 };
 
 export type HealthResponse = {

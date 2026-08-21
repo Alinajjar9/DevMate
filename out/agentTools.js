@@ -128,6 +128,11 @@ function isRetryableProviderFailure(result) {
     if (result.status !== 'error' || result.errorKind !== 'http') {
         return false;
     }
+    if (result.errorCode) {
+        return result.errorCode === 'provider_rate_limited'
+            || result.errorCode === 'provider_timeout'
+            || result.errorCode === 'provider_unavailable';
+    }
     const message = result.message ?? '';
     if (/response budget for reasoning/i.test(message)
         || /empty (?:or invalid |final )?answer/i.test(message)

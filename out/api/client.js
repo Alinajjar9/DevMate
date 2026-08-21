@@ -8,12 +8,24 @@ exports.isLoopbackBackendUrl = isLoopbackBackendUrl;
 const http_1 = require("http");
 const https_1 = require("https");
 const string_decoder_1 = require("string_decoder");
+const agentTools_1 = require("../agentTools");
 const types_1 = require("./types");
 const HEALTH_TIMEOUT_MS = 2_000;
 exports.DEFAULT_ASK_TIMEOUT_MS = 930_000;
 const PROVIDER_KEY_HEADER = 'X-DevMate-Provider-Key';
 const MAX_BACKEND_RESPONSE_BYTES = 4_000_000;
 const MAX_BACKEND_ERROR_RESPONSE_BYTES = 64_000;
+const MAX_BACKEND_ERROR_MESSAGE_CHARACTERS = 1_000;
+const MAX_BACKEND_VALIDATION_ISSUES = 8;
+const MAX_ASK_USED_FILES = 100;
+const MAX_ASK_FILE_CHANGES = 10;
+const MAX_ASK_FILE_CHANGE_CHARACTERS = 200_000;
+const MAX_ASK_TOTAL_CHANGE_CHARACTERS = 500_000;
+const MAX_ASK_TOOL_CALLS = 20;
+const MAX_ASK_TOOL_ARGUMENT_CHARACTERS = 1_200_000;
+const MAX_ASK_PATH_CHARACTERS = 2_048;
+const backendErrorCodes = new Set(types_1.DEVMATE_BACKEND_ERROR_CODES);
+const agentToolNames = new Set(agentTools_1.AGENT_TOOL_NAMES);
 async function health(backendUrl, backendToken) {
     if (!isValidBackendToken(backendToken)) {
         return backendAuthenticationUnavailable();
@@ -62,7 +74,7 @@ async function ask(backendUrl, askRequest, secrets, timeoutMilliseconds = export
             ...(providerApiKey ? { [PROVIDER_KEY_HEADER]: providerApiKey } : {})
         },
         body: JSON.stringify(askRequest)
-    }, timeoutMilliseconds, signal);
+    }, parseAskResponse, timeoutMilliseconds, signal);
 }
 async function askStream(backendUrl, askRequest, secrets, timeoutMilliseconds = exports.DEFAULT_ASK_TIMEOUT_MS, signal, onEvent) {
     if (!isValidBackendToken(secrets.backendToken)) {
@@ -127,21 +139,16 @@ async function fetchJsonRequest(backendUrl, path, init, timeoutMilliseconds, ext
         });
         const payload = await readJson(response);
         if (!response.ok) {
-            return {
-                status: 'error',
-                message: getHttpErrorMessage(response.status, payload),
-                statusCode: response.status,
-                errorKind: 'http'
-            };
+            return parseBackendHttpError(response.status, payload);
         }
-        if (!isApiResult(payload)) {
+        if (!isSuccessEnvelope(payload) || !hasOnlyKeys(payload, ['status', 'data'])) {
             return {
                 status: 'error',
                 message: 'The DevMate backend returned an invalid response.',
                 errorKind: 'invalid-response'
             };
         }
-        return payload;
+        return { status: 'ok', data: payload.data };
     }
     catch (error) {
         if (isAbortError(error)) {
@@ -164,7 +171,7 @@ async function fetchJsonRequest(backendUrl, path, init, timeoutMilliseconds, ext
         externalSignal?.removeEventListener('abort', cancelRequest);
     }
 }
-async function nodeHttpJsonRequest(backendUrl, requestPath, init, timeoutMilliseconds, externalSignal) {
+async function nodeHttpJsonRequest(backendUrl, requestPath, init, decodeData, timeoutMilliseconds, externalSignal) {
     const endpointValue = createEndpoint(backendUrl, requestPath);
     if (!endpointValue) {
         return {
@@ -250,15 +257,11 @@ async function nodeHttpJsonRequest(backendUrl, requestPath, init, timeoutMillise
                     const payload = readNodeJson(incomingResponse, Buffer.concat(chunks));
                     const statusCode = incomingResponse.statusCode ?? 0;
                     if (statusCode < 200 || statusCode >= 300) {
-                        finish({
-                            status: 'error',
-                            message: getHttpErrorMessage(statusCode, payload),
-                            statusCode,
-                            errorKind: 'http'
-                        });
+                        finish(parseBackendHttpError(statusCode, payload));
                         return;
                     }
-                    if (!isApiResult(payload)) {
+                    const result = parseSuccessResult(payload, decodeData);
+                    if (!result) {
                         finish({
                             status: 'error',
                             message: 'The DevMate backend returned an invalid response.',
@@ -266,7 +269,7 @@ async function nodeHttpJsonRequest(backendUrl, requestPath, init, timeoutMillise
                         });
                         return;
                     }
-                    finish(payload);
+                    finish(result);
                 });
                 incomingResponse.on('error', failTransport);
                 incomingResponse.on('aborted', failTransport);
@@ -312,6 +315,7 @@ async function nodeHttpStreamRequest(backendUrl, requestPath, init, timeoutMilli
         let receivedBytes = 0;
         let lineBuffer = '';
         let finalResult;
+        let receivedStart = false;
         const decoder = new string_decoder_1.StringDecoder('utf8');
         const finish = (result) => {
             if (settled) {
@@ -376,35 +380,61 @@ async function nodeHttpStreamRequest(backendUrl, requestPath, init, timeoutMilli
                 return;
             }
             if (!isRecord(value) || typeof value.type !== 'string') {
+                finish(invalidStreamResult());
                 return;
             }
-            if (value.type === 'delta' && typeof value.text === 'string' && value.text) {
+            if (finalResult) {
+                finish(invalidStreamResult());
+                return;
+            }
+            if (value.type === 'start') {
+                if (receivedStart || !hasOnlyKeys(value, ['type'])) {
+                    finish(invalidStreamResult());
+                    return;
+                }
+                receivedStart = true;
+                return;
+            }
+            if (!receivedStart) {
+                finish(invalidStreamResult());
+                return;
+            }
+            if (value.type === 'delta'
+                && hasOnlyKeys(value, ['type', 'text'])
+                && typeof value.text === 'string'
+                && value.text.length > 0
+                && value.text.length <= MAX_BACKEND_RESPONSE_BYTES) {
                 onEvent?.({ type: 'delta', text: value.text });
                 return;
             }
-            if (value.type === 'progress' && typeof value.phase === 'string' && value.phase) {
-                onEvent?.({ type: 'progress', phase: value.phase.slice(0, 120) });
+            if (value.type === 'progress'
+                && hasOnlyKeys(value, ['type', 'phase'])
+                && isBoundedNonEmptyString(value.phase, 120)) {
+                onEvent?.({ type: 'progress', phase: value.phase });
                 return;
             }
-            if (value.type === 'usage') {
+            if (value.type === 'usage' && hasOnlyKeys(value, ['type', 'usage'])) {
                 const usage = parseTokenUsage(value.usage);
                 if (usage) {
                     onEvent?.({ type: 'usage', usage });
+                    return;
                 }
-                return;
             }
-            if (value.type === 'final' && isApiResult(value.result)) {
-                finalResult = value.result;
-                return;
+            if (value.type === 'final' && hasOnlyKeys(value, ['type', 'result'])) {
+                const result = parseSuccessResult(value.result, parseAskResponse);
+                if (result) {
+                    finalResult = result;
+                    return;
+                }
             }
-            if (value.type === 'error' && typeof value.message === 'string') {
-                finalResult = {
-                    status: 'error',
-                    message: value.message,
-                    statusCode: typeof value.statusCode === 'number' ? value.statusCode : undefined,
-                    errorKind: value.errorKind === 'http' ? 'http' : 'invalid-response'
-                };
+            if (value.type === 'error') {
+                const errorResult = parseStreamError(value);
+                if (errorResult) {
+                    finalResult = errorResult;
+                    return;
+                }
             }
+            finish(invalidStreamResult());
         };
         try {
             const requestFunction = endpoint.protocol === 'https:' ? https_1.request : http_1.request;
@@ -439,7 +469,7 @@ async function nodeHttpStreamRequest(backendUrl, requestPath, init, timeoutMilli
                                     status: 'error',
                                     message: `The DevMate backend returned HTTP ${statusCode} with an oversized error response.`,
                                     statusCode,
-                                    errorKind: 'http'
+                                    errorKind: 'invalid-response'
                                 },
                                 unsupported: false
                             });
@@ -451,12 +481,7 @@ async function nodeHttpStreamRequest(backendUrl, requestPath, init, timeoutMilli
                     incomingResponse.on('end', () => {
                         const payload = readNodeJson(incomingResponse, Buffer.concat(chunks));
                         finish({
-                            result: {
-                                status: 'error',
-                                message: getHttpErrorMessage(statusCode, payload),
-                                statusCode,
-                                errorKind: 'http'
-                            },
+                            result: parseBackendHttpError(statusCode, payload),
                             unsupported: false
                         });
                     });
@@ -536,8 +561,101 @@ async function nodeHttpStreamRequest(backendUrl, requestPath, init, timeoutMilli
         }
     });
 }
+function parseSuccessResult(value, decodeData) {
+    if (!isSuccessEnvelope(value) || !hasOnlyKeys(value, ['status', 'data'])) {
+        return undefined;
+    }
+    const data = decodeData(value.data);
+    return data === undefined ? undefined : { status: 'ok', data };
+}
+function isSuccessEnvelope(value) {
+    return isRecord(value) && value.status === 'ok' && 'data' in value;
+}
+function parseAskResponse(value) {
+    if (!isRecord(value)
+        || !hasOnlyKeys(value, ['answer', 'usedFiles', 'changes', 'toolCalls', 'tokenUsage'])
+        || typeof value.answer !== 'string'
+        || value.answer.length > MAX_BACKEND_RESPONSE_BYTES
+        || !Array.isArray(value.usedFiles)
+        || value.usedFiles.length > MAX_ASK_USED_FILES
+        || !value.usedFiles.every((file) => isResponsePath(file))
+        || new Set(value.usedFiles).size !== value.usedFiles.length
+        || !Array.isArray(value.changes)
+        || value.changes.length > MAX_ASK_FILE_CHANGES
+        || !Array.isArray(value.toolCalls)
+        || value.toolCalls.length > MAX_ASK_TOOL_CALLS) {
+        return undefined;
+    }
+    const changes = [];
+    const changePaths = new Set();
+    let changeCharacters = 0;
+    for (const candidate of value.changes) {
+        if (!isRecord(candidate)
+            || !hasOnlyKeys(candidate, ['path', 'content'])
+            || !isResponsePath(candidate.path)
+            || typeof candidate.content !== 'string'
+            || candidate.content.length > MAX_ASK_FILE_CHANGE_CHARACTERS
+            || changePaths.has(candidate.path.toLocaleLowerCase())) {
+            return undefined;
+        }
+        changeCharacters += candidate.content.length;
+        if (changeCharacters > MAX_ASK_TOTAL_CHANGE_CHARACTERS) {
+            return undefined;
+        }
+        changePaths.add(candidate.path.toLocaleLowerCase());
+        changes.push({ path: candidate.path, content: candidate.content });
+    }
+    const toolCalls = [];
+    const callIds = new Set();
+    for (const candidate of value.toolCalls) {
+        const toolCall = parseAgentToolCall(candidate);
+        if (!toolCall || callIds.has(toolCall.id)) {
+            return undefined;
+        }
+        callIds.add(toolCall.id);
+        toolCalls.push(toolCall);
+    }
+    if (!value.answer && toolCalls.length === 0) {
+        return undefined;
+    }
+    const tokenUsage = parseTokenUsage(value.tokenUsage);
+    if (!tokenUsage) {
+        return undefined;
+    }
+    return {
+        answer: value.answer,
+        usedFiles: [...value.usedFiles],
+        changes,
+        toolCalls,
+        tokenUsage
+    };
+}
+function parseAgentToolCall(value) {
+    if (!isRecord(value)
+        || !hasOnlyKeys(value, ['id', 'name', 'arguments'])
+        || !isBoundedNonEmptyString(value.id, 120)
+        || typeof value.name !== 'string'
+        || !agentToolNames.has(value.name)
+        || !isRecord(value.arguments)) {
+        return undefined;
+    }
+    try {
+        if (JSON.stringify(value.arguments).length > MAX_ASK_TOOL_ARGUMENT_CHARACTERS) {
+            return undefined;
+        }
+    }
+    catch {
+        return undefined;
+    }
+    return {
+        id: value.id,
+        name: value.name,
+        arguments: value.arguments
+    };
+}
 function parseTokenUsage(value) {
     if (!isRecord(value)
+        || !hasOnlyKeys(value, ['inputTokens', 'outputTokens', 'totalTokens', 'exact'])
         || !safeTokenCount(value.inputTokens)
         || !safeTokenCount(value.outputTokens)
         || !safeTokenCount(value.totalTokens)
@@ -557,8 +675,126 @@ function safeTokenCount(value) {
         && value >= 0
         && value <= 200_000_000;
 }
+function isResponsePath(value) {
+    return isBoundedNonEmptyString(value, MAX_ASK_PATH_CHARACTERS)
+        && !/[\u0000-\u001f\u007f]/.test(value);
+}
+function isBoundedNonEmptyString(value, maximum) {
+    return typeof value === 'string'
+        && value.length > 0
+        && value.length <= maximum;
+}
+function parseStreamError(value) {
+    if (!hasOnlyKeys(value, ['type', 'message', 'statusCode', 'errorKind', 'errorCode'])
+        || value.type !== 'error'
+        || value.errorKind !== 'http'
+        || !isBoundedNonEmptyString(value.message, MAX_BACKEND_ERROR_MESSAGE_CHARACTERS)
+        || !isHttpStatusCode(value.statusCode)
+        || !isBackendErrorCode(value.errorCode)) {
+        return undefined;
+    }
+    return {
+        status: 'error',
+        message: value.message,
+        statusCode: value.statusCode,
+        errorKind: 'http',
+        errorCode: value.errorCode
+    };
+}
+function invalidStreamResult() {
+    return {
+        result: {
+            status: 'error',
+            message: 'The DevMate backend returned an invalid streaming event.',
+            errorKind: 'invalid-response'
+        },
+        unsupported: false
+    };
+}
+function parseBackendHttpError(statusCode, value) {
+    const parsed = parseBackendError(value);
+    if (!parsed) {
+        return {
+            status: 'error',
+            message: `The DevMate backend returned HTTP ${statusCode} with an invalid error response.`,
+            statusCode,
+            errorKind: 'invalid-response'
+        };
+    }
+    const validationDetail = parsed.errorCode === 'request_validation_failed'
+        ? formatValidationIssues(parsed.issues)
+        : undefined;
+    return {
+        status: 'error',
+        message: validationDetail ?? parsed.message,
+        statusCode,
+        errorKind: 'http',
+        errorCode: parsed.errorCode
+    };
+}
+function parseBackendError(value) {
+    if (!isRecord(value)
+        || !hasOnlyKeys(value, ['status', 'errorCode', 'message', 'issues'])
+        || value.status !== 'error'
+        || !isBackendErrorCode(value.errorCode)
+        || !isBoundedNonEmptyString(value.message, MAX_BACKEND_ERROR_MESSAGE_CHARACTERS)
+        || !Array.isArray(value.issues)
+        || value.issues.length > MAX_BACKEND_VALIDATION_ISSUES) {
+        return undefined;
+    }
+    const issues = [];
+    for (const candidate of value.issues) {
+        const issue = parseBackendValidationIssue(candidate);
+        if (!issue) {
+            return undefined;
+        }
+        issues.push(issue);
+    }
+    return { errorCode: value.errorCode, message: value.message, issues };
+}
+function parseBackendValidationIssue(value) {
+    if (!isRecord(value)
+        || !hasOnlyKeys(value, ['location', 'message', 'type'])
+        || !Array.isArray(value.location)
+        || value.location.length > 16
+        || !value.location.every((part) => ((typeof part === 'string' && part.length > 0 && part.length <= 120)
+            || (typeof part === 'number' && Number.isInteger(part) && part >= 0 && part <= 1_000_000)))
+        || !isBoundedNonEmptyString(value.message, 240)
+        || !isBoundedNonEmptyString(value.type, 120)) {
+        return undefined;
+    }
+    return {
+        location: value.location,
+        message: value.message,
+        type: value.type
+    };
+}
+function formatValidationIssues(issues) {
+    const fields = issues.slice(0, 4).map((issue) => {
+        const location = issue.location
+            .filter((part) => part !== 'body')
+            .map((part) => String(part).replace(/[\u0000-\u001f\u007f]/g, ''))
+            .filter(Boolean)
+            .join('.');
+        const message = issue.message.replace(/[\u0000-\u001f\u007f]/g, ' ');
+        return `${location || 'request'}: ${message}`;
+    });
+    return fields.length > 0
+        ? `DevMate rejected an invalid request field: ${fields.join('; ')}`
+        : undefined;
+}
+function isBackendErrorCode(value) {
+    return typeof value === 'string' && backendErrorCodes.has(value);
+}
+function isHttpStatusCode(value) {
+    return typeof value === 'number'
+        && Number.isInteger(value)
+        && value >= 400
+        && value <= 599;
+}
 function parseCompatibleHealthResponse(value) {
     if (!isRecord(value)
+        || !hasOnlyKeys(value, ['service', 'protocolVersion', 'capabilities', 'backend', 'version'])
         || value.service !== types_1.DEVMATE_BACKEND_SERVICE
         || value.protocolVersion !== types_1.DEVMATE_BACKEND_PROTOCOL_VERSION
         || value.backend !== 'online'
@@ -661,46 +897,13 @@ async function readJson(response) {
         return undefined;
     }
 }
-function isApiResult(value) {
-    if (!isRecord(value)) {
-        return false;
-    }
-    if (value.status === 'ok') {
-        return 'data' in value;
-    }
-    return value.status === 'error' && (value.message === undefined || typeof value.message === 'string');
-}
-function getHttpErrorMessage(status, payload) {
-    if (isRecord(payload) && typeof payload.message === 'string') {
-        return payload.message;
-    }
-    if (isRecord(payload) && typeof payload.detail === 'string') {
-        return payload.detail;
-    }
-    if (status === 422 && isRecord(payload) && Array.isArray(payload.detail)) {
-        const fields = payload.detail
-            .slice(0, 4)
-            .map((item) => {
-            if (!isRecord(item) || !Array.isArray(item.loc) || typeof item.msg !== 'string') {
-                return undefined;
-            }
-            const location = item.loc
-                .filter((part) => part !== 'body')
-                .map((part) => String(part).replace(/[\u0000-\u001f\u007f]/g, ''))
-                .filter(Boolean)
-                .join('.');
-            const message = item.msg.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 240);
-            return `${location || 'request'}: ${message}`;
-        })
-            .filter((item) => Boolean(item));
-        if (fields.length > 0) {
-            return `DevMate rejected an invalid request field: ${fields.join('; ')}`;
-        }
-    }
-    return `The DevMate backend returned HTTP ${status}.`;
-}
 function isRecord(value) {
-    return typeof value === 'object' && value !== null;
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+function hasOnlyKeys(value, keys) {
+    const expected = new Set(keys);
+    const actual = Object.keys(value);
+    return actual.length === expected.size && actual.every((key) => expected.has(key));
 }
 function isAbortError(error) {
     return error instanceof Error && error.name === 'AbortError';

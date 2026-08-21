@@ -2,6 +2,23 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-21 — Enforce strict backend response contracts
+
+### Changed
+
+- Bumped the managed backend protocol to version 2 and added the required `strict-response-contracts` capability.
+- Added a shared machine-readable error-code vocabulary for authentication, validation, provider, model-response, routing, and internal failures.
+- Strictly decode completed answers, file changes, tool calls, token usage, validation issues, HTTP errors, and every NDJSON stream event before the extension uses them.
+- Reject unknown, malformed, oversized, duplicated, or out-of-order response data without displaying untrusted backend error text.
+- Use stable provider error codes for retry decisions while retaining the legacy status/message fallback for transport compatibility.
+
+### Verification
+
+- `npm run verify` — 178 extension tests and 83 backend tests passed; 21 cross-language contracts and 17 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-21 — Restrict provider network destinations
 
 ### Changed

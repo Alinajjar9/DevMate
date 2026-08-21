@@ -78,6 +78,11 @@ const literalContracts = [
     label: 'BackendCapability',
     typeScript: quotedValues(capture(apiTypes, /export const DEVMATE_BACKEND_CAPABILITIES\s*=\s*\[([\s\S]*?)\]\s*as const;/, 'TypeScript backend capabilities')),
     python: quotedValues(capture(backendMain, /BackendCapability\s*=\s*Literal\[([^\]]+)\]/, 'Python backend capabilities'))
+  },
+  {
+    label: 'BackendErrorCode',
+    typeScript: quotedValues(capture(apiTypes, /export const DEVMATE_BACKEND_ERROR_CODES\s*=\s*\[([\s\S]*?)\]\s*as const;/, 'TypeScript backend error codes')),
+    python: quotedValues(capture(backendMain, /BackendErrorCode\s*=\s*Literal\[([\s\S]*?)\]/, 'Python backend error codes'))
   }
 ];
 

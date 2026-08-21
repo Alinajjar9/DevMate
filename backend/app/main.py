@@ -5,10 +5,11 @@ import secrets
 from collections.abc import AsyncIterator
 from typing import Annotated, Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .code_changes import CodeChangeParseError, parse_code_change_response
 from .prompts import AssistantMode, ScopeType, build_chat_messages
@@ -34,17 +35,37 @@ logger = logging.getLogger(__name__)
 
 DEVMATE_BACKEND_VERSION = "1.0.0"
 DEVMATE_BACKEND_SERVICE = "devmate-backend"
-DEVMATE_BACKEND_PROTOCOL_VERSION = 1
+DEVMATE_BACKEND_PROTOCOL_VERSION = 2
 DEVMATE_BACKEND_TOKEN_HEADER = "X-DevMate-Backend-Token"
 DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE = "DEVMATE_BACKEND_TOKEN"
 MIN_BACKEND_TOKEN_CHARACTERS = 32
 MAX_BACKEND_TOKEN_CHARACTERS = 512
-BackendCapability = Literal["chat", "streaming", "request-authentication"]
+BackendCapability = Literal[
+    "chat",
+    "streaming",
+    "request-authentication",
+    "strict-response-contracts",
+]
 DEVMATE_BACKEND_CAPABILITIES: tuple[BackendCapability, ...] = (
     "chat",
     "streaming",
     "request-authentication",
+    "strict-response-contracts",
 )
+BackendErrorCode = Literal[
+    "backend_authentication_failed",
+    "request_validation_failed",
+    "route_unavailable",
+    "provider_configuration",
+    "provider_authentication_failed",
+    "provider_not_found",
+    "provider_rate_limited",
+    "provider_timeout",
+    "provider_unavailable",
+    "provider_invalid_response",
+    "model_invalid_response",
+    "internal_error",
+]
 ContextSource = Literal["file", "selection", "attachment"]
 MAX_CONTEXT_CHARACTERS = 20_000
 MAX_PROJECT_CONTEXT_FILES = 5
@@ -235,7 +256,7 @@ class AskRequest(BaseModel):
 
 class HealthData(BaseModel):
     service: Literal["devmate-backend"]
-    protocolVersion: Literal[1]
+    protocolVersion: Literal[2]
     capabilities: list[BackendCapability]
     backend: Literal["online"]
     version: str
@@ -275,6 +296,32 @@ class AskData(BaseModel):
 class AskResult(BaseModel):
     status: Literal["ok"]
     data: AskData
+
+
+class ValidationIssue(BaseModel):
+    location: list[str | int]
+    message: str
+    type: str
+
+
+class BackendErrorResult(BaseModel):
+    status: Literal["error"]
+    errorCode: BackendErrorCode
+    message: str
+    issues: list[ValidationIssue] = Field(default_factory=list)
+
+
+class BackendApiError(Exception):
+    def __init__(
+        self,
+        status_code: int,
+        error_code: BackendErrorCode,
+        message: str,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_code = error_code
+        self.message = message
 
 
 AGENT_TOOL_DEFINITIONS = (
@@ -628,6 +675,32 @@ def get_chat_provider() -> ChatProvider:
     return _chat_provider
 
 
+def _safe_error_message(value: object, fallback: str) -> str:
+    if not isinstance(value, str):
+        return fallback
+    normalized = " ".join(value.split())[:1_000]
+    return normalized or fallback
+
+
+def _backend_error_response(
+    status_code: int,
+    error_code: BackendErrorCode,
+    message: str,
+    issues: list[ValidationIssue] | None = None,
+) -> JSONResponse:
+    result = BackendErrorResult(
+        status="error",
+        errorCode=error_code,
+        message=_safe_error_message(message, "The DevMate backend request failed."),
+        issues=issues or [],
+    )
+    return JSONResponse(status_code=status_code, content=result.model_dump(mode="json"))
+
+
+def _provider_api_error(error: ProviderError) -> BackendApiError:
+    return BackendApiError(error.status_code, error.error_code, str(error))
+
+
 @app.middleware("http")
 async def authenticate_backend_request(request: Request, call_next):
     if request.url.path not in _authenticated_backend_paths:
@@ -646,9 +719,44 @@ async def authenticate_backend_request(request: Request, call_next):
     ):
         return JSONResponse(
             status_code=401,
-            content={"detail": "DevMate backend authentication failed."},
+            content=BackendErrorResult(
+                status="error",
+                errorCode="backend_authentication_failed",
+                message="DevMate backend authentication failed.",
+            ).model_dump(mode="json"),
         )
     return await call_next(request)
+
+
+@app.exception_handler(BackendApiError)
+async def backend_api_error(
+    _request: Request,
+    error: BackendApiError,
+) -> JSONResponse:
+    return _backend_error_response(
+        error.status_code,
+        error.error_code,
+        error.message,
+    )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def framework_http_error(
+    _request: Request,
+    error: StarletteHTTPException,
+) -> JSONResponse:
+    error_code: BackendErrorCode = (
+        "route_unavailable"
+        if error.status_code in {404, 405}
+        else "request_validation_failed"
+        if 400 <= error.status_code < 500
+        else "internal_error"
+    )
+    return _backend_error_response(
+        error.status_code,
+        error_code,
+        _safe_error_message(error.detail, "The DevMate backend request failed."),
+    )
 
 
 @app.exception_handler(RequestValidationError)
@@ -657,19 +765,24 @@ async def request_validation_error(
     error: RequestValidationError,
 ) -> JSONResponse:
     issues = [
-        {
-            "loc": [part for part in item.get("loc", ()) if isinstance(part, (str, int))],
-            "msg": str(item.get("msg", "Invalid value"))[:240],
-            "type": str(item.get("type", "value_error"))[:120],
-        }
+        ValidationIssue(
+            location=[part for part in item.get("loc", ()) if isinstance(part, (str, int))],
+            message=str(item.get("msg", "Invalid value"))[:240],
+            type=str(item.get("type", "value_error"))[:120],
+        )
         for item in error.errors()[:8]
     ]
     summary = "; ".join(
-        f"{'.'.join(str(part) for part in issue['loc'])}: {issue['msg']}"
+        f"{'.'.join(str(part) for part in issue.location)}: {issue.message}"
         for issue in issues[:4]
     )
     logger.warning("Rejected %s request validation: %s", request.url.path, summary)
-    return JSONResponse(status_code=422, content={"detail": issues})
+    return _backend_error_response(
+        422,
+        "request_validation_failed",
+        "The DevMate request contains invalid fields.",
+        issues,
+    )
 
 
 @app.get("/health", response_model=HealthResult)
@@ -702,7 +815,7 @@ async def ask(
     try:
         completion_value = await chat_provider.complete(completion_request)
     except ProviderError as error:
-        raise HTTPException(status_code=error.status_code, detail=str(error)) from error
+        raise _provider_api_error(error) from error
 
     completion = completion_value if isinstance(completion_value, ChatCompletion) else ChatCompletion(
         content=completion_value
@@ -776,9 +889,10 @@ async def ask_stream(
                     preview_mode = classify_text_tool_call_prefix(preview_buffer)
 
             if not completion:
-                raise HTTPException(
-                    status_code=502,
-                    detail="The model provider ended its stream without a final response.",
+                raise BackendApiError(
+                    502,
+                    "provider_invalid_response",
+                    "The model provider ended its stream without a final response.",
                 )
             completion, converted_text_tool = _normalize_text_tool_completion(completion)
             if converted_text_tool and not tool_announced:
@@ -802,13 +916,15 @@ async def ask_stream(
                 "message": str(error),
                 "statusCode": error.status_code,
                 "errorKind": "http",
+                "errorCode": error.error_code,
             })
-        except HTTPException as error:
+        except BackendApiError as error:
             yield _stream_line({
                 "type": "error",
-                "message": str(error.detail),
+                "message": error.message,
                 "statusCode": error.status_code,
                 "errorKind": "http",
+                "errorCode": error.error_code,
             })
         except Exception:
             logger.exception("Streamed provider request failed unexpectedly")
@@ -817,6 +933,7 @@ async def ask_stream(
                 "message": "The DevMate backend could not complete the streamed request.",
                 "statusCode": 500,
                 "errorKind": "http",
+                "errorCode": "internal_error",
             })
 
     return StreamingResponse(
@@ -888,14 +1005,19 @@ def _ask_result_from_completion(
     tools_enabled = bool(enabled_tools)
     if completion.tool_calls:
         if not tools_enabled:
-            raise HTTPException(
-                status_code=502,
-                detail="The model requested another tool when DevMate required a final answer.",
+            raise BackendApiError(
+                502,
+                "model_invalid_response",
+                "The model requested another tool when DevMate required a final answer.",
             )
         tool_calls = _parse_agent_tool_calls(completion.tool_calls, set(enabled_tools))
         history_call_ids = {step.callId for step in request.toolHistory}
         if any(tool_call.id in history_call_ids for tool_call in tool_calls):
-            raise HTTPException(status_code=502, detail="The model reused an invalid tool-call id.")
+            raise BackendApiError(
+                502,
+                "model_invalid_response",
+                "The model reused an invalid tool-call id.",
+            )
         return AskResult(
             status="ok",
             data=AskData(
@@ -909,16 +1031,18 @@ def _ask_result_from_completion(
     answer = completion.content
     if not answer:
         if completion.reasoning_content or completion.finish_reason in {"length", "max_tokens"}:
-            raise HTTPException(
-                status_code=502,
-                detail=(
+            raise BackendApiError(
+                502,
+                "model_invalid_response",
+                (
                     "The model used its response budget for reasoning without producing "
                     "a final answer. Increase devMate.maxTokens or try again."
                 ),
             )
-        raise HTTPException(
-            status_code=502,
-            detail="The model provider returned an empty final answer.",
+        raise BackendApiError(
+            502,
+            "model_invalid_response",
+            "The model provider returned an empty final answer.",
         )
 
     changes: list[FileChange] = []
@@ -926,7 +1050,11 @@ def _ask_result_from_completion(
         try:
             answer, parsed_changes = parse_code_change_response(answer)
         except CodeChangeParseError as error:
-            raise HTTPException(status_code=502, detail=str(error)) from error
+            raise BackendApiError(
+                502,
+                "model_invalid_response",
+                str(error),
+            ) from error
         changes = [
             FileChange(path=change.path, content=change.content)
             for change in parsed_changes
@@ -952,9 +1080,10 @@ def _normalize_text_tool_completion(
         return completion, False
     tool_calls = parse_text_tool_calls(completion.content)
     if not tool_calls:
-        raise HTTPException(
-            status_code=502,
-            detail="The model returned a malformed textual tool call.",
+        raise BackendApiError(
+            502,
+            "model_invalid_response",
+            "The model returned a malformed textual tool call.",
         )
     return ChatCompletion(
         content=None,
@@ -1030,13 +1159,25 @@ def _parse_agent_tool_calls(
             or not isinstance(arguments_json, str)
             or len(arguments_json) > 1_200_000
         ):
-            raise HTTPException(status_code=502, detail="The model requested an invalid tool.")
+            raise BackendApiError(
+                502,
+                "model_invalid_response",
+                "The model requested an invalid tool.",
+            )
         try:
             arguments = json.loads(arguments_json)
         except (TypeError, json.JSONDecodeError) as error:
-            raise HTTPException(status_code=502, detail="The model returned invalid tool arguments.") from error
+            raise BackendApiError(
+                502,
+                "model_invalid_response",
+                "The model returned invalid tool arguments.",
+            ) from error
         if not isinstance(arguments, dict):
-            raise HTTPException(status_code=502, detail="The model returned invalid tool arguments.")
+            raise BackendApiError(
+                502,
+                "model_invalid_response",
+                "The model returned invalid tool arguments.",
+            )
         seen_ids.add(call_id)
         parsed_calls.append(
             AgentToolCall(id=call_id, name=name, arguments=arguments)

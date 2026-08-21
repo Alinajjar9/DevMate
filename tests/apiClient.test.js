@@ -60,7 +60,7 @@ test('rejects incompatible protocols and missing required capabilities', async (
   const incompatibleData = [
     {
       ...compatibleHealthResult().data,
-      protocolVersion: 2
+      protocolVersion: 3
     },
     {
       ...compatibleHealthResult().data,
@@ -68,7 +68,13 @@ test('rejects incompatible protocols and missing required capabilities', async (
     },
     {
       ...compatibleHealthResult().data,
-      capabilities: ['chat', 'streaming', 'request-authentication', 'streaming']
+      capabilities: [
+        'chat',
+        'streaming',
+        'request-authentication',
+        'strict-response-contracts',
+        'streaming'
+      ]
     }
   ];
 
@@ -128,7 +134,13 @@ test('uses the configurable Node HTTP transport and sends the provider key', asy
       receivedHeaders = request.headers;
       sendJson(response, 200, {
         status: 'ok',
-        data: { answer: 'Real answer', usedFiles: [], changes: [], toolCalls: [] }
+        data: {
+          answer: 'Real answer',
+          usedFiles: [],
+          changes: [],
+          toolCalls: [],
+          tokenUsage: tokenUsage()
+        }
       });
     }, async (backendUrl) => {
       const result = await ask(
@@ -148,9 +160,55 @@ test('uses the configurable Node HTTP transport and sends the provider key', asy
   }
 });
 
+test('rejects malformed successful ask responses field by field', async (context) => {
+  const malformedData = [
+    { ...askData(), answer: undefined },
+    { ...askData(), usedFiles: 'src/app.ts' },
+    { ...askData(), changes: [{ path: 'src/app.ts', content: 42 }] },
+    {
+      ...askData(),
+      toolCalls: [{ id: 'call-1', name: 'unknown_tool', arguments: {} }]
+    },
+    {
+      ...askData(),
+      tokenUsage: { inputTokens: -1, outputTokens: 2, totalTokens: 1, exact: true }
+    },
+    { ...askData(), unexpected: true }
+  ];
+
+  for (const data of malformedData) {
+    await context.test(JSON.stringify(data), async () => {
+      await withServer((_request, response) => {
+        sendJson(response, 200, { status: 'ok', data });
+      }, async (backendUrl) => {
+        const result = await ask(backendUrl, askRequest(), backendSecrets(), 10_000);
+        assert.equal(result.status, 'error');
+        assert.equal(result.errorKind, 'invalid-response');
+      });
+    });
+  }
+});
+
+test('rejects malformed backend error envelopes without echoing them', async () => {
+  await withServer((_request, response) => {
+    sendJson(response, 502, {
+      detail: 'untrusted backend text that should not be surfaced'
+    });
+  }, async (backendUrl) => {
+    const result = await ask(backendUrl, askRequest(), backendSecrets(), 10_000);
+    assert.equal(result.status, 'error');
+    assert.equal(result.statusCode, 502);
+    assert.equal(result.errorKind, 'invalid-response');
+    assert.doesNotMatch(result.message, /untrusted backend text/);
+  });
+});
+
 test('surfaces FastAPI provider error details', async () => {
   await withServer((_request, response) => {
-    sendJson(response, 401, { detail: 'The model provider rejected the API key.' });
+    sendJson(response, 401, backendError(
+      'provider_authentication_failed',
+      'The model provider rejected the API key.'
+    ));
   }, async (backendUrl) => {
     const result = await ask(
       backendUrl,
@@ -163,6 +221,7 @@ test('surfaces FastAPI provider error details', async () => {
     assert.equal(result.message, 'The model provider rejected the API key.');
     assert.equal(result.statusCode, 401);
     assert.equal(result.errorKind, 'http');
+    assert.equal(result.errorCode, 'provider_authentication_failed');
   });
 });
 
@@ -182,7 +241,13 @@ test('parses progressive backend events and returns the validated final result',
       type: 'final',
       result: {
         status: 'ok',
-        data: { answer: 'Hello world', usedFiles: [], changes: [], toolCalls: [] }
+        data: {
+          answer: 'Hello world',
+          usedFiles: [],
+          changes: [],
+          toolCalls: [],
+          tokenUsage: tokenUsage()
+        }
       }
     }) + '\n');
   }, async (backendUrl) => {
@@ -210,6 +275,41 @@ test('parses progressive backend events and returns the validated final result',
   });
 });
 
+test('rejects unknown, out-of-order, and malformed streaming events', async (context) => {
+  const eventSequences = [
+    [{ type: 'delta', text: 'before start' }],
+    [{ type: 'start' }, { type: 'unknown' }],
+    [{ type: 'start' }, { type: 'usage', usage: { inputTokens: -1 } }],
+    [{
+      type: 'start',
+    }, {
+      type: 'final',
+      result: {
+        status: 'ok',
+        data: { ...askData(), tokenUsage: undefined }
+      }
+    }]
+  ];
+
+  for (const events of eventSequences) {
+    await context.test(JSON.stringify(events), async () => {
+      await withServer((_request, response) => {
+        response.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+        response.end(events.map((event) => JSON.stringify(event)).join('\n') + '\n');
+      }, async (backendUrl) => {
+        const streamed = await askStream(
+          backendUrl,
+          askRequest(),
+          backendSecrets(),
+          10_000
+        );
+        assert.equal(streamed.result.status, 'error');
+        assert.equal(streamed.result.errorKind, 'invalid-response');
+      });
+    });
+  }
+});
+
 test('marks an older backend stream endpoint as unsupported for fallback', async () => {
   await withServer((_request, response) => {
     sendJson(response, 404, { detail: 'Not Found' });
@@ -222,18 +322,20 @@ test('marks an older backend stream endpoint as unsupported for fallback', async
 
 test('surfaces safe FastAPI validation details from the streaming endpoint', async () => {
   await withServer((_request, response) => {
-    sendJson(response, 422, {
-      detail: [{
+    sendJson(response, 422, backendError(
+      'request_validation_failed',
+      'The DevMate request contains invalid fields.',
+      [{
         type: 'value_error',
-        loc: ['body', 'toolHistory', 3, 'arguments'],
-        msg: 'Value error, tool arguments are too large',
-        input: { secret: 'must-not-be-shown' }
+        location: ['body', 'toolHistory', 3, 'arguments'],
+        message: 'Value error, tool arguments are too large'
       }]
-    });
+    ));
   }, async (backendUrl) => {
     const streamed = await askStream(backendUrl, askRequest(), backendSecrets(), 10_000);
     assert.equal(streamed.result.status, 'error');
     assert.equal(streamed.result.statusCode, 422);
+    assert.equal(streamed.result.errorCode, 'request_validation_failed');
     assert.match(streamed.result.message, /toolHistory\.3\.arguments/);
     assert.match(streamed.result.message, /tool arguments are too large/);
     assert.doesNotMatch(streamed.result.message, /must-not-be-shown/);
@@ -243,17 +345,20 @@ test('surfaces safe FastAPI validation details from the streaming endpoint', asy
 test('preserves streamed provider errors for the existing retry policy', async () => {
   await withServer((_request, response) => {
     response.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+    response.write(JSON.stringify({ type: 'start' }) + '\n');
     response.end(JSON.stringify({
       type: 'error',
       message: 'Provider busy',
       statusCode: 429,
-      errorKind: 'http'
+      errorKind: 'http',
+      errorCode: 'provider_rate_limited'
     }) + '\n');
   }, async (backendUrl) => {
     const streamed = await askStream(backendUrl, askRequest(), backendSecrets(), 10_000);
     assert.equal(streamed.result.status, 'error');
     assert.equal(streamed.result.statusCode, 429);
     assert.equal(streamed.result.errorKind, 'http');
+    assert.equal(streamed.result.errorCode, 'provider_rate_limited');
   });
 });
 
@@ -341,12 +446,35 @@ function compatibleHealthResult() {
     status: 'ok',
     data: {
       service: 'devmate-backend',
-      protocolVersion: 1,
-      capabilities: ['chat', 'streaming', 'request-authentication'],
+      protocolVersion: 2,
+      capabilities: [
+        'chat',
+        'streaming',
+        'request-authentication',
+        'strict-response-contracts'
+      ],
       backend: 'online',
       version: '1.0.0'
     }
   };
+}
+
+function tokenUsage() {
+  return { inputTokens: 10, outputTokens: 5, totalTokens: 15, exact: true };
+}
+
+function askData() {
+  return {
+    answer: 'Real answer',
+    usedFiles: [],
+    changes: [],
+    toolCalls: [],
+    tokenUsage: tokenUsage()
+  };
+}
+
+function backendError(errorCode, message, issues = []) {
+  return { status: 'error', errorCode, message, issues };
 }
 
 function backendSecrets(providerApiKey) {

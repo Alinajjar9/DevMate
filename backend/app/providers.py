@@ -12,6 +12,15 @@ import httpx
 
 
 ProviderName = Literal["openai", "ollama"]
+ProviderErrorCode = Literal[
+    "provider_configuration",
+    "provider_authentication_failed",
+    "provider_not_found",
+    "provider_rate_limited",
+    "provider_timeout",
+    "provider_unavailable",
+    "provider_invalid_response",
+]
 ReasoningEffort = Literal["auto", "low", "medium", "high", "xhigh"]
 MessageRole = Literal["system", "user", "assistant", "tool"]
 ProviderAddressResolver = Callable[[str, int], Awaitable[Sequence[str]]]
@@ -109,9 +118,29 @@ class ChatProvider(Protocol):
 
 
 class ProviderError(Exception):
-    def __init__(self, message: str, status_code: int = 502) -> None:
+    def __init__(
+        self,
+        message: str,
+        status_code: int = 502,
+        error_code: ProviderErrorCode | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.error_code = error_code or _provider_error_code_for_status(status_code)
+
+
+def _provider_error_code_for_status(status_code: int) -> ProviderErrorCode:
+    if status_code in {401, 403}:
+        return "provider_authentication_failed"
+    if status_code == 404:
+        return "provider_not_found"
+    if status_code == 429:
+        return "provider_rate_limited"
+    if status_code == 504:
+        return "provider_timeout"
+    if 400 <= status_code < 500:
+        return "provider_configuration"
+    return "provider_unavailable"
 
 
 @dataclass(frozen=True)
@@ -234,6 +263,7 @@ class OpenAICompatibleProvider:
             raise ProviderError(
                 "The model provider returned a redirect. Check the profile base URL.",
                 502,
+                "provider_invalid_response",
             )
         if response.status_code >= 400:
             raise _provider_http_error(response)
@@ -244,6 +274,7 @@ class OpenAICompatibleProvider:
             raise ProviderError(
                 "The model provider returned a non-JSON response.",
                 502,
+                "provider_invalid_response",
             ) from error
 
         completion = _read_completion(response_payload)
@@ -251,6 +282,7 @@ class OpenAICompatibleProvider:
             raise ProviderError(
                 "The model provider returned an empty or invalid answer.",
                 502,
+                "provider_invalid_response",
             )
         return completion
 
@@ -288,6 +320,7 @@ class OpenAICompatibleProvider:
                         raise ProviderError(
                             "The model provider returned a redirect. Check the profile base URL.",
                             502,
+                            "provider_invalid_response",
                         )
                     if response.status_code >= 400:
                         await response.aread()
@@ -302,12 +335,14 @@ class OpenAICompatibleProvider:
                             raise ProviderError(
                                 "The model provider returned a non-streaming invalid response.",
                                 502,
+                                "provider_invalid_response",
                             ) from error
                         completion = _read_completion(response_payload)
                         if not completion:
                             raise ProviderError(
                                 "The model provider returned an empty or invalid answer.",
                                 502,
+                                "provider_invalid_response",
                             )
                         if completion.content:
                             yield ChatStreamEvent(kind="content", text=completion.content)
@@ -329,6 +364,7 @@ class OpenAICompatibleProvider:
                             raise ProviderError(
                                 "The model provider returned an invalid streaming event.",
                                 502,
+                                "provider_invalid_response",
                             ) from error
                         chunk_usage = _read_token_usage(chunk)
                         if chunk_usage:
@@ -374,7 +410,11 @@ class OpenAICompatibleProvider:
             streamed_usage,
         )
         if not completion:
-            raise ProviderError("The model provider returned an empty or invalid answer.", 502)
+            raise ProviderError(
+                "The model provider returned an empty or invalid answer.",
+                502,
+                "provider_invalid_response",
+            )
         yield ChatStreamEvent(kind="complete", completion=completion)
 
 
@@ -413,7 +453,11 @@ def _append_stream_tool_calls(
         if isinstance(arguments, str):
             current["arguments"] += arguments
             if len(current["arguments"]) > MAX_TOOL_ARGUMENT_CHARACTERS:
-                raise ProviderError("The model provider streamed oversized tool arguments.", 502)
+                raise ProviderError(
+                    "The model provider streamed oversized tool arguments.",
+                    502,
+                    "provider_invalid_response",
+                )
 
 
 def _stream_completion(

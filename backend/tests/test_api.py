@@ -87,11 +87,12 @@ class DevMateApiTests(unittest.TestCase):
                 "status": "ok",
                 "data": {
                     "service": "devmate-backend",
-                    "protocolVersion": 1,
+                    "protocolVersion": 2,
                     "capabilities": [
                         "chat",
                         "streaming",
                         "request-authentication",
+                        "strict-response-contracts",
                     ],
                     "backend": "online",
                     "version": "1.0.0",
@@ -113,7 +114,12 @@ class DevMateApiTests(unittest.TestCase):
         self.assertEqual(incorrect.status_code, 401)
         self.assertEqual(
             missing.json(),
-            {"detail": "DevMate backend authentication failed."},
+            {
+                "status": "error",
+                "errorCode": "backend_authentication_failed",
+                "message": "DevMate backend authentication failed.",
+                "issues": [],
+            },
         )
         self.assertEqual(self.provider.requests, [])
 
@@ -436,7 +442,12 @@ class DevMateApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 429)
         self.assertEqual(
             response.json(),
-            {"detail": "The provider rate limit was reached."},
+            {
+                "status": "error",
+                "errorCode": "provider_rate_limited",
+                "message": "The provider rate limit was reached.",
+                "issues": [],
+            },
         )
 
     def test_ask_returns_validated_read_only_tool_calls(self) -> None:
@@ -581,7 +592,12 @@ class DevMateApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 502)
         self.assertEqual(
             response.json(),
-            {"detail": "The model returned a malformed textual tool call."},
+            {
+                "status": "error",
+                "errorCode": "model_invalid_response",
+                "message": "The model returned a malformed textual tool call.",
+                "issues": [],
+            },
         )
 
     def test_ask_returns_manifest_dependency_install_tool_calls(self) -> None:
@@ -692,8 +708,9 @@ class DevMateApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 422)
         body = response.json()
-        self.assertIn("toolHistory", str(body["detail"][0]["loc"]))
-        self.assertIn("tool arguments are too large", body["detail"][0]["msg"])
+        self.assertEqual(body["errorCode"], "request_validation_failed")
+        self.assertIn("toolHistory", str(body["issues"][0]["location"]))
+        self.assertIn("tool arguments are too large", body["issues"][0]["message"])
         self.assertNotIn("private-value", response.text)
 
     def test_ask_exposes_only_requested_mode_tools(self) -> None:
@@ -798,10 +815,13 @@ class DevMateApiTests(unittest.TestCase):
         self.assertEqual(
             response.json(),
             {
-                "detail": (
+                "status": "error",
+                "errorCode": "model_invalid_response",
+                "message": (
                     "The model used its response budget for reasoning without producing "
                     "a final answer. Increase devMate.maxTokens or try again."
-                )
+                ),
+                "issues": [],
             },
         )
 
@@ -823,7 +843,45 @@ class DevMateApiTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 502)
-        self.assertEqual(response.json(), {"detail": "The model requested an invalid tool."})
+        self.assertEqual(
+            response.json(),
+            {
+                "status": "error",
+                "errorCode": "model_invalid_response",
+                "message": "The model requested an invalid tool.",
+                "issues": [],
+            },
+        )
+
+    def test_streamed_provider_errors_include_the_same_machine_code(self) -> None:
+        self.provider.error = ProviderError("The provider rate limit was reached.", 429)
+
+        with self.client.stream(
+            "POST",
+            "/ask/stream",
+            json=self._ask_payload(scope_type="project", items=[]),
+        ) as response:
+            events = [json.loads(line) for line in response.iter_lines() if line]
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(events[-1], {
+            "type": "error",
+            "message": "The provider rate limit was reached.",
+            "statusCode": 429,
+            "errorKind": "http",
+            "errorCode": "provider_rate_limited",
+        })
+
+    def test_unknown_routes_use_a_stable_error_envelope(self) -> None:
+        response = self.client.get("/missing")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json(), {
+            "status": "error",
+            "errorCode": "route_unavailable",
+            "message": "Not Found",
+            "issues": [],
+        })
 
     def test_code_mode_returns_validated_workspace_changes(self) -> None:
         self.provider.answer = json.dumps(
