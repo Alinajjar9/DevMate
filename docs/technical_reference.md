@@ -119,7 +119,8 @@ mutating or executable:
 - `run_command` only accepts registered verification commands
 - model context, tool output, and provider errors are bounded
 - api keys use vs code `SecretStorage`
-- remote model-provider urls require https; provider http is limited to loopback hosts
+- remote model-provider urls require https; provider http and non-public destinations are limited to exact loopback hosts
+- provider dns answers are rejected if any address is private, link-local, multicast, reserved, unspecified, or otherwise non-public; requests are pinned to a checked address while the original host is retained for http host routing and tls sni
 
 ## permissions and workspace trust
 

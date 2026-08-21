@@ -1,8 +1,10 @@
+import asyncio
 from dataclasses import dataclass
 import ipaddress
 import json
 import os
-from collections.abc import AsyncIterator
+import socket
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import Literal, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
@@ -12,6 +14,7 @@ import httpx
 ProviderName = Literal["openai", "ollama"]
 ReasoningEffort = Literal["auto", "low", "medium", "high", "xhigh"]
 MessageRole = Literal["system", "user", "assistant", "tool"]
+ProviderAddressResolver = Callable[[str, int], Awaitable[Sequence[str]]]
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
 DEFAULT_PROVIDER_TIMEOUT_SECONDS = 900.0
@@ -111,6 +114,13 @@ class ProviderError(Exception):
         self.status_code = status_code
 
 
+@dataclass(frozen=True)
+class ResolvedProviderDestination:
+    url: str
+    host_header: str
+    sni_hostname: str
+
+
 def _provider_request_parts(
     request: ChatCompletionRequest,
     *,
@@ -180,15 +190,22 @@ class OpenAICompatibleProvider:
         *,
         transport: httpx.AsyncBaseTransport | None = None,
         timeout_seconds: float = PROVIDER_TIMEOUT_SECONDS,
+        address_resolver: ProviderAddressResolver | None = None,
     ) -> None:
         self._transport = transport
         self._timeout_seconds = timeout_seconds
+        self._address_resolver = address_resolver or resolve_provider_addresses
 
     async def complete(self, request: ChatCompletionRequest) -> ChatCompletion:
         if request.provider == "openai" and not request.api_key:
             raise ProviderError("The selected model profile is missing an API key.", 400)
 
         endpoint, headers, payload = _provider_request_parts(request, stream=False)
+        destination = await resolve_provider_destination(
+            endpoint,
+            self._address_resolver,
+        )
+        headers["Host"] = destination.host_header
 
         try:
             async with httpx.AsyncClient(
@@ -196,7 +213,12 @@ class OpenAICompatibleProvider:
                 timeout=request.timeout_seconds or self._timeout_seconds,
                 follow_redirects=False,
             ) as client:
-                response = await client.post(endpoint, headers=headers, json=payload)
+                response = await client.post(
+                    destination.url,
+                    headers=headers,
+                    json=payload,
+                    extensions={"sni_hostname": destination.sni_hostname},
+                )
         except httpx.TimeoutException as error:
             raise ProviderError(
                 "The model provider timed out before returning an answer.",
@@ -237,6 +259,11 @@ class OpenAICompatibleProvider:
             raise ProviderError("The selected model profile is missing an API key.", 400)
 
         endpoint, headers, payload = _provider_request_parts(request, stream=True)
+        destination = await resolve_provider_destination(
+            endpoint,
+            self._address_resolver,
+        )
+        headers["Host"] = destination.host_header
         # Keep the final completion while forwarding small content events to the extension.
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
@@ -250,7 +277,13 @@ class OpenAICompatibleProvider:
                 timeout=request.timeout_seconds or self._timeout_seconds,
                 follow_redirects=False,
             ) as client:
-                async with client.stream("POST", endpoint, headers=headers, json=payload) as response:
+                async with client.stream(
+                    "POST",
+                    destination.url,
+                    headers=headers,
+                    json=payload,
+                    extensions={"sni_hostname": destination.sni_hostname},
+                ) as response:
                     if response.is_redirect:
                         raise ProviderError(
                             "The model provider returned a redirect. Check the profile base URL.",
@@ -499,6 +532,15 @@ def create_chat_completions_url(
             "Remote model providers must use HTTPS. Plain HTTP is allowed only for local loopback providers.",
             400,
         )
+    literal_address = _provider_ip_address(hostname)
+    if literal_address is not None and not _is_allowed_provider_address(
+        literal_address,
+        local_provider=_is_loopback_provider_hostname(hostname),
+    ):
+        raise ProviderError(
+            "The model provider URL points to a private or otherwise unsafe network address.",
+            400,
+        )
 
     path = parsed.path.rstrip("/")
     if provider == "ollama" and path in {"", "/"}:
@@ -517,9 +559,143 @@ def _is_loopback_provider_hostname(hostname: str | None) -> bool:
     if hostname.casefold() == "localhost":
         return True
     try:
-        return ipaddress.ip_address(hostname).is_loopback
+        address = ipaddress.ip_address(hostname)
+        return address.is_loopback and not (
+            isinstance(address, ipaddress.IPv6Address)
+            and address.ipv4_mapped is not None
+        )
     except ValueError:
         return False
+
+
+async def resolve_provider_addresses(hostname: str, port: int) -> tuple[str, ...]:
+    try:
+        records = await asyncio.get_running_loop().getaddrinfo(
+            hostname,
+            port,
+            type=socket.SOCK_STREAM,
+            proto=socket.IPPROTO_TCP,
+        )
+    except OSError as error:
+        raise ProviderError(
+            "DevMate could not resolve the configured model provider.",
+            502,
+        ) from error
+
+    addresses: list[str] = []
+    seen: set[str] = set()
+    for _family, _socket_type, _protocol, _canonical_name, socket_address in records:
+        address = socket_address[0]
+        if address not in seen:
+            seen.add(address)
+            addresses.append(address)
+    return tuple(addresses)
+
+
+async def resolve_provider_destination(
+    endpoint: str,
+    address_resolver: ProviderAddressResolver = resolve_provider_addresses,
+) -> ResolvedProviderDestination:
+    parsed = urlsplit(endpoint)
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ProviderError("The model profile has an invalid base URL.", 400)
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError as error:
+        raise ProviderError("The model profile has an invalid base URL.", 400) from error
+
+    literal_address = _provider_ip_address(hostname)
+    if literal_address is not None:
+        addresses = (literal_address,)
+    else:
+        try:
+            resolved = await address_resolver(hostname, port)
+        except ProviderError:
+            raise
+        except OSError as error:
+            raise ProviderError(
+                "DevMate could not resolve the configured model provider.",
+                502,
+            ) from error
+        addresses = tuple(
+            address
+            for value in resolved
+            if (address := _provider_ip_address(value)) is not None
+        )
+        if len(addresses) != len(resolved) or not addresses:
+            raise ProviderError(
+                "DevMate could not resolve the configured model provider to a valid address.",
+                502,
+            )
+
+    local_provider = _is_loopback_provider_hostname(hostname)
+    if any(
+        not _is_allowed_provider_address(address, local_provider=local_provider)
+        for address in addresses
+    ):
+        raise ProviderError(
+            "The model provider resolved to a private or otherwise unsafe network address.",
+            400,
+        )
+
+    selected_address = min(
+        addresses,
+        key=lambda address: (address.version, address.compressed),
+    )
+    pinned_hostname = (
+        f"[{selected_address.compressed}]"
+        if selected_address.version == 6
+        else selected_address.compressed
+    )
+    pinned_url = urlunsplit((
+        parsed.scheme,
+        f"{pinned_hostname}:{port}",
+        parsed.path,
+        "",
+        "",
+    ))
+    host_header = httpx.URL(endpoint).netloc.decode("ascii")
+    return ResolvedProviderDestination(
+        url=pinned_url,
+        host_header=host_header,
+        sni_hostname=hostname,
+    )
+
+
+def _provider_ip_address(
+    value: str | None,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    if value is None or "%" in value:
+        return None
+    try:
+        return ipaddress.ip_address(value)
+    except ValueError:
+        return None
+
+
+def _is_allowed_provider_address(
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    *,
+    local_provider: bool,
+) -> bool:
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return False
+    effective_address = address
+    if local_provider:
+        return effective_address.is_loopback
+    return effective_address.is_global and not (
+        effective_address.is_link_local
+        or effective_address.is_loopback
+        or effective_address.is_multicast
+        or effective_address.is_private
+        or effective_address.is_reserved
+        or effective_address.is_unspecified
+        or (
+            isinstance(effective_address, ipaddress.IPv6Address)
+            and effective_address.is_site_local
+        )
+    )
 
 
 def _provider_http_error(response: httpx.Response) -> ProviderError:

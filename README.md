@@ -104,7 +104,7 @@ The user must provide their own NVIDIA API key.
 
 ### OpenAI-compatible profiles
 
-A custom profile can use the default OpenAI endpoint or another compatible base URL. Remote provider URLs must use HTTPS. Plain HTTP is accepted only for exact loopback hosts used by local services.
+A custom profile can use the default OpenAI endpoint or another compatible base URL. Remote provider URLs must use HTTPS and resolve only to public network addresses. Plain HTTP and non-public destinations are accepted only for exact loopback hosts used by local services.
 
 ### Ollama
 
@@ -377,5 +377,6 @@ The workspace must be trusted and VS Code Terminal Shell Integration must be ava
 - The backend token is kept in extension-host memory, passed through the child-process environment, and never sent to the model provider.
 - Provider redirects are disabled to avoid forwarding credentials to another host.
 - Remote model-provider endpoints require HTTPS; plain HTTP is limited to loopback hosts.
+- Provider hostnames are resolved before each request, every answer must be public (or exact loopback for a local provider), and the connection is pinned to a checked address while retaining the original TLS identity.
 - Project and tool content is treated as untrusted data in backend prompts.
 - The model never receives direct filesystem, terminal, or VS Code API access.

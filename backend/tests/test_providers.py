@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest.mock import patch
 
 import httpx
 
@@ -14,6 +15,7 @@ from backend.app.providers import (
     ProviderError,
     create_chat_completions_url,
     parse_provider_timeout_seconds,
+    resolve_provider_destination,
 )
 
 
@@ -91,8 +93,112 @@ class ProviderUrlTests(unittest.TestCase):
                     create_chat_completions_url(base_url, "openai")
                 self.assertEqual(caught.exception.status_code, 400)
 
+    def test_rejects_private_and_special_purpose_ip_literals(self) -> None:
+        for base_url in (
+            "https://0.0.0.0/v1",
+            "https://10.0.0.2/v1",
+            "https://100.64.0.1/v1",
+            "https://169.254.169.254/latest",
+            "https://192.168.1.20/v1",
+            "https://224.0.0.1/v1",
+            "https://[::]/v1",
+            "https://[::ffff:127.0.0.1]/v1",
+            "https://[fc00::1]/v1",
+            "https://[fe80::1]/v1",
+        ):
+            with self.subTest(base_url=base_url):
+                with self.assertRaisesRegex(ProviderError, "unsafe network address"):
+                    create_chat_completions_url(base_url, "openai")
+
+    def test_allows_public_and_exact_loopback_ip_literals(self) -> None:
+        for base_url in (
+            "https://8.8.8.8/v1",
+            "https://[2606:4700:4700::1111]/v1",
+            "http://127.0.0.1:11434/v1",
+            "http://[::1]:11434/v1",
+        ):
+            with self.subTest(base_url=base_url):
+                self.assertIn(
+                    "/v1/chat/completions",
+                    create_chat_completions_url(base_url, "openai"),
+                )
+
 
 class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self._resolver_patcher = patch(
+            "backend.app.providers.resolve_provider_addresses",
+            self._resolve_public_provider,
+        )
+        self._resolver_patcher.start()
+
+    def tearDown(self) -> None:
+        self._resolver_patcher.stop()
+
+    async def test_resolves_and_pins_remote_provider_destination(self) -> None:
+        calls = []
+
+        async def resolver(hostname: str, port: int) -> tuple[str, ...]:
+            calls.append((hostname, port))
+            return ("2606:4700:4700::1111", "93.184.216.34")
+
+        destination = await resolve_provider_destination(
+            "https://provider.example.com:8443/v1/chat/completions",
+            resolver,
+        )
+
+        self.assertEqual(calls, [("provider.example.com", 8443)])
+        self.assertEqual(
+            destination.url,
+            "https://93.184.216.34:8443/v1/chat/completions",
+        )
+        self.assertEqual(destination.host_header, "provider.example.com:8443")
+        self.assertEqual(destination.sni_hostname, "provider.example.com")
+
+    async def test_rejects_any_unsafe_dns_answer(self) -> None:
+        async def resolver(_hostname: str, _port: int) -> tuple[str, ...]:
+            return ("93.184.216.34", "169.254.169.254")
+
+        with self.assertRaisesRegex(ProviderError, "resolved to.*unsafe") as caught:
+            await resolve_provider_destination(
+                "https://provider.example.com/v1/chat/completions",
+                resolver,
+            )
+
+        self.assertEqual(caught.exception.status_code, 400)
+
+    async def test_exact_localhost_must_resolve_only_to_loopback(self) -> None:
+        async def resolver(_hostname: str, _port: int) -> tuple[str, ...]:
+            return ("127.0.0.1", "93.184.216.34")
+
+        with self.assertRaisesRegex(ProviderError, "resolved to.*unsafe"):
+            await resolve_provider_destination(
+                "http://localhost:11434/v1/chat/completions",
+                resolver,
+            )
+
+    async def test_rejects_unsafe_dns_before_sending_the_provider_key(self) -> None:
+        requests = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, json={"choices": []})
+
+        async def resolver(_hostname: str, _port: int) -> tuple[str, ...]:
+            return ("10.0.0.2",)
+
+        provider = OpenAICompatibleProvider(
+            transport=httpx.MockTransport(handler),
+            address_resolver=resolver,
+        )
+        with self.assertRaisesRegex(ProviderError, "resolved to.*unsafe") as caught:
+            await provider.complete(self._request(
+                base_url="https://provider.example.com/v1",
+            ))
+
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertEqual(requests, [])
+
     async def test_rejects_remote_http_before_sending_the_provider_key(self) -> None:
         requests = []
 
@@ -164,7 +270,12 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
         async def handler(request: httpx.Request) -> httpx.Response:
             self.assertEqual(
                 str(request.url),
-                "https://integrate.api.nvidia.com/v1/chat/completions",
+                "https://93.184.216.34/v1/chat/completions",
+            )
+            self.assertEqual(request.headers["Host"], "integrate.api.nvidia.com")
+            self.assertEqual(
+                request.extensions["sni_hostname"],
+                "integrate.api.nvidia.com",
             )
             self.assertEqual(request.headers["Authorization"], "Bearer secret-key")
             payload = json.loads(request.content)
@@ -190,7 +301,8 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_uses_current_openai_token_parameter_for_default_endpoint(self) -> None:
         async def handler(request: httpx.Request) -> httpx.Response:
             payload = json.loads(request.content)
-            self.assertEqual(str(request.url), "https://api.openai.com/v1/chat/completions")
+            self.assertEqual(str(request.url), "https://93.184.216.34/v1/chat/completions")
+            self.assertEqual(request.headers["Host"], "api.openai.com")
             self.assertEqual(payload["max_completion_tokens"], 1200)
             self.assertNotIn("max_tokens", payload)
             return httpx.Response(
@@ -503,6 +615,13 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
             await provider.complete(self._request(api_key=None))
 
         self.assertEqual(caught.exception.status_code, 400)
+
+    @staticmethod
+    async def _resolve_public_provider(
+        _hostname: str,
+        _port: int,
+    ) -> tuple[str, ...]:
+        return ("93.184.216.34",)
 
     @staticmethod
     def _request(

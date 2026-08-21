@@ -1,3 +1,5 @@
+import { BlockList, isIP } from 'node:net';
+
 export const LLM_PROFILES_STORAGE_KEY = 'devMate.llmProfiles.v1';
 export const ACTIVE_LLM_PROFILE_STORAGE_KEY = 'devMate.activeLlmProfileId.v1';
 export const LLM_REASONING_EFFORT_STORAGE_KEY = 'devMate.reasoningEffortByProfile.v1';
@@ -41,6 +43,8 @@ export const BUILT_IN_NEMOTRON_PROFILE: LlmProfile = Object.freeze({
 
 const supportedProviders = new Set<LlmProvider>(['openai', 'ollama']);
 const reasoningEfforts = new Set<ReasoningEffort>(['auto', 'low', 'medium', 'high', 'xhigh']);
+const unsafeProviderIpv4Addresses = createUnsafeProviderIpv4BlockList();
+const unsafeProviderIpv6Addresses = createUnsafeProviderIpv6BlockList();
 
 export function normalizeProfileDraft(draft: LlmProfileDraft): LlmProfileDraft {
   const baseUrl = draft.baseUrl?.trim().replace(/\/+$/, '');
@@ -98,6 +102,9 @@ export function validateProfileDraft(
       }
       if (url.protocol === 'http:' && !isLoopbackProviderHostname(url.hostname)) {
         return 'Use HTTPS for remote providers. Plain HTTP is allowed only for local loopback providers.';
+      }
+      if (isUnsafeProviderAddressLiteral(url.hostname)) {
+        return 'Use a public provider address or an exact local loopback address.';
       }
     } catch {
       return 'Enter a valid base URL.';
@@ -247,6 +254,58 @@ function isLoopbackProviderHostname(hostname: string): boolean {
   return parts.length === 4
     && parts[0] === '127'
     && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255);
+}
+
+function isUnsafeProviderAddressLiteral(hostname: string): boolean {
+  const normalized = hostname.toLocaleLowerCase().replace(/^\[|\]$/g, '');
+  if (isLoopbackProviderHostname(normalized)) {
+    return false;
+  }
+  const version = isIP(normalized);
+  return version === 4
+    ? unsafeProviderIpv4Addresses.check(normalized, 'ipv4')
+    : version === 6 && unsafeProviderIpv6Addresses.check(normalized, 'ipv6');
+}
+
+function createUnsafeProviderIpv4BlockList(): BlockList {
+  const blockList = new BlockList();
+  for (const [address, prefix] of [
+    ['0.0.0.0', 8],
+    ['10.0.0.0', 8],
+    ['100.64.0.0', 10],
+    ['169.254.0.0', 16],
+    ['172.16.0.0', 12],
+    ['192.0.0.0', 24],
+    ['192.0.2.0', 24],
+    ['192.168.0.0', 16],
+    ['198.18.0.0', 15],
+    ['198.51.100.0', 24],
+    ['203.0.113.0', 24],
+    ['224.0.0.0', 4],
+    ['240.0.0.0', 4]
+  ] as const) {
+    blockList.addSubnet(address, prefix, 'ipv4');
+  }
+  return blockList;
+}
+
+function createUnsafeProviderIpv6BlockList(): BlockList {
+  const blockList = new BlockList();
+  for (const [address, prefix] of [
+    ['::', 96],
+    ['::ffff:0:0', 96],
+    ['64:ff9b:1::', 48],
+    ['100::', 64],
+    ['2001:2::', 48],
+    ['2001:db8::', 32],
+    ['fc00::', 7],
+    ['fe80::', 10],
+    ['fec0::', 10],
+    ['ff00::', 8]
+  ] as const) {
+    blockList.addSubnet(address, prefix, 'ipv6');
+  }
+  return blockList;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

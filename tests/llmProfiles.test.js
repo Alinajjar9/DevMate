@@ -72,6 +72,8 @@ test('rejects duplicate names and unsafe base URLs', () => {
 test('allows HTTPS remotely and plain HTTP only for loopback providers', () => {
   for (const baseUrl of [
     'https://provider.example.com/v1',
+    'https://8.8.8.8/v1',
+    'https://[2606:4700:4700::1111]/v1',
     'http://localhost:11434',
     'http://127.42.0.1:11434/v1',
     'http://[::1]:11434/v1'
@@ -98,6 +100,30 @@ test('allows HTTPS remotely and plain HTTP only for loopback providers', () => {
         []
       ),
       /HTTPS for remote providers/,
+      baseUrl
+    );
+  }
+});
+
+test('rejects private and special-purpose provider IP literals', () => {
+  for (const baseUrl of [
+    'https://0.0.0.0/v1',
+    'https://10.0.0.2/v1',
+    'https://100.64.0.1/v1',
+    'https://169.254.169.254/latest',
+    'https://192.168.1.20/v1',
+    'https://224.0.0.1/v1',
+    'https://[::]/v1',
+    'https://[::ffff:7f00:1]/v1',
+    'https://[fc00::1]/v1',
+    'https://[fe80::1]/v1'
+  ]) {
+    assert.match(
+      validateProfileDraft(
+        { name: baseUrl, provider: 'openai', model: 'model', baseUrl },
+        []
+      ),
+      /public provider address/,
       baseUrl
     );
   }
@@ -130,6 +156,13 @@ test('parses only complete, unique, supported stored profiles', () => {
       provider: 'openai',
       model: 'model-g',
       baseUrl: 'http://provider.example.com/v1'
+    },
+    {
+      id: 'seven',
+      name: 'Private destination',
+      provider: 'openai',
+      model: 'model-h',
+      baseUrl: 'https://169.254.169.254/latest'
     },
     null
   ]);
