@@ -77,6 +77,9 @@ function validateProfileDraft(draft, existingProfiles, editingProfileId) {
                 || url.hash) {
                 return 'Use an HTTP or HTTPS base URL without credentials, query parameters, or fragments.';
             }
+            if (url.protocol === 'http:' && !isLoopbackProviderHostname(url.hostname)) {
+                return 'Use HTTPS for remote providers. Plain HTTP is allowed only for local loopback providers.';
+            }
         }
         catch {
             return 'Enter a valid base URL.';
@@ -193,6 +196,16 @@ function isOfficialOpenAiProfile(profile) {
     catch {
         return false;
     }
+}
+function isLoopbackProviderHostname(hostname) {
+    const normalized = hostname.toLocaleLowerCase().replace(/^\[|\]$/g, '');
+    if (normalized === 'localhost' || normalized === '::1') {
+        return true;
+    }
+    const parts = normalized.split('.');
+    return parts.length === 4
+        && parts[0] === '127'
+        && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255);
 }
 function isRecord(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value);

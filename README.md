@@ -104,7 +104,7 @@ The user must provide their own NVIDIA API key.
 
 ### OpenAI-compatible profiles
 
-A custom profile can use the default OpenAI endpoint or another compatible base URL. DevMate sends provider keys to the backend only when the configured backend address is local.
+A custom profile can use the default OpenAI endpoint or another compatible base URL. Remote provider URLs must use HTTPS. Plain HTTP is accepted only for exact loopback hosts used by local services.
 
 ### Ollama
 
@@ -115,6 +115,7 @@ http://127.0.0.1:11434
 ```
 
 The selected model must already be installed in Ollama. DevMate does not download Ollama models.
+Local Ollama URLs such as `http://127.0.0.1:11434` remain supported.
 
 ### Intelligence levels
 
@@ -375,5 +376,6 @@ The workspace must be trusted and VS Code Terminal Shell Integration must be ava
 - Provider keys and workspace context are forwarded only after the managed loopback backend proves possession of its per-process token.
 - The backend token is kept in extension-host memory, passed through the child-process environment, and never sent to the model provider.
 - Provider redirects are disabled to avoid forwarding credentials to another host.
+- Remote model-provider endpoints require HTTPS; plain HTTP is limited to loopback hosts.
 - Project and tool content is treated as untrusted data in backend prompts.
 - The model never receives direct filesystem, terminal, or VS Code API access.

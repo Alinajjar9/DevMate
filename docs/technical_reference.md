@@ -119,6 +119,7 @@ mutating or executable:
 - `run_command` only accepts registered verification commands
 - model context, tool output, and provider errors are bounded
 - api keys use vs code `SecretStorage`
+- remote model-provider urls require https; provider http is limited to loopback hosts
 
 ## permissions and workspace trust
 

@@ -2,6 +2,22 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-21 — Require HTTPS for remote provider endpoints
+
+### Changed
+
+- Reject remote plain-HTTP model-provider URLs in both profile validation and the Python provider boundary.
+- Continue allowing HTTP for exact loopback providers, including local Ollama on `localhost`, `127.0.0.0/8`, and `::1`.
+- Reject insecure stored profiles during parsing and prevent provider credentials from reaching the HTTP transport when the endpoint is unsafe.
+- Documented HTTPS requirements and retained private-network/DNS protections as the next separate SSRF-hardening increment.
+
+### Verification
+
+- `npm run verify` — 164 extension tests and 75 backend tests passed; 20 cross-language contracts and 17 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-21 — Authenticate managed backend requests
 
 ### Changed

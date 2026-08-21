@@ -79,7 +79,7 @@ if a request fails, the user question still remains. if an agent run is interrup
 ## model profiles
 
 devmate includes a built in nemotron profile, but the api key still belongs to the user. other openai compatible profiles and ollama profiles can be added.
-a profile stores normal connection information such as its name, model id, provider type, and base url. the secret key is stored separately.
+a profile stores normal connection information such as its name, model id, provider type, and base url. the secret key is stored separately. remote provider urls require https, while plain http is limited to local loopback services such as ollama.
 provider compatibility is not always equal. some models support normal function tools well, some return tool calls as text, and some only describe what they plan to do. devmate has recovery rules, but it cannot completely fix a provider that does not follow the expected format.
 
 ## what is stored where

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import ipaddress
 import json
 import os
 from collections.abc import AsyncIterator
@@ -479,7 +480,11 @@ def create_chat_completions_url(
     base_url = configured_base_url or (
         DEFAULT_OPENAI_BASE_URL if provider == "openai" else DEFAULT_OLLAMA_BASE_URL
     )
-    parsed = urlsplit(base_url.strip())
+    try:
+        parsed = urlsplit(base_url.strip())
+        hostname = parsed.hostname
+    except ValueError as error:
+        raise ProviderError("The model profile has an invalid base URL.", 400) from error
     if (
         parsed.scheme not in {"http", "https"}
         or not parsed.netloc
@@ -489,6 +494,11 @@ def create_chat_completions_url(
         or parsed.fragment
     ):
         raise ProviderError("The model profile has an invalid base URL.", 400)
+    if parsed.scheme == "http" and not _is_loopback_provider_hostname(hostname):
+        raise ProviderError(
+            "Remote model providers must use HTTPS. Plain HTTP is allowed only for local loopback providers.",
+            400,
+        )
 
     path = parsed.path.rstrip("/")
     if provider == "ollama" and path in {"", "/"}:
@@ -499,6 +509,17 @@ def create_chat_completions_url(
         endpoint_path = f"{path}/chat/completions"
 
     return urlunsplit((parsed.scheme, parsed.netloc, endpoint_path, "", ""))
+
+
+def _is_loopback_provider_hostname(hostname: str | None) -> bool:
+    if hostname is None:
+        return False
+    if hostname.casefold() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
 
 
 def _provider_http_error(response: httpx.Response) -> ProviderError:

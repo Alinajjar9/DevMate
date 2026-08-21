@@ -69,6 +69,40 @@ test('rejects duplicate names and unsafe base URLs', () => {
   );
 });
 
+test('allows HTTPS remotely and plain HTTP only for loopback providers', () => {
+  for (const baseUrl of [
+    'https://provider.example.com/v1',
+    'http://localhost:11434',
+    'http://127.42.0.1:11434/v1',
+    'http://[::1]:11434/v1'
+  ]) {
+    assert.equal(
+      validateProfileDraft(
+        { name: baseUrl, provider: 'ollama', model: 'model', baseUrl },
+        []
+      ),
+      undefined,
+      baseUrl
+    );
+  }
+
+  for (const baseUrl of [
+    'http://provider.example.com/v1',
+    'http://192.168.1.20:11434/v1',
+    'http://169.254.169.254/latest',
+    'http://localhost.example.com/v1'
+  ]) {
+    assert.match(
+      validateProfileDraft(
+        { name: baseUrl, provider: 'openai', model: 'model', baseUrl },
+        []
+      ),
+      /HTTPS for remote providers/,
+      baseUrl
+    );
+  }
+});
+
 test('allows an edited profile to keep its own display name', () => {
   const profiles = [profile('one', 'OpenAI Fast', 'openai', 'model-a')];
 
@@ -90,6 +124,13 @@ test('parses only complete, unique, supported stored profiles', () => {
     profile('three', 'cloud', 'openai', 'model-d'),
     profile('four', 'Unsupported', 'unknown', 'model-e'),
     { id: 'five', name: '', provider: 'openai', model: 'model-f' },
+    {
+      id: 'six',
+      name: 'Insecure remote',
+      provider: 'openai',
+      model: 'model-g',
+      baseUrl: 'http://provider.example.com/v1'
+    },
     null
   ]);
 

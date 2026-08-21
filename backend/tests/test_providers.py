@@ -49,6 +49,38 @@ class ProviderUrlTests(unittest.TestCase):
             "http://127.0.0.1:11434/v1/chat/completions",
         )
 
+    def test_allows_https_remotely_and_http_only_for_loopback(self) -> None:
+        expected_urls = {
+            "https://provider.example.com/v1": (
+                "https://provider.example.com/v1/chat/completions"
+            ),
+            "http://localhost:11434": (
+                "http://localhost:11434/v1/chat/completions"
+            ),
+            "http://127.42.0.1:11434/v1": (
+                "http://127.42.0.1:11434/v1/chat/completions"
+            ),
+            "http://[::1]:11434/v1": (
+                "http://[::1]:11434/v1/chat/completions"
+            ),
+        }
+        for base_url, expected in expected_urls.items():
+            with self.subTest(base_url=base_url):
+                self.assertEqual(
+                    create_chat_completions_url(base_url, "ollama"),
+                    expected,
+                )
+
+        for base_url in (
+            "http://provider.example.com/v1",
+            "http://192.168.1.20:11434/v1",
+            "http://169.254.169.254/latest",
+            "http://localhost.example.com/v1",
+        ):
+            with self.subTest(base_url=base_url):
+                with self.assertRaisesRegex(ProviderError, "must use HTTPS"):
+                    create_chat_completions_url(base_url, "openai")
+
     def test_rejects_embedded_credentials_and_query_parameters(self) -> None:
         for base_url in (
             "https://user:password@example.com/v1",
@@ -61,6 +93,22 @@ class ProviderUrlTests(unittest.TestCase):
 
 
 class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_rejects_remote_http_before_sending_the_provider_key(self) -> None:
+        requests = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, json={"choices": []})
+
+        provider = OpenAICompatibleProvider(transport=httpx.MockTransport(handler))
+        with self.assertRaisesRegex(ProviderError, "must use HTTPS") as caught:
+            await provider.complete(self._request(
+                base_url="http://provider.example.com/v1",
+            ))
+
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertEqual(requests, [])
+
     async def test_streams_content_without_exposing_reasoning_text(self) -> None:
         async def handler(request: httpx.Request) -> httpx.Response:
             payload = json.loads(request.content)
