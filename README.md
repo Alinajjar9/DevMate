@@ -220,19 +220,7 @@ http://127.0.0.1:8000
 
 The status indicator in the DevMate toolbar shows whether the backend is checking, starting, online, restarting, unmanaged, or offline. Click the indicator to open the backend output channel.
 
-The backend can also be started manually:
-
-```powershell
-.venv\Scripts\python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
-```
-
-Check it at:
-
-```text
-http://127.0.0.1:8000/health
-```
-
-When an external server is already listening at the configured address, DevMate uses it without trying to stop or replace it.
+DevMate generates a fresh in-memory authentication token whenever it launches the backend. The token is passed only to that child process and is required by `/health`, `/ask`, and `/ask/stream`. Manually started or externally managed backends are intentionally rejected until an explicit secure token-sharing flow is available.
 
 ## Settings
 
@@ -384,7 +372,8 @@ The workspace must be trusted and VS Code Terminal Shell Integration must be ava
 
 - Do not commit API keys or `.env` files.
 - Provider keys are stored in VS Code SecretStorage.
-- Keys are forwarded only through a loopback DevMate backend.
+- Provider keys and workspace context are forwarded only after the managed loopback backend proves possession of its per-process token.
+- The backend token is kept in extension-host memory, passed through the child-process environment, and never sent to the model provider.
 - Provider redirects are disabled to avoid forwarding credentials to another host.
 - Project and tool content is treated as untrusted data in backend prompts.
 - The model never receives direct filesystem, terminal, or VS Code API access.

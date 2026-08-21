@@ -59,7 +59,7 @@
         "devMate.manageLocalBackend": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically start and monitor the bundled backend when backendUrl is a local HTTP address."
+          "description": "Automatically start, authenticate, and monitor the bundled backend when backendUrl is a local HTTP address. Disable only for diagnostics; external token configuration is not available in this release."
         },
         "devMate.backendPythonPath": {
           "type": "string",

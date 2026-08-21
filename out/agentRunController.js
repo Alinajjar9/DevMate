@@ -53,7 +53,7 @@ class AgentRunController {
         this.transport = transport;
     }
     async run(input, signal) {
-        const { question, mode, scopeKind, scope, conversationHistory, settings, backendUrl, providerApiKey, toolCallLimit, workspaceId, sessionId, resumedCheckpoint } = input;
+        const { question, mode, scopeKind, scope, conversationHistory, settings, backendUrl, backendToken, providerApiKey, toolCallLimit, workspaceId, sessionId, resumedCheckpoint } = input;
         const toolHistory = resumedCheckpoint
             ? [...resumedCheckpoint.toolHistory]
             : [];
@@ -143,7 +143,7 @@ class AgentRunController {
                 : toolsEnabled && toolHistory.length > 0
                     ? 'Continuing with project context'
                     : 'Generating answer');
-            const providerAttempt = await this.askWithProviderRetries(backendUrl, request, providerApiKey, (settings.timeoutSeconds + 30) * 1_000, signal, (currentUsage) => {
+            const providerAttempt = await this.askWithProviderRetries(backendUrl, request, backendToken, providerApiKey, (settings.timeoutSeconds + 30) * 1_000, signal, (currentUsage) => {
                 this.reportTokenUsage(addTokenUsage(completedTokenUsage, currentUsage));
             });
             const result = providerAttempt.result;
@@ -435,7 +435,7 @@ class AgentRunController {
             mutationCharacters: 0
         };
     }
-    async askWithProviderRetries(backendUrl, request, providerApiKey, timeoutMilliseconds, signal, onTokenUsage) {
+    async askWithProviderRetries(backendUrl, request, backendToken, providerApiKey, timeoutMilliseconds, signal, onTokenUsage) {
         let retryNumber = 0;
         while (true) {
             this.dependencies.emit({ type: 'stream-reset' });
@@ -466,7 +466,7 @@ class AgentRunController {
             };
             let result;
             try {
-                const streamAttempt = await this.transport.askStream(backendUrl, request, providerApiKey, timeoutMilliseconds, signal, (event) => {
+                const streamAttempt = await this.transport.askStream(backendUrl, request, { backendToken, providerApiKey }, timeoutMilliseconds, signal, (event) => {
                     clearTimeout(waitingTimer);
                     if (event.type === 'usage') {
                         currentUsage = event.usage;
@@ -491,7 +491,7 @@ class AgentRunController {
                 });
                 if (streamAttempt.unsupported) {
                     this.reportStatus('Live streaming unavailable — waiting for the completed response');
-                    result = await this.transport.ask(backendUrl, request, providerApiKey, timeoutMilliseconds, signal);
+                    result = await this.transport.ask(backendUrl, request, { backendToken, providerApiKey }, timeoutMilliseconds, signal);
                     if (result.status === 'ok'
                         && result.data?.answer
                         && (result.data.toolCalls?.length ?? 0) === 0) {

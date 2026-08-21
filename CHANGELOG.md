@@ -2,6 +2,23 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-21 — Authenticate managed backend requests
+
+### Changed
+
+- Generate a new cryptographically random backend token for every managed backend process and keep it only in extension-host memory and the child-process environment.
+- Require the token before handling `/health`, `/ask`, or `/ask/stream`, using constant-time comparison and a generic unauthorized response.
+- Send backend authentication separately from provider credentials and refuse to collect workspace context when no authenticated managed backend is available.
+- Reject unconfigured external listeners instead of adopting them, and invalidate the previous token when the backend is relaunched.
+- Added lifecycle, transport, middleware, token-rotation, context-boundary, and shared-contract coverage.
+
+### Verification
+
+- `npm run verify` — 163 extension tests and 73 backend tests passed; 20 cross-language contracts and 17 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-20 — Verify the backend identity handshake
 
 ### Changed

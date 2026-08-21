@@ -5,7 +5,15 @@ export type ApiStatus = 'ok' | 'error';
 export type BackendState = 'online' | 'offline' | 'mock';
 export const DEVMATE_BACKEND_SERVICE = 'devmate-backend';
 export const DEVMATE_BACKEND_PROTOCOL_VERSION = 1;
-export const DEVMATE_BACKEND_CAPABILITIES = ['chat', 'streaming'] as const;
+export const DEVMATE_BACKEND_CAPABILITIES = [
+  'chat',
+  'streaming',
+  'request-authentication'
+] as const;
+export const DEVMATE_BACKEND_TOKEN_HEADER = 'X-DevMate-Backend-Token';
+export const DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE = 'DEVMATE_BACKEND_TOKEN';
+export const MIN_BACKEND_TOKEN_CHARACTERS = 32;
+export const MAX_BACKEND_TOKEN_CHARACTERS = 512;
 export type ApiErrorKind =
   | 'cancelled'
   | 'configuration'

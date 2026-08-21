@@ -2,7 +2,6 @@
 
 ## High priority
 - api keys can be sent over unencrypted http. custom profiles accept remote http:// addresses, and the backend sends the key to them.
-- the local backend identity handshake is not authenticated yet. another local process could imitate the public service and protocol fields until request-token authentication is added.
 - create and update operations check symbolic-link paths before permission, but do not check them again immediately before applying the approved change. delete, rename, and move operations already perform the second check.
 
 ## Normal priority

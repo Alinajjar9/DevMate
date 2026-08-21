@@ -1944,6 +1944,14 @@ export class DevMateChatViewProvider implements
       this.postRequestFailure(this.backendManager.status.detail, { level: 'warning' });
       return;
     }
+    const backendToken = this.backendManager.requestToken;
+    if (!backendToken) {
+      this.postRequestFailure(
+        'DevMate could not establish an authenticated backend connection.',
+        { level: 'warning', retryable: true }
+      );
+      return;
+    }
 
     this.postStatus('Collecting context');
     const collectedScope = await this.collectScope(message.scope.kind, question);
@@ -2014,6 +2022,7 @@ export class DevMateChatViewProvider implements
         timeoutSeconds: modelTimeoutSeconds
       },
       backendUrl: getBackendUrl(),
+      backendToken,
       providerApiKey,
       toolCallLimit,
       workspaceId: conversationWorkspace.id,

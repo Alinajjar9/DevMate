@@ -48,7 +48,7 @@ function activate(context) {
         getBackendUrl: chatViewProvider_1.getBackendUrl,
         isManagementEnabled: () => vscode.workspace.getConfiguration('devMate').get('manageLocalBackend', true),
         getConfiguredPythonPath: () => vscode.workspace.getConfiguration('devMate').get('backendPythonPath', ''),
-        healthCheck: async (backendUrl) => (await (0, client_1.health)(backendUrl)).status === 'ok',
+        healthCheck: async (backendUrl, backendToken) => (await (0, client_1.health)(backendUrl, backendToken)).status === 'ok',
         fileExists: (filePath) => fs.existsSync(filePath),
         onStatus: (status) => chatViewProvider?.notifyBackendStatusChanged(status),
         onOutput: (value) => backendOutput.append(value)

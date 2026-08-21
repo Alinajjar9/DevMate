@@ -1,5 +1,7 @@
 import json
 import logging
+import os
+import secrets
 from collections.abc import AsyncIterator
 from typing import Annotated, Literal
 
@@ -33,10 +35,15 @@ logger = logging.getLogger(__name__)
 DEVMATE_BACKEND_VERSION = "1.0.0"
 DEVMATE_BACKEND_SERVICE = "devmate-backend"
 DEVMATE_BACKEND_PROTOCOL_VERSION = 1
-BackendCapability = Literal["chat", "streaming"]
+DEVMATE_BACKEND_TOKEN_HEADER = "X-DevMate-Backend-Token"
+DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE = "DEVMATE_BACKEND_TOKEN"
+MIN_BACKEND_TOKEN_CHARACTERS = 32
+MAX_BACKEND_TOKEN_CHARACTERS = 512
+BackendCapability = Literal["chat", "streaming", "request-authentication"]
 DEVMATE_BACKEND_CAPABILITIES: tuple[BackendCapability, ...] = (
     "chat",
     "streaming",
+    "request-authentication",
 )
 ContextSource = Literal["file", "selection", "attachment"]
 MAX_CONTEXT_CHARACTERS = 20_000
@@ -614,10 +621,34 @@ AGENT_TOOL_DEFINITIONS = (
 
 app = FastAPI(title="DevMate Backend", version=DEVMATE_BACKEND_VERSION)
 _chat_provider = OpenAICompatibleProvider()
+_authenticated_backend_paths = frozenset(("/health", "/ask", "/ask/stream"))
 
 
 def get_chat_provider() -> ChatProvider:
     return _chat_provider
+
+
+@app.middleware("http")
+async def authenticate_backend_request(request: Request, call_next):
+    if request.url.path not in _authenticated_backend_paths:
+        return await call_next(request)
+
+    expected_token = os.environ.get(DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE)
+    provided_token = request.headers.get(DEVMATE_BACKEND_TOKEN_HEADER)
+    if (
+        expected_token is None
+        or provided_token is None
+        or not expected_token.isascii()
+        or not provided_token.isascii()
+        or not MIN_BACKEND_TOKEN_CHARACTERS <= len(expected_token) <= MAX_BACKEND_TOKEN_CHARACTERS
+        or not MIN_BACKEND_TOKEN_CHARACTERS <= len(provided_token) <= MAX_BACKEND_TOKEN_CHARACTERS
+        or not secrets.compare_digest(provided_token, expected_token)
+    ):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "DevMate backend authentication failed."},
+        )
+    return await call_next(request)
 
 
 @app.exception_handler(RequestValidationError)

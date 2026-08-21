@@ -14,8 +14,14 @@ exports.DEFAULT_ASK_TIMEOUT_MS = 930_000;
 const PROVIDER_KEY_HEADER = 'X-DevMate-Provider-Key';
 const MAX_BACKEND_RESPONSE_BYTES = 4_000_000;
 const MAX_BACKEND_ERROR_RESPONSE_BYTES = 64_000;
-async function health(backendUrl) {
-    const result = await fetchJsonRequest(backendUrl, '/health', { method: 'GET' }, HEALTH_TIMEOUT_MS);
+async function health(backendUrl, backendToken) {
+    if (!isValidBackendToken(backendToken)) {
+        return backendAuthenticationUnavailable();
+    }
+    const result = await fetchJsonRequest(backendUrl, '/health', {
+        method: 'GET',
+        headers: { [types_1.DEVMATE_BACKEND_TOKEN_HEADER]: backendToken }
+    }, HEALTH_TIMEOUT_MS);
     if (result.status !== 'ok') {
         return {
             status: 'error',
@@ -34,7 +40,11 @@ async function health(backendUrl) {
     }
     return { status: 'ok', data: response };
 }
-async function ask(backendUrl, askRequest, providerApiKey, timeoutMilliseconds = exports.DEFAULT_ASK_TIMEOUT_MS, signal) {
+async function ask(backendUrl, askRequest, secrets, timeoutMilliseconds = exports.DEFAULT_ASK_TIMEOUT_MS, signal) {
+    if (!isValidBackendToken(secrets.backendToken)) {
+        return backendAuthenticationUnavailable();
+    }
+    const providerApiKey = secrets.providerApiKey;
     if (providerApiKey && !isLoopbackBackendUrl(backendUrl)) {
         return {
             status: 'error',
@@ -48,12 +58,20 @@ async function ask(backendUrl, askRequest, providerApiKey, timeoutMilliseconds =
             'Content-Type': 'application/json',
             Accept: 'application/json',
             'Accept-Encoding': 'identity',
+            [types_1.DEVMATE_BACKEND_TOKEN_HEADER]: secrets.backendToken,
             ...(providerApiKey ? { [PROVIDER_KEY_HEADER]: providerApiKey } : {})
         },
         body: JSON.stringify(askRequest)
     }, timeoutMilliseconds, signal);
 }
-async function askStream(backendUrl, askRequest, providerApiKey, timeoutMilliseconds = exports.DEFAULT_ASK_TIMEOUT_MS, signal, onEvent) {
+async function askStream(backendUrl, askRequest, secrets, timeoutMilliseconds = exports.DEFAULT_ASK_TIMEOUT_MS, signal, onEvent) {
+    if (!isValidBackendToken(secrets.backendToken)) {
+        return {
+            result: backendAuthenticationUnavailable(),
+            unsupported: false
+        };
+    }
+    const providerApiKey = secrets.providerApiKey;
     if (providerApiKey && !isLoopbackBackendUrl(backendUrl)) {
         return {
             result: {
@@ -70,6 +88,7 @@ async function askStream(backendUrl, askRequest, providerApiKey, timeoutMillisec
             'Content-Type': 'application/json',
             Accept: 'application/x-ndjson',
             'Accept-Encoding': 'identity',
+            [types_1.DEVMATE_BACKEND_TOKEN_HEADER]: secrets.backendToken,
             ...(providerApiKey ? { [PROVIDER_KEY_HEADER]: providerApiKey } : {})
         },
         body: JSON.stringify(askRequest)
@@ -566,6 +585,17 @@ function parseCompatibleHealthResponse(value) {
 }
 function isValidBackendCapability(value) {
     return typeof value === 'string' && value.length > 0 && value.length <= 64;
+}
+function isValidBackendToken(value) {
+    return value.length >= types_1.MIN_BACKEND_TOKEN_CHARACTERS
+        && value.length <= types_1.MAX_BACKEND_TOKEN_CHARACTERS;
+}
+function backendAuthenticationUnavailable() {
+    return {
+        status: 'error',
+        message: 'No authenticated DevMate backend connection is available.',
+        errorKind: 'configuration'
+    };
 }
 function createEndpoint(backendUrl, path) {
     try {

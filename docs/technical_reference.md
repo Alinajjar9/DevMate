@@ -47,7 +47,7 @@ the backend does not edit files or run commands. local actions are done by the e
 
 1. vs code calls `activate` in `src/extension.ts`.
 2. `LocalBackendManager` checks `devMate.backendUrl`.
-3. it accepts an existing backend only when `/health` identifies the expected service, protocol version, and capabilities; otherwise it starts a bundled runtime when management is enabled.
+3. it generates an in-memory token, starts the managed backend with that token, and accepts `/health` only when both authentication and the service/protocol/capability handshake succeed.
 4. source development falls back to a configured or local python environment.
 5. `DevMateChatViewProvider` registers the dedicated sidebar view.
 
@@ -57,7 +57,7 @@ the backend does not edit files or run commands. local actions are done by the e
 1. `handleMessage` receives the user request.
 2. `answerQuestion` saves the user turn and checks the backend.
 3. `WorkspaceContext.collectScope` gathers project, file, selection, and attached-file context.
-4. `AgentRunController` builds the bounded model request and `askStream` sends it to `/ask/stream`.
+4. `AgentRunController` builds the bounded model request and `askStream` sends it with the separate backend token to `/ask/stream`.
 5. the backend validates `AskRequest`, builds messages, and calls the provider.
 6. final text ends the request.
 7. `ToolExecutor.execute` validates and executes requested tool calls.

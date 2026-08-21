@@ -1,6 +1,8 @@
 import { spawn } from 'child_process';
 import type { ChildProcessWithoutNullStreams } from 'child_process';
+import { randomBytes } from 'crypto';
 import * as path from 'path';
+import { DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE } from './api/types';
 import type { ValidatedCommand } from './commandTools';
 
 export const BACKEND_HEALTH_INTERVAL_MS = 10_000;
@@ -45,11 +47,27 @@ export type LocalBackendManagerOptions = {
   getBackendUrl: () => string;
   isManagementEnabled: () => boolean;
   getConfiguredPythonPath: () => string;
-  healthCheck: (backendUrl: string) => Promise<boolean>;
+  healthCheck: (backendUrl: string, backendToken: string) => Promise<boolean>;
   fileExists: (filePath: string) => boolean;
   onStatus: (status: ManagedBackendStatus) => void;
   onOutput: (value: string) => void;
 };
+
+export function createBackendRequestToken(): string {
+  return randomBytes(32).toString('base64url');
+}
+
+export function backendLaunchEnvironment(
+  backendToken: string,
+  environment: NodeJS.ProcessEnv = process.env
+): NodeJS.ProcessEnv {
+  return {
+    ...environment,
+    PYTHONUNBUFFERED: '1',
+    PYTHONDONTWRITEBYTECODE: '1',
+    [DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE]: backendToken
+  };
+}
 
 export function isPythonVerificationCommand(command: ValidatedCommand): boolean {
   const executable = command.executable.replace(/\\/g, '/').split('/').at(-1)?.toLocaleLowerCase();
@@ -261,6 +279,7 @@ export class LocalBackendManager {
     canRestart: false
   };
   private ownedProcess?: ChildProcessWithoutNullStreams;
+  private backendToken?: string;
   private operation?: Promise<boolean>;
   private monitor?: NodeJS.Timeout;
   private restartTimer?: NodeJS.Timeout;
@@ -272,6 +291,10 @@ export class LocalBackendManager {
 
   get status(): ManagedBackendStatus {
     return { ...this.statusValue };
+  }
+
+  get requestToken(): string | undefined {
+    return this.backendToken;
   }
 
   start(): Promise<boolean> {
@@ -293,6 +316,7 @@ export class LocalBackendManager {
     this.clearTimers();
     const child = this.ownedProcess;
     this.ownedProcess = undefined;
+    this.backendToken = undefined;
     if (child && child.exitCode === null) {
       child.stdout.removeAllListeners();
       child.stderr.removeAllListeners();
@@ -318,12 +342,12 @@ export class LocalBackendManager {
     const backendUrl = this.options.getBackendUrl();
     const target = parseLocalBackendTarget(backendUrl);
     if (!target) {
-      const online = await this.options.healthCheck(backendUrl);
+      const online = await this.checkHealth(backendUrl);
       this.updateStatus({
         state: online ? 'online' : 'disabled',
         detail: online
           ? 'Connected to a backend that DevMate does not manage.'
-          : 'Automatic management requires a plain HTTP loopback URL with an explicit port.',
+          : 'External backends require authentication and cannot be managed automatically.',
         managed: false,
         canRestart: false
       });
@@ -332,12 +356,12 @@ export class LocalBackendManager {
     }
 
     if (!this.options.isManagementEnabled()) {
-      const online = await this.options.healthCheck(target.url);
+      const online = await this.checkHealth(target.url);
       this.updateStatus({
         state: online ? 'online' : 'disabled',
         detail: online
           ? 'Connected to an externally managed local backend.'
-          : 'Automatic local backend management is disabled in VS Code settings.',
+          : 'The external backend is not authenticated or automatic management is disabled.',
         managed: false,
         canRestart: false
       });
@@ -353,7 +377,7 @@ export class LocalBackendManager {
         canRestart: false
       });
       await this.stopOwnedProcess();
-    } else if (forceRestart && await this.options.healthCheck(target.url)) {
+    } else if (forceRestart && await this.checkHealth(target.url)) {
       this.updateStatus({
         state: 'online',
         detail: 'The running backend was started outside DevMate and cannot be restarted safely.',
@@ -363,7 +387,7 @@ export class LocalBackendManager {
       return true;
     }
 
-    if (!forceRestart && await this.options.healthCheck(target.url)) {
+    if (!forceRestart && await this.checkHealth(target.url)) {
       this.updateStatus({
         state: 'online',
         detail: this.ownedProcess
@@ -443,6 +467,7 @@ export class LocalBackendManager {
       `\n[DevMate] Starting backend with ${launcher.label}: ${launcher.executable}\n`
     );
     const argumentsList = backendLaunchArguments(launcher, target);
+    const backendToken = createBackendRequestToken();
     let child: ChildProcessWithoutNullStreams;
     try {
       child = spawn(
@@ -453,11 +478,7 @@ export class LocalBackendManager {
             ? path.dirname(launcher.executable)
             : this.options.extensionPath,
           windowsHide: true,
-          env: {
-            ...process.env,
-            PYTHONUNBUFFERED: '1',
-            PYTHONDONTWRITEBYTECODE: '1'
-          }
+          env: backendLaunchEnvironment(backendToken)
         }
       );
     } catch (error) {
@@ -468,6 +489,7 @@ export class LocalBackendManager {
       return false;
     }
     this.ownedProcess = child;
+    this.backendToken = backendToken;
     child.stdout.on('data', (value: Buffer | string) => this.options.onOutput(String(value)));
     child.stderr.on('data', (value: Buffer | string) => this.options.onOutput(String(value)));
     child.on('error', (error) => {
@@ -476,6 +498,7 @@ export class LocalBackendManager {
     child.on('close', (code, signal) => {
       if (this.ownedProcess === child) {
         this.ownedProcess = undefined;
+        this.backendToken = undefined;
       }
       this.options.onOutput(
         `[DevMate] Backend process exited (code ${String(code)}, signal ${String(signal)}).\n`
@@ -495,7 +518,7 @@ export class LocalBackendManager {
       if (this.disposed || child.exitCode !== null) {
         break;
       }
-      if (await this.options.healthCheck(target.url)) {
+      if (await this.checkHealth(target.url, backendToken)) {
         return true;
       }
       await wait(BACKEND_START_POLL_MS);
@@ -520,7 +543,7 @@ export class LocalBackendManager {
       return;
     }
     const backendUrl = this.options.getBackendUrl();
-    if (await this.options.healthCheck(backendUrl)) {
+    if (await this.checkHealth(backendUrl)) {
       return;
     }
     this.options.onOutput('[DevMate] Backend health check failed.\n');
@@ -578,9 +601,19 @@ export class LocalBackendManager {
     }, 2_000);
   }
 
+  private checkHealth(
+    backendUrl: string,
+    backendToken: string | undefined = this.backendToken
+  ): Promise<boolean> {
+    return backendToken
+      ? this.options.healthCheck(backendUrl, backendToken)
+      : Promise.resolve(false);
+  }
+
   private async stopOwnedProcess(): Promise<void> {
     const child = this.ownedProcess;
     this.ownedProcess = undefined;
+    this.backendToken = undefined;
     if (!child || child.exitCode !== null) {
       return;
     }

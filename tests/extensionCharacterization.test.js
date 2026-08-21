@@ -3,6 +3,8 @@ const Module = require('node:module');
 const path = require('node:path');
 const test = require('node:test');
 
+const TEST_BACKEND_TOKEN = 'test-backend-token-that-is-long-enough';
+
 const configuration = new Map([
   ['backendUrl', 'http://127.0.0.1:8000'],
   ['maxTokens', 2048],
@@ -384,6 +386,7 @@ test('prepares a resumed agent run and persists its completed outcome', async ()
   provider.activeRequestDiffs = new Map([['existing', 'diff']]);
   provider.backendManager = {
     start: async () => true,
+    requestToken: TEST_BACKEND_TOKEN,
     status: { detail: 'online' }
   };
   provider.extensionContext = { secrets: { get: async () => undefined } };
@@ -453,6 +456,7 @@ test('prepares a resumed agent run and persists its completed outcome', async ()
   assert.equal(capturedInput.question, 'Continue the fix');
   assert.equal(capturedInput.mode, 'debug');
   assert.equal(capturedInput.scopeKind, 'project');
+  assert.equal(capturedInput.backendToken, TEST_BACKEND_TOKEN);
   assert.equal(capturedInput.settings.maxTokens, 2048);
   assert.equal(capturedInput.settings.temperature, 0.35);
   assert.equal(capturedInput.settings.timeoutSeconds, 1800);
@@ -477,6 +481,46 @@ test('prepares a resumed agent run and persists its completed outcome', async ()
   );
 });
 
+test('does not collect or send workspace context without an authenticated backend token', async () => {
+  const provider = providerWithoutConstructor();
+  let collectedContext = false;
+  let failure;
+  provider.sessionStore = createConversationSessionStore('session', 1, workspace);
+  provider.activeRequestDiffs = new Map();
+  provider.getConversationWorkspace = () => workspace;
+  provider.getActiveLlmProfile = () => ({
+    id: 'local-model',
+    name: 'Local model',
+    provider: 'ollama',
+    model: 'qwen3-coder'
+  });
+  provider.backendManager = {
+    start: async () => true,
+    requestToken: undefined,
+    status: { detail: 'online' }
+  };
+  provider.postStatus = () => undefined;
+  provider.collectScope = async () => {
+    collectedContext = true;
+    return undefined;
+  };
+  provider.postRequestFailure = (message, options) => {
+    failure = { message, options };
+  };
+
+  await provider.answerQuestion({
+    command: 'ask',
+    mode: 'ideas',
+    question: 'Do not send this context',
+    isNewTurn: false,
+    scope: { kind: 'project', label: 'Project A', detail: '' }
+  }, new AbortController().signal);
+
+  assert.equal(collectedContext, false);
+  assert.match(failure.message, /authenticated backend connection/);
+  assert.deepEqual(failure.options, { level: 'warning', retryable: true });
+});
+
 test('keeps a fresh pending user turn when the agent run fails', async () => {
   const provider = providerWithoutConstructor();
   const messages = [];
@@ -485,6 +529,7 @@ test('keeps a fresh pending user turn when the agent run fails', async () => {
   provider.activeRequestDiffs = new Map([['stale', 'diff']]);
   provider.backendManager = {
     start: async () => true,
+    requestToken: TEST_BACKEND_TOKEN,
     status: { detail: 'online' }
   };
   provider.extensionContext = { secrets: { get: async () => undefined } };
@@ -569,13 +614,13 @@ test('agent run restores checkpoint counters, history, and token usage', async (
   const events = [];
   const enabledArguments = [];
   let capturedRequest;
-  let capturedProviderKey;
+  let capturedSecrets;
   let capturedTimeout;
   const transport = {
     ask: async () => assert.fail('streaming should remain supported'),
-    askStream: async (_url, request, providerKey, timeout, _signal, onEvent) => {
+    askStream: async (_url, request, secrets, timeout, _signal, onEvent) => {
       capturedRequest = request;
-      capturedProviderKey = providerKey;
+      capturedSecrets = secrets;
       capturedTimeout = timeout;
       onEvent({
         type: 'usage',
@@ -625,6 +670,7 @@ test('agent run restores checkpoint counters, history, and token usage', async (
       timeoutSeconds: 1800
     },
     backendUrl: 'http://127.0.0.1:8000',
+    backendToken: TEST_BACKEND_TOKEN,
     toolCallLimit: 16,
     workspaceId: workspace.id,
     sessionId: 'session',
@@ -632,7 +678,10 @@ test('agent run restores checkpoint counters, history, and token usage', async (
   }, new AbortController().signal);
 
   assert.equal(outcome.kind, 'completed');
-  assert.equal(capturedProviderKey, undefined);
+  assert.deepEqual(capturedSecrets, {
+    backendToken: TEST_BACKEND_TOKEN,
+    providerApiKey: undefined
+  });
   assert.equal(capturedTimeout, 1_830_000);
   assert.deepEqual(enabledArguments[0], ['debug', 1, 2, 1]);
   assert.deepEqual(capturedRequest.enabledTools, ['read_file', 'run_command']);
@@ -672,6 +721,7 @@ test('agent run retries transient provider failures and stops after cancellation
       timeoutSeconds: 900
     },
     backendUrl: 'http://127.0.0.1:8000',
+    backendToken: TEST_BACKEND_TOKEN,
     toolCallLimit: 16,
     workspaceId: workspace.id,
     sessionId: 'session'
@@ -983,6 +1033,7 @@ test('agent run forwards its signal and mutation budget through a complete tool 
       timeoutSeconds: 900
     },
     backendUrl: 'http://127.0.0.1:8000',
+    backendToken: TEST_BACKEND_TOKEN,
     toolCallLimit: 16,
     workspaceId: workspace.id,
     sessionId: 'session'

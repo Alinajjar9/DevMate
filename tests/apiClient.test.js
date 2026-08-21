@@ -10,6 +10,8 @@ const {
   isLoopbackBackendUrl
 } = require('../out/api/client');
 
+const TEST_BACKEND_TOKEN = 'test-backend-token-that-is-long-enough';
+
 test('keeps the extension timeout above the fifteen-minute provider limit', () => {
   assert.equal(DEFAULT_ASK_TIMEOUT_MS, 930_000);
 });
@@ -27,12 +29,15 @@ test('recognizes only loopback backend URLs for provider-key handoff', () => {
 });
 
 test('accepts a backend with the expected identity, protocol, and capabilities', async () => {
-  await withServer((_request, response) => {
+  let receivedToken;
+  await withServer((request, response) => {
+    receivedToken = request.headers['x-devmate-backend-token'];
     sendJson(response, 200, compatibleHealthResult());
   }, async (backendUrl) => {
-    const result = await health(backendUrl);
+    const result = await health(backendUrl, TEST_BACKEND_TOKEN);
 
     assert.deepEqual(result, compatibleHealthResult());
+    assert.equal(receivedToken, TEST_BACKEND_TOKEN);
   });
 });
 
@@ -43,7 +48,7 @@ test('rejects a generic healthy listener that does not identify as DevMate', asy
       data: { backend: 'online', version: '1.0.0' }
     });
   }, async (backendUrl) => {
-    const result = await health(backendUrl);
+    const result = await health(backendUrl, TEST_BACKEND_TOKEN);
 
     assert.equal(result.status, 'error');
     assert.equal(result.errorKind, 'invalid-response');
@@ -63,7 +68,7 @@ test('rejects incompatible protocols and missing required capabilities', async (
     },
     {
       ...compatibleHealthResult().data,
-      capabilities: ['chat', 'streaming', 'streaming']
+      capabilities: ['chat', 'streaming', 'request-authentication', 'streaming']
     }
   ];
 
@@ -72,7 +77,7 @@ test('rejects incompatible protocols and missing required capabilities', async (
       await withServer((_request, response) => {
         sendJson(response, 200, { status: 'ok', data });
       }, async (backendUrl) => {
-        const result = await health(backendUrl);
+        const result = await health(backendUrl, TEST_BACKEND_TOKEN);
         assert.equal(result.status, 'error');
         assert.equal(result.errorKind, 'invalid-response');
       });
@@ -84,11 +89,32 @@ test('refuses to send a provider key to a remote backend', async () => {
   const result = await ask(
     'https://backend.example.com',
     askRequest(),
-    'secret-provider-key'
+    backendSecrets('secret-provider-key')
   );
 
   assert.equal(result.status, 'error');
   assert.match(result.message, /only sends provider API keys/);
+});
+
+test('refuses to send a request without a valid backend token', async () => {
+  let receivedRequest = false;
+  await withServer((_request, response) => {
+    receivedRequest = true;
+    sendJson(response, 200, compatibleHealthResult());
+  }, async (backendUrl) => {
+    const invalidToken = 'short-secret';
+    const result = await ask(
+      backendUrl,
+      askRequest(),
+      { backendToken: invalidToken },
+      10_000
+    );
+
+    assert.equal(result.status, 'error');
+    assert.equal(result.errorKind, 'configuration');
+    assert.doesNotMatch(result.message, new RegExp(invalidToken));
+    assert.equal(receivedRequest, false);
+  });
 });
 
 test('uses the configurable Node HTTP transport and sends the provider key', async () => {
@@ -108,11 +134,12 @@ test('uses the configurable Node HTTP transport and sends the provider key', asy
       const result = await ask(
         backendUrl,
         askRequest(),
-        'secret-provider-key',
+        backendSecrets('secret-provider-key'),
         10_000
       );
 
       assert.equal(result.status, 'ok');
+      assert.equal(receivedHeaders['x-devmate-backend-token'], TEST_BACKEND_TOKEN);
       assert.equal(receivedHeaders['x-devmate-provider-key'], 'secret-provider-key');
       assert.equal(receivedHeaders['accept-encoding'], 'identity');
     });
@@ -128,7 +155,7 @@ test('surfaces FastAPI provider error details', async () => {
     const result = await ask(
       backendUrl,
       askRequest(),
-      'bad-key',
+      backendSecrets('bad-key'),
       10_000
     );
 
@@ -162,7 +189,7 @@ test('parses progressive backend events and returns the validated final result',
     const streamed = await askStream(
       backendUrl,
       askRequest(),
-      undefined,
+      backendSecrets(),
       10_000,
       undefined,
       (event) => events.push(event)
@@ -187,7 +214,7 @@ test('marks an older backend stream endpoint as unsupported for fallback', async
   await withServer((_request, response) => {
     sendJson(response, 404, { detail: 'Not Found' });
   }, async (backendUrl) => {
-    const streamed = await askStream(backendUrl, askRequest(), undefined, 10_000);
+    const streamed = await askStream(backendUrl, askRequest(), backendSecrets(), 10_000);
     assert.equal(streamed.unsupported, true);
     assert.equal(streamed.result.statusCode, 404);
   });
@@ -204,7 +231,7 @@ test('surfaces safe FastAPI validation details from the streaming endpoint', asy
       }]
     });
   }, async (backendUrl) => {
-    const streamed = await askStream(backendUrl, askRequest(), undefined, 10_000);
+    const streamed = await askStream(backendUrl, askRequest(), backendSecrets(), 10_000);
     assert.equal(streamed.result.status, 'error');
     assert.equal(streamed.result.statusCode, 422);
     assert.match(streamed.result.message, /toolHistory\.3\.arguments/);
@@ -223,7 +250,7 @@ test('preserves streamed provider errors for the existing retry policy', async (
       errorKind: 'http'
     }) + '\n');
   }, async (backendUrl) => {
-    const streamed = await askStream(backendUrl, askRequest(), undefined, 10_000);
+    const streamed = await askStream(backendUrl, askRequest(), backendSecrets(), 10_000);
     assert.equal(streamed.result.status, 'error');
     assert.equal(streamed.result.statusCode, 429);
     assert.equal(streamed.result.errorKind, 'http');
@@ -236,7 +263,7 @@ test('cancels an active streaming backend request', async () => {
     const pending = askStream(
       backendUrl,
       askRequest(),
-      undefined,
+      backendSecrets(),
       10_000,
       controller.signal
     );
@@ -252,7 +279,7 @@ test('uses DevMate timeout instead of a fixed five-minute header deadline', asyn
     const result = await ask(
       backendUrl,
       askRequest(),
-      undefined,
+      backendSecrets(),
       30
     );
 
@@ -268,7 +295,7 @@ test('cancels an active backend request through an external signal', async () =>
     const pending = ask(
       backendUrl,
       askRequest(),
-      undefined,
+      backendSecrets(),
       10_000,
       controller.signal
     );
@@ -286,7 +313,7 @@ test('rejects oversized backend responses before parsing them', async () => {
     response.writeHead(200, { 'Content-Type': 'application/json' });
     response.end('x'.repeat(4_000_001));
   }, async (backendUrl) => {
-    const result = await ask(backendUrl, askRequest(), undefined, 10_000);
+    const result = await ask(backendUrl, askRequest(), backendSecrets(), 10_000);
     assert.equal(result.status, 'error');
     assert.equal(result.errorKind, 'invalid-response');
     assert.match(result.message, /oversized response/);
@@ -315,10 +342,17 @@ function compatibleHealthResult() {
     data: {
       service: 'devmate-backend',
       protocolVersion: 1,
-      capabilities: ['chat', 'streaming'],
+      capabilities: ['chat', 'streaming', 'request-authentication'],
       backend: 'online',
       version: '1.0.0'
     }
+  };
+}
+
+function backendSecrets(providerApiKey) {
+  return {
+    backendToken: TEST_BACKEND_TOKEN,
+    ...(providerApiKey ? { providerApiKey } : {})
   };
 }
 

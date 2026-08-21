@@ -87,6 +87,8 @@ for (const contract of literalContracts) {
 
 const numericContracts = [
   ['DEVMATE_BACKEND_PROTOCOL_VERSION', apiTypes],
+  ['MIN_BACKEND_TOKEN_CHARACTERS', apiTypes],
+  ['MAX_BACKEND_TOKEN_CHARACTERS', apiTypes],
   ['MAX_CONTEXT_CHARACTERS', projectIndex],
   ['MAX_PROJECT_FILE_CHARACTERS', projectIndex],
   ['MAX_PROJECT_CONTEXT_CHARACTERS', projectIndex],
@@ -106,10 +108,18 @@ for (const [name, typeScriptSource] of numericContracts) {
   }
 }
 
-const typeScriptService = stringConstant(apiTypes, 'DEVMATE_BACKEND_SERVICE', 'typescript');
-const pythonService = stringConstant(backendMain, 'DEVMATE_BACKEND_SERVICE', 'python');
-if (typeScriptService !== pythonService) {
-  throw new Error(`DEVMATE_BACKEND_SERVICE differs between TypeScript (${typeScriptService}) and Python (${pythonService}).`);
+const stringContracts = [
+  'DEVMATE_BACKEND_SERVICE',
+  'DEVMATE_BACKEND_TOKEN_HEADER',
+  'DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE'
+];
+
+for (const name of stringContracts) {
+  const typeScriptValue = stringConstant(apiTypes, name, 'typescript');
+  const pythonValue = stringConstant(backendMain, name, 'python');
+  if (typeScriptValue !== pythonValue) {
+    throw new Error(`${name} differs between TypeScript (${typeScriptValue}) and Python (${pythonValue}).`);
+  }
 }
 
-console.log(`Verified ${literalContracts.length + numericContracts.length + 1} TypeScript/Python API contracts.`);
+console.log(`Verified ${literalContracts.length + numericContracts.length + stringContracts.length} TypeScript/Python API contracts.`);

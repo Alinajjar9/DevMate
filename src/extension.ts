@@ -18,7 +18,9 @@ export function activate(context: vscode.ExtensionContext): void {
       'backendPythonPath',
       ''
     ),
-    healthCheck: async (backendUrl) => (await health(backendUrl)).status === 'ok',
+    healthCheck: async (backendUrl, backendToken) => (
+      await health(backendUrl, backendToken)
+    ).status === 'ok',
     fileExists: (filePath) => fs.existsSync(filePath),
     onStatus: (status) => chatViewProvider?.notifyBackendStatusChanged(status),
     onOutput: (value) => backendOutput.append(value)

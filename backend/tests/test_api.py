@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 from typing import get_args
 
@@ -7,6 +8,8 @@ from fastapi.testclient import TestClient
 from backend.app.main import (
     AGENT_TOOL_DEFINITIONS,
     AgentToolName,
+    DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE,
+    DEVMATE_BACKEND_TOKEN_HEADER,
     MAX_AGENT_TOOL_STEPS,
     MAX_ATTACHED_FILES,
     MAX_CONTEXT_CHARACTERS,
@@ -41,19 +44,33 @@ class RecordingProvider:
 
 
 class DevMateApiTests(unittest.TestCase):
+    backend_token = "test-backend-token-that-is-long-enough"
     provider = RecordingProvider()
     client = TestClient(
         app,
-        headers={"X-DevMate-Provider-Key": "test-provider-key"},
+        headers={
+            DEVMATE_BACKEND_TOKEN_HEADER: backend_token,
+            "X-DevMate-Provider-Key": "test-provider-key",
+        },
     )
 
     @classmethod
     def setUpClass(cls) -> None:
+        cls.previous_backend_token = os.environ.get(
+            DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE
+        )
+        os.environ[DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE] = cls.backend_token
         app.dependency_overrides[get_chat_provider] = lambda: cls.provider
 
     @classmethod
     def tearDownClass(cls) -> None:
         app.dependency_overrides.clear()
+        if cls.previous_backend_token is None:
+            os.environ.pop(DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE, None)
+        else:
+            os.environ[
+                DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE
+            ] = cls.previous_backend_token
 
     def setUp(self) -> None:
         self.provider.requests.clear()
@@ -71,12 +88,51 @@ class DevMateApiTests(unittest.TestCase):
                 "data": {
                     "service": "devmate-backend",
                     "protocolVersion": 1,
-                    "capabilities": ["chat", "streaming"],
+                    "capabilities": [
+                        "chat",
+                        "streaming",
+                        "request-authentication",
+                    ],
                     "backend": "online",
                     "version": "1.0.0",
                 },
             },
         )
+
+    def test_rejects_missing_or_incorrect_backend_tokens_before_validation(self) -> None:
+        unauthenticated_client = TestClient(app)
+        missing = unauthenticated_client.post("/ask", json={"question": "sensitive"})
+        incorrect = unauthenticated_client.get(
+            "/health",
+            headers={
+                DEVMATE_BACKEND_TOKEN_HEADER: "incorrect-backend-token-that-is-long-enough"
+            },
+        )
+
+        self.assertEqual(missing.status_code, 401)
+        self.assertEqual(incorrect.status_code, 401)
+        self.assertEqual(
+            missing.json(),
+            {"detail": "DevMate backend authentication failed."},
+        )
+        self.assertEqual(self.provider.requests, [])
+
+    def test_rotating_the_backend_token_invalidates_the_previous_token(self) -> None:
+        rotated_token = "rotated-backend-token-that-is-long-enough"
+        os.environ[DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE] = rotated_token
+        try:
+            previous = self.client.get("/health")
+            rotated = TestClient(
+                app,
+                headers={DEVMATE_BACKEND_TOKEN_HEADER: rotated_token},
+            ).get("/health")
+        finally:
+            os.environ[
+                DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE
+            ] = self.backend_token
+
+        self.assertEqual(previous.status_code, 401)
+        self.assertEqual(rotated.status_code, 200)
 
     def test_every_supported_agent_tool_has_one_definition(self) -> None:
         supported = set(get_args(AgentToolName))

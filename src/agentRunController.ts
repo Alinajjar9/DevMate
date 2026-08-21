@@ -48,6 +48,7 @@ export type AgentRunInput = {
   conversationHistory: ConversationTurn[];
   settings: LlmSettings;
   backendUrl: string;
+  backendToken: string;
   providerApiKey?: string;
   toolCallLimit: number;
   workspaceId: string;
@@ -123,6 +124,7 @@ export class AgentRunController {
       conversationHistory,
       settings,
       backendUrl,
+      backendToken,
       providerApiKey,
       toolCallLimit,
       workspaceId,
@@ -231,6 +233,7 @@ export class AgentRunController {
       const providerAttempt = await this.askWithProviderRetries(
         backendUrl,
         request,
+        backendToken,
         providerApiKey,
         (settings.timeoutSeconds + 30) * 1_000,
         signal,
@@ -590,6 +593,7 @@ export class AgentRunController {
   private async askWithProviderRetries(
     backendUrl: string,
     request: AskRequest,
+    backendToken: string,
     providerApiKey: string | undefined,
     timeoutMilliseconds: number,
     signal: AbortSignal,
@@ -631,7 +635,7 @@ export class AgentRunController {
         const streamAttempt = await this.transport.askStream(
           backendUrl,
           request,
-          providerApiKey,
+          { backendToken, providerApiKey },
           timeoutMilliseconds,
           signal,
           (event) => {
@@ -661,7 +665,7 @@ export class AgentRunController {
           result = await this.transport.ask(
             backendUrl,
             request,
-            providerApiKey,
+            { backendToken, providerApiKey },
             timeoutMilliseconds,
             signal
           );

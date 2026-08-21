@@ -3,9 +3,11 @@ const path = require('node:path');
 const test = require('node:test');
 
 const {
+  backendLaunchEnvironment,
   backendLaunchArguments,
   backendStatusLabel,
   bundledBackendLaunchCandidate,
+  createBackendRequestToken,
   LocalBackendManager,
   parseLocalBackendTarget,
   pythonLaunchCandidates
@@ -40,41 +42,45 @@ test('accepts only manageable loopback backend targets', () => {
   }
 });
 
-test('adopts a healthy existing backend without claiming ownership', async () => {
+test('rejects an externally managed backend without a shared token', async () => {
   const statuses = [];
+  let healthChecks = 0;
   const manager = new LocalBackendManager({
     extensionPath: 'C:\\DevMate',
     getBackendUrl: () => 'http://127.0.0.1:8000',
-    isManagementEnabled: () => true,
+    isManagementEnabled: () => false,
     getConfiguredPythonPath: () => '',
-    healthCheck: async () => true,
+    healthCheck: async () => {
+      healthChecks += 1;
+      return true;
+    },
     fileExists: () => false,
     onStatus: (status) => statuses.push(status),
     onOutput: () => undefined
   });
   try {
-    assert.equal(await manager.start(), true);
-    assert.equal(manager.status.state, 'online');
+    assert.equal(await manager.start(), false);
+    assert.equal(healthChecks, 0);
+    assert.equal(manager.status.state, 'disabled');
     assert.equal(manager.status.managed, false);
     assert.equal(manager.status.canRestart, false);
-    assert.match(manager.status.detail, /existing local backend/);
-    assert.equal(statuses.at(-1).state, 'online');
+    assert.match(manager.status.detail, /not authenticated/);
+    assert.equal(statuses.at(-1).state, 'disabled');
   } finally {
     manager.dispose();
   }
 });
 
-test('serializes concurrent lifecycle starts into one health check', async () => {
-  let resolveHealth;
+test('serializes concurrent lifecycle starts while rejecting unauthenticated listeners', async () => {
   let healthChecks = 0;
   const manager = new LocalBackendManager({
     extensionPath: 'C:\\DevMate',
     getBackendUrl: () => 'http://127.0.0.1:8000',
     isManagementEnabled: () => true,
     getConfiguredPythonPath: () => '',
-    healthCheck: () => {
+    healthCheck: async () => {
       healthChecks += 1;
-      return new Promise((resolve) => { resolveHealth = resolve; });
+      return true;
     },
     fileExists: () => false,
     onStatus: () => undefined,
@@ -84,14 +90,30 @@ test('serializes concurrent lifecycle starts into one health check', async () =>
     const first = manager.start();
     const second = manager.start();
     assert.equal(first, second);
-    assert.equal(healthChecks, 1);
-    resolveHealth(true);
-    assert.equal(await first, true);
-    assert.equal(await second, true);
-    assert.equal(manager.status.state, 'online');
+    assert.equal(await first, false);
+    assert.equal(await second, false);
+    assert.equal(healthChecks, 0);
+    assert.equal(manager.status.state, 'offline');
   } finally {
     manager.dispose();
   }
+});
+
+test('generates distinct backend tokens and injects them only into the child environment', () => {
+  const first = createBackendRequestToken();
+  const second = createBackendRequestToken();
+  assert.notEqual(first, second);
+  assert.match(first, /^[A-Za-z0-9_-]{43}$/);
+
+  const parentEnvironment = { PATH: 'safe-path', DEVMATE_BACKEND_TOKEN: 'stale-token' };
+  const childEnvironment = backendLaunchEnvironment(first, parentEnvironment);
+  assert.deepEqual(childEnvironment, {
+    PATH: 'safe-path',
+    DEVMATE_BACKEND_TOKEN: first,
+    PYTHONUNBUFFERED: '1',
+    PYTHONDONTWRITEBYTECODE: '1'
+  });
+  assert.equal(parentEnvironment.DEVMATE_BACKEND_TOKEN, 'stale-token');
 });
 
 test('reports missing bundled backend files without launching a process', async () => {
