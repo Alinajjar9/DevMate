@@ -43,11 +43,13 @@ const backendManager_1 = require("./backendManager");
 const chatViewProvider_1 = require("./chatViewProvider");
 const indexSynchronization_1 = require("./indexSynchronization");
 const workspaceIndexSource_1 = require("./workspaceIndexSource");
+const workspaceIndexWatcher_1 = require("./workspaceIndexWatcher");
 function activate(context) {
     const backendOutput = vscode.window.createOutputChannel('DevMate Backend');
     const knowledgeStorePath = vscode.Uri.joinPath(context.globalStorageUri, 'knowledge', types_1.DEVMATE_KNOWLEDGE_STORE_FILE_NAME).fsPath;
     let chatViewProvider;
     const knowledgeIndexSynchronizer = new indexSynchronization_1.KnowledgeIndexSynchronizer(new workspaceIndexSource_1.VsCodeWorkspaceIndexSource(), indexSynchronization_1.defaultKnowledgeIndexApi, (message) => backendOutput.append(`[DevMate] Knowledge index: ${message}\n`));
+    const workspaceIndexCoordinator = new workspaceIndexWatcher_1.WorkspaceIndexCoordinator(new workspaceIndexWatcher_1.VsCodeWorkspaceIndexChangeSource(), (access, signal) => knowledgeIndexSynchronizer.synchronize(access, signal));
     let backendManager;
     backendManager = new backendManager_1.LocalBackendManager({
         extensionPath: context.extensionUri.fsPath,
@@ -61,10 +63,13 @@ function activate(context) {
             chatViewProvider?.notifyBackendStatusChanged(status);
             const backendToken = backendManager.requestToken;
             if (status.state === 'online' && backendToken) {
-                void knowledgeIndexSynchronizer.synchronize({
+                workspaceIndexCoordinator.setBackendAccess({
                     backendUrl: (0, chatViewProvider_1.getBackendUrl)(),
                     backendToken
                 });
+            }
+            else {
+                workspaceIndexCoordinator.setBackendAccess(undefined);
             }
         },
         onOutput: (value) => backendOutput.append(value)
@@ -99,7 +104,7 @@ function activate(context) {
     statusBarItem.tooltip = 'Open DevMate';
     statusBarItem.command = 'devMate.openChat';
     statusBarItem.show();
-    context.subscriptions.push(chatViewProvider, knowledgeIndexSynchronizer, backendManager, backendOutput, viewRegistration, diffContentRegistration, workspaceTrustRegistration, backendConfigurationRegistration, openChatCommand, statusBarItem);
+    context.subscriptions.push(chatViewProvider, workspaceIndexCoordinator, knowledgeIndexSynchronizer, backendManager, backendOutput, viewRegistration, diffContentRegistration, workspaceTrustRegistration, backendConfigurationRegistration, openChatCommand, statusBarItem);
     void backendManager.start();
 }
 function deactivate() {

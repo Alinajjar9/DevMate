@@ -9,6 +9,10 @@ import {
   defaultKnowledgeIndexApi
 } from './indexSynchronization';
 import { VsCodeWorkspaceIndexSource } from './workspaceIndexSource';
+import {
+  VsCodeWorkspaceIndexChangeSource,
+  WorkspaceIndexCoordinator
+} from './workspaceIndexWatcher';
 
 export function activate(context: vscode.ExtensionContext): void {
   const backendOutput = vscode.window.createOutputChannel('DevMate Backend');
@@ -22,6 +26,10 @@ export function activate(context: vscode.ExtensionContext): void {
     new VsCodeWorkspaceIndexSource(),
     defaultKnowledgeIndexApi,
     (message) => backendOutput.append(`[DevMate] Knowledge index: ${message}\n`)
+  );
+  const workspaceIndexCoordinator = new WorkspaceIndexCoordinator(
+    new VsCodeWorkspaceIndexChangeSource(),
+    (access, signal) => knowledgeIndexSynchronizer.synchronize(access, signal)
   );
   let backendManager: LocalBackendManager;
   backendManager = new LocalBackendManager({
@@ -44,10 +52,12 @@ export function activate(context: vscode.ExtensionContext): void {
       chatViewProvider?.notifyBackendStatusChanged(status);
       const backendToken = backendManager.requestToken;
       if (status.state === 'online' && backendToken) {
-        void knowledgeIndexSynchronizer.synchronize({
+        workspaceIndexCoordinator.setBackendAccess({
           backendUrl: getBackendUrl(),
           backendToken
         });
+      } else {
+        workspaceIndexCoordinator.setBackendAccess(undefined);
       }
     },
     onOutput: (value) => backendOutput.append(value)
@@ -99,6 +109,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     chatViewProvider,
+    workspaceIndexCoordinator,
     knowledgeIndexSynchronizer,
     backendManager,
     backendOutput,

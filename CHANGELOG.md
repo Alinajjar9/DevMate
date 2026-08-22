@@ -2,6 +2,25 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-22 — Keep the SQLite code index updated while files change
+
+### Changed
+
+- Added a workspace-change monitor for relevant create, edit, delete, rename, and workspace-folder events.
+- Debounced rapid event bursts into one synchronization and guaranteed one trailing run when changes arrive during active indexing.
+- Started synchronization immediately when authenticated backend access becomes available, cancelled active work when access is lost, and resumed safely after token replacement.
+- Filtered ignored, generated, binary, and out-of-workspace paths before scheduling work while preserving the full reconciliation scan as the correctness boundary.
+- Kept indexing in the background and left the current chat retrieval path on the existing JSON lexical index.
+- Added deterministic coverage for event coalescing, active-run changes, cancellation, token replacement, path filtering, rename events, watcher rebuilding, and disposal.
+
+### Verification
+
+- `npm run verify` — 205 extension tests and 105 backend tests passed; 39 cross-language contracts and 22 emitted JavaScript files verified.
+- Focused indexing synchronization, source, and watcher coverage — 15 tests passed.
+- `git diff --check`
+
+---
+
 ## 2026-08-22 — Synchronize workspace files into the SQLite index
 
 ### Changed
