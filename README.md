@@ -159,7 +159,9 @@ Project scope uses the local SQLite lexical index when the authenticated managed
 
 The SQLite index is stored in VS Code's private global extension storage, not inside the repository. If authenticated SQLite search is unavailable, empty, fails, or contains no usable current chunks, DevMate falls back to the previous JSON lexical index. That fallback index is refreshed lazily only when needed; cancellation stops retrieval without starting fallback work.
 
-This version does not use embeddings. On the checked-in evaluation corpus, SQLite lexical retrieval produces 7 of 11 top-one hits, 7 of 11 top-three hits, and 0.6364 recall at five. Synonym-heavy conceptual searches remain the main weakness and are the target of the later semantic and hybrid retriever.
+This version does not use embeddings for retrieval yet. The embedding foundation defines separate local-first profiles for Ollama and OpenAI-compatible providers, requires explicit consent before sending source code to a remote embedding endpoint, and keeps profile credentials out of normal extension storage. No embedding endpoint is called and no vectors are generated during this milestone.
+
+On the checked-in evaluation corpus, SQLite lexical retrieval produces 7 of 11 top-one hits, 7 of 11 top-three hits, and 0.6364 recall at five. Synonym-heavy conceptual searches remain the main weakness and are the target of the later semantic and hybrid retriever.
 
 ## Agent tools
 
@@ -336,6 +338,8 @@ The Python backend source remains in the package as a fallback for development o
 | `src/api/` | Extension-to-backend HTTP transport, request types, and strict knowledge-index response decoding |
 | `src/api/knowledgeIndexProtocol.ts` | Runtime validation for versioned knowledge-index responses |
 | `src/backendManager.ts` | Local backend startup, monitoring, and restart logic |
+| `src/embeddingProfiles.ts` | Local-first embedding profile validation, selection, consent, and SecretStorage keys |
+| `src/providerUrlPolicy.ts` | Shared chat and embedding provider URL security policy |
 | `src/projectIndex.ts` | Local index representation, chunking, and lexical scoring |
 | `src/projectRetriever.ts` | SQLite-first lexical retrieval, exact-source validation, and lazy JSON fallback |
 | `src/sessions.ts` | Project-bound conversation storage |
@@ -345,6 +349,7 @@ The Python backend source remains in the package as a fallback for development o
 | `backend/app/chat_service.py` | Model-request construction, completion normalization, and token accounting |
 | `backend/app/dependencies.py` | Per-application backend dependency container and route accessors |
 | `backend/app/errors.py` | Shared backend application errors |
+| `backend/app/embedding_providers.py` | Batched embedding-provider request, result, and protocol boundary |
 | `backend/app/knowledge_contracts.py` | Shared version, states, and size limits for the knowledge-index protocol |
 | `backend/app/knowledge_routes.py` | Authenticated version-one knowledge-index HTTP routes |
 | `backend/app/knowledge_store.py` | Isolated versioned SQLite schema and transaction boundary for the code index |

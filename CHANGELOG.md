@@ -2,6 +2,24 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-22 — Prepare configurable embedding providers
+
+### Changed
+
+- Added separate validated embedding profiles for Ollama and OpenAI-compatible providers without coupling them to chat-model profiles.
+- Preferred explicitly selected profiles and otherwise local Ollama-compatible profiles, while requiring HTTPS and explicit consent before a remote endpoint may receive source code.
+- Added profile-specific SecretStorage keys and kept API keys out of persisted profile objects.
+- Extracted the existing provider URL checks into one shared security policy used by both chat and embedding profiles without changing chat-profile behavior.
+- Added a narrow backend protocol for ordered batch embedding requests and results, with matching provider names checked across TypeScript and Python.
+- Kept the new foundation inactive: this step adds no UI, provider network calls, vector writes, semantic ranking, or retrieval behavior changes.
+
+### Verification
+
+- `npm run verify` — 221 extension tests and 108 backend tests passed; 40 cross-language contracts and 25 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-22 — Use SQLite for project code search
 
 ### Changed

@@ -51,6 +51,8 @@ const agentTools = read('src/agentTools.ts');
 const projectIndex = read('src/projectIndex.ts');
 const sessions = read('src/sessions.ts');
 const backendApiModels = read('backend/app/api_models.py');
+const embeddingProfiles = read('src/embeddingProfiles.ts');
+const backendEmbeddingProviders = read('backend/app/embedding_providers.py');
 const backendKnowledgeStore = read('backend/app/knowledge_store.py');
 const backendKnowledgeContracts = read('backend/app/knowledge_contracts.py');
 
@@ -84,6 +86,11 @@ const literalContracts = [
     label: 'BackendErrorCode',
     typeScript: quotedValues(capture(apiTypes, /export const DEVMATE_BACKEND_ERROR_CODES\s*=\s*\[([\s\S]*?)\]\s*as const;/, 'TypeScript backend error codes')),
     python: quotedValues(capture(backendApiModels, /BackendErrorCode\s*=\s*Literal\[([\s\S]*?)\]/, 'Python backend error codes'))
+  },
+  {
+    label: 'EmbeddingProviderName',
+    typeScript: quotedValues(capture(embeddingProfiles, /export const EMBEDDING_PROVIDER_NAMES\s*=\s*\[([^\]]+)\]\s*as const;/, 'TypeScript embedding providers')),
+    python: quotedValues(capture(backendEmbeddingProviders, /EmbeddingProviderName\s*=\s*Literal\[([^\]]+)\]/, 'Python embedding providers'))
   },
   {
     label: 'KnowledgeIndexState',

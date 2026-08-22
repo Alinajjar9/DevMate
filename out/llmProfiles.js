@@ -12,7 +12,7 @@ exports.reasoningEffortOptionsForProfile = reasoningEffortOptionsForProfile;
 exports.parseReasoningEffortPreferences = parseReasoningEffortPreferences;
 exports.reasoningEffortForProfile = reasoningEffortForProfile;
 exports.secretKeyForProfile = secretKeyForProfile;
-const node_net_1 = require("node:net");
+const providerUrlPolicy_1 = require("./providerUrlPolicy");
 exports.LLM_PROFILES_STORAGE_KEY = 'devMate.llmProfiles.v1';
 exports.ACTIVE_LLM_PROFILE_STORAGE_KEY = 'devMate.activeLlmProfileId.v1';
 exports.LLM_REASONING_EFFORT_STORAGE_KEY = 'devMate.reasoningEffortByProfile.v1';
@@ -38,10 +38,8 @@ exports.BUILT_IN_NEMOTRON_PROFILE = Object.freeze({
 });
 const supportedProviders = new Set(['openai', 'ollama']);
 const reasoningEfforts = new Set(['auto', 'low', 'medium', 'high', 'xhigh']);
-const unsafeProviderIpv4Addresses = createUnsafeProviderIpv4BlockList();
-const unsafeProviderIpv6Addresses = createUnsafeProviderIpv6BlockList();
 function normalizeProfileDraft(draft) {
-    const baseUrl = draft.baseUrl?.trim().replace(/\/+$/, '');
+    const baseUrl = (0, providerUrlPolicy_1.normalizeProviderBaseUrl)(draft.baseUrl);
     return {
         name: draft.name.trim(),
         provider: draft.provider,
@@ -70,26 +68,9 @@ function validateProfileDraft(draft, existingProfiles, editingProfileId) {
         && profile.name.localeCompare(normalized.name, undefined, { sensitivity: 'accent' }) === 0)) {
         return `A model profile named "${normalized.name}" already exists.`;
     }
-    if (normalized.baseUrl) {
-        try {
-            const url = new URL(normalized.baseUrl);
-            if (!['http:', 'https:'].includes(url.protocol)
-                || url.username
-                || url.password
-                || url.search
-                || url.hash) {
-                return 'Use an HTTP or HTTPS base URL without credentials, query parameters, or fragments.';
-            }
-            if (url.protocol === 'http:' && !isLoopbackProviderHostname(url.hostname)) {
-                return 'Use HTTPS for remote providers. Plain HTTP is allowed only for local loopback providers.';
-            }
-            if (isUnsafeProviderAddressLiteral(url.hostname)) {
-                return 'Use a public provider address or an exact local loopback address.';
-            }
-        }
-        catch {
-            return 'Enter a valid base URL.';
-        }
+    const baseUrlError = (0, providerUrlPolicy_1.validateProviderBaseUrl)(normalized.baseUrl);
+    if (baseUrlError) {
+        return baseUrlError;
     }
     return undefined;
 }
@@ -109,7 +90,7 @@ function parseStoredProfiles(value) {
         const model = typeof candidate.model === 'string' ? candidate.model.trim() : '';
         const provider = candidate.provider;
         const baseUrl = typeof candidate.baseUrl === 'string'
-            ? candidate.baseUrl.trim().replace(/\/+$/, '')
+            ? (0, providerUrlPolicy_1.normalizeProviderBaseUrl)(candidate.baseUrl)
             : undefined;
         const normalizedName = name.toLocaleLowerCase();
         if (!id
@@ -202,65 +183,6 @@ function isOfficialOpenAiProfile(profile) {
     catch {
         return false;
     }
-}
-function isLoopbackProviderHostname(hostname) {
-    const normalized = hostname.toLocaleLowerCase().replace(/^\[|\]$/g, '');
-    if (normalized === 'localhost' || normalized === '::1') {
-        return true;
-    }
-    const parts = normalized.split('.');
-    return parts.length === 4
-        && parts[0] === '127'
-        && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255);
-}
-function isUnsafeProviderAddressLiteral(hostname) {
-    const normalized = hostname.toLocaleLowerCase().replace(/^\[|\]$/g, '');
-    if (isLoopbackProviderHostname(normalized)) {
-        return false;
-    }
-    const version = (0, node_net_1.isIP)(normalized);
-    return version === 4
-        ? unsafeProviderIpv4Addresses.check(normalized, 'ipv4')
-        : version === 6 && unsafeProviderIpv6Addresses.check(normalized, 'ipv6');
-}
-function createUnsafeProviderIpv4BlockList() {
-    const blockList = new node_net_1.BlockList();
-    for (const [address, prefix] of [
-        ['0.0.0.0', 8],
-        ['10.0.0.0', 8],
-        ['100.64.0.0', 10],
-        ['169.254.0.0', 16],
-        ['172.16.0.0', 12],
-        ['192.0.0.0', 24],
-        ['192.0.2.0', 24],
-        ['192.168.0.0', 16],
-        ['198.18.0.0', 15],
-        ['198.51.100.0', 24],
-        ['203.0.113.0', 24],
-        ['224.0.0.0', 4],
-        ['240.0.0.0', 4]
-    ]) {
-        blockList.addSubnet(address, prefix, 'ipv4');
-    }
-    return blockList;
-}
-function createUnsafeProviderIpv6BlockList() {
-    const blockList = new node_net_1.BlockList();
-    for (const [address, prefix] of [
-        ['::', 96],
-        ['::ffff:0:0', 96],
-        ['64:ff9b:1::', 48],
-        ['100::', 64],
-        ['2001:2::', 48],
-        ['2001:db8::', 32],
-        ['fc00::', 7],
-        ['fe80::', 10],
-        ['fec0::', 10],
-        ['ff00::', 8]
-    ]) {
-        blockList.addSubnet(address, prefix, 'ipv6');
-    }
-    return blockList;
 }
 function isRecord(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
