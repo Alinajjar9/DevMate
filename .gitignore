@@ -9,6 +9,7 @@ __pycache__/
 .pyinstaller-build/
 backend-runtime/
 .vscode-test/
+.devmate-test-*/
 *.vsix
 *.zip
 

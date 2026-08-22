@@ -2,6 +2,24 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-22 — Add the SQLite knowledge-store foundation
+
+### Changed
+
+- Added an isolated `KnowledgeStore` that requires an explicit absolute database path and is not yet connected to backend routes or project indexing.
+- Added an idempotent version-one schema for migrations, workspaces, files, chunks, FTS content, normalized float32 embeddings, and index metadata.
+- Enabled foreign-key enforcement, WAL journaling, bounded lock waits, cascade cleanup, and automatic FTS synchronization through database triggers.
+- Added explicit transaction handling and atomic migration rollback so failed writes or future schema upgrades do not leave partial state.
+- Added temporary-database coverage for schema initialization, reopening, transactions, migration failure, foreign keys, embedding storage, FTS lookup, and cascade deletion.
+
+### Verification
+
+- `npm run verify` — 181 extension tests and 92 backend tests passed; 21 cross-language contracts and 18 emitted JavaScript files verified.
+- Focused knowledge-store suite — 5 temporary-database tests passed.
+- `git diff --check`
+
+---
+
 ## 2026-08-22 — Introduce the project retriever boundary
 
 ### Changed
