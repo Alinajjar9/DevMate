@@ -1,7 +1,24 @@
 import json
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from .knowledge_contracts import (
+    MAX_CHUNKS_PER_FILE,
+    MAX_CHUNK_CHARACTERS,
+    MAX_CHUNK_STABLE_ID_CHARACTERS,
+    MAX_CONTENT_HASH_CHARACTERS,
+    MAX_FILE_CHANGES_PER_BATCH,
+    MAX_INDEX_BATCH_CONTENT_CHARACTERS,
+    MAX_INDEX_INTEGER,
+    MAX_LANGUAGE_ID_CHARACTERS,
+    MAX_LEXICAL_QUERY_CHARACTERS,
+    MAX_LEXICAL_RESULTS,
+    MAX_RELATIVE_PATH_CHARACTERS,
+    MAX_WORKSPACE_KEY_CHARACTERS,
+    MAX_WORKSPACE_ROOT_CHARACTERS,
+    IndexState,
+)
 
 
 DEVMATE_BACKEND_VERSION = "1.0.0"
@@ -21,12 +38,14 @@ BackendCapability = Literal[
     "streaming",
     "request-authentication",
     "strict-response-contracts",
+    "knowledge-index-v1",
 ]
 DEVMATE_BACKEND_CAPABILITIES: tuple[BackendCapability, ...] = (
     "chat",
     "streaming",
     "request-authentication",
     "strict-response-contracts",
+    "knowledge-index-v1",
 )
 BackendErrorCode = Literal[
     "backend_authentication_failed",
@@ -40,6 +59,9 @@ BackendErrorCode = Literal[
     "provider_unavailable",
     "provider_invalid_response",
     "model_invalid_response",
+    "knowledge_store_unavailable",
+    "knowledge_workspace_not_found",
+    "knowledge_index_failure",
     "internal_error",
 ]
 ProviderErrorCode = Literal[
@@ -252,6 +274,146 @@ class HealthData(BaseModel):
 class HealthResult(BaseModel):
     status: Literal["ok"]
     data: HealthData
+
+
+class KnowledgeIndexModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class KnowledgeIndexWorkspaceRequest(KnowledgeIndexModel):
+    workspaceKey: str = Field(min_length=1, max_length=MAX_WORKSPACE_KEY_CHARACTERS)
+
+
+class KnowledgeIndexOpenRequest(KnowledgeIndexWorkspaceRequest):
+    rootPath: str = Field(min_length=1, max_length=MAX_WORKSPACE_ROOT_CHARACTERS)
+    chunkingVersion: int = Field(ge=1, le=MAX_INDEX_INTEGER)
+
+
+class KnowledgeIndexWorkspaceData(KnowledgeIndexModel):
+    id: int = Field(ge=1, le=MAX_INDEX_INTEGER)
+    workspaceKey: str = Field(min_length=1, max_length=MAX_WORKSPACE_KEY_CHARACTERS)
+    rootPath: str = Field(min_length=1, max_length=MAX_WORKSPACE_ROOT_CHARACTERS)
+
+
+class KnowledgeIndexMetadataData(KnowledgeIndexModel):
+    workspaceKey: str = Field(min_length=1, max_length=MAX_WORKSPACE_KEY_CHARACTERS)
+    chunkingVersion: int = Field(ge=1, le=MAX_INDEX_INTEGER)
+    indexState: IndexState
+    lastFullScanAt: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class KnowledgeIndexFileFingerprintData(KnowledgeIndexModel):
+    relativePath: str = Field(min_length=1, max_length=MAX_RELATIVE_PATH_CHARACTERS)
+    contentHash: str = Field(min_length=1, max_length=MAX_CONTENT_HASH_CHARACTERS)
+    sizeBytes: int = Field(ge=0, le=MAX_INDEX_INTEGER)
+    modifiedAt: int = Field(ge=0, le=MAX_INDEX_INTEGER)
+
+
+class KnowledgeIndexOpenData(KnowledgeIndexModel):
+    workspace: KnowledgeIndexWorkspaceData
+    metadata: KnowledgeIndexMetadataData
+    files: list[KnowledgeIndexFileFingerprintData] = Field(
+        max_length=MAX_FILE_CHANGES_PER_BATCH,
+    )
+
+
+class KnowledgeIndexOpenResult(KnowledgeIndexModel):
+    status: Literal["ok"]
+    data: KnowledgeIndexOpenData
+
+
+class KnowledgeIndexChunkInput(KnowledgeIndexModel):
+    stableId: str = Field(min_length=1, max_length=MAX_CHUNK_STABLE_ID_CHARACTERS)
+    ordinal: int = Field(ge=0, le=MAX_INDEX_INTEGER)
+    startLine: int = Field(ge=1, le=MAX_INDEX_INTEGER)
+    endLine: int = Field(ge=1, le=MAX_INDEX_INTEGER)
+    content: str = Field(min_length=1, max_length=MAX_CHUNK_CHARACTERS)
+    contentHash: str = Field(min_length=1, max_length=MAX_CONTENT_HASH_CHARACTERS)
+    chunkingVersion: int = Field(ge=1, le=MAX_INDEX_INTEGER)
+
+
+class KnowledgeIndexFileInput(KnowledgeIndexModel):
+    relativePath: str = Field(min_length=1, max_length=MAX_RELATIVE_PATH_CHARACTERS)
+    languageId: str = Field(min_length=1, max_length=MAX_LANGUAGE_ID_CHARACTERS)
+    contentHash: str = Field(min_length=1, max_length=MAX_CONTENT_HASH_CHARACTERS)
+    sizeBytes: int = Field(ge=0, le=MAX_INDEX_INTEGER)
+    modifiedAt: int = Field(ge=0, le=MAX_INDEX_INTEGER)
+    chunks: list[KnowledgeIndexChunkInput] = Field(max_length=MAX_CHUNKS_PER_FILE)
+
+
+class KnowledgeIndexApplyRequest(KnowledgeIndexWorkspaceRequest):
+    upserts: list[KnowledgeIndexFileInput] = Field(
+        default_factory=list,
+        max_length=MAX_FILE_CHANGES_PER_BATCH,
+    )
+    deletedPaths: list[str] = Field(
+        default_factory=list,
+        max_length=MAX_FILE_CHANGES_PER_BATCH,
+    )
+
+    @model_validator(mode="after")
+    def validate_batch_size(self) -> "KnowledgeIndexApplyRequest":
+        if len(self.upserts) + len(self.deletedPaths) > MAX_FILE_CHANGES_PER_BATCH:
+            raise ValueError("index file-change batch is too large")
+        if any(
+            not path or len(path) > MAX_RELATIVE_PATH_CHARACTERS
+            for path in self.deletedPaths
+        ):
+            raise ValueError("index deletion path is invalid")
+        if sum(
+            len(chunk.content)
+            for file in self.upserts
+            for chunk in file.chunks
+        ) > MAX_INDEX_BATCH_CONTENT_CHARACTERS:
+            raise ValueError("index file-change content is too large")
+        return self
+
+
+class KnowledgeIndexWriteData(KnowledgeIndexModel):
+    upsertedFiles: int = Field(ge=0, le=MAX_FILE_CHANGES_PER_BATCH)
+    deletedFiles: int = Field(ge=0, le=MAX_FILE_CHANGES_PER_BATCH)
+
+
+class KnowledgeIndexWriteResult(KnowledgeIndexModel):
+    status: Literal["ok"]
+    data: KnowledgeIndexWriteData
+
+
+class KnowledgeIndexMetadataUpdateRequest(KnowledgeIndexWorkspaceRequest):
+    chunkingVersion: int = Field(ge=1, le=MAX_INDEX_INTEGER)
+    indexState: IndexState
+    lastFullScanAt: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class KnowledgeIndexMetadataResult(KnowledgeIndexModel):
+    status: Literal["ok"]
+    data: KnowledgeIndexMetadataData
+
+
+class KnowledgeIndexSearchRequest(KnowledgeIndexWorkspaceRequest):
+    query: str = Field(max_length=MAX_LEXICAL_QUERY_CHARACTERS)
+    limit: int = Field(ge=1, le=MAX_LEXICAL_RESULTS)
+
+
+class KnowledgeIndexSearchItemData(KnowledgeIndexModel):
+    relativePath: str = Field(min_length=1, max_length=MAX_RELATIVE_PATH_CHARACTERS)
+    languageId: str = Field(min_length=1, max_length=MAX_LANGUAGE_ID_CHARACTERS)
+    stableId: str = Field(min_length=1, max_length=MAX_CHUNK_STABLE_ID_CHARACTERS)
+    ordinal: int = Field(ge=0, le=MAX_INDEX_INTEGER)
+    startLine: int = Field(ge=1, le=MAX_INDEX_INTEGER)
+    endLine: int = Field(ge=1, le=MAX_INDEX_INTEGER)
+    content: str = Field(min_length=1, max_length=MAX_CHUNK_CHARACTERS)
+    contentHash: str = Field(min_length=1, max_length=MAX_CONTENT_HASH_CHARACTERS)
+    score: float = Field(ge=0)
+
+
+class KnowledgeIndexSearchData(KnowledgeIndexModel):
+    results: list[KnowledgeIndexSearchItemData] = Field(max_length=MAX_LEXICAL_RESULTS)
+
+
+class KnowledgeIndexSearchResult(KnowledgeIndexModel):
+    status: Literal["ok"]
+    data: KnowledgeIndexSearchData
 
 
 class FileChange(BaseModel):

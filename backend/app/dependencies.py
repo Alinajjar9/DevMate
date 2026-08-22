@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from fastapi import Request
 
 from .chat_service import ChatService
+from .errors import BackendApiError
+from .knowledge_repository import KnowledgeRepository
 from .knowledge_store import KnowledgeStore
 from .providers import ChatProvider
 
@@ -17,6 +19,7 @@ class BackendDependencies:
     chat_service: ChatService
     backend_token_provider: BackendTokenProvider
     knowledge_store: KnowledgeStore | None
+    knowledge_repository: KnowledgeRepository | None
 
 
 def backend_dependencies(request: Request) -> BackendDependencies:
@@ -32,3 +35,14 @@ def get_chat_provider(request: Request) -> ChatProvider:
 
 def get_chat_service(request: Request) -> ChatService:
     return backend_dependencies(request).chat_service
+
+
+def get_knowledge_repository(request: Request) -> KnowledgeRepository:
+    repository = backend_dependencies(request).knowledge_repository
+    if repository is None:
+        raise BackendApiError(
+            503,
+            "knowledge_store_unavailable",
+            "The local DevMate knowledge store is unavailable.",
+        )
+    return repository

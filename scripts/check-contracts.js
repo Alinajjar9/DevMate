@@ -52,6 +52,7 @@ const projectIndex = read('src/projectIndex.ts');
 const sessions = read('src/sessions.ts');
 const backendApiModels = read('backend/app/api_models.py');
 const backendKnowledgeStore = read('backend/app/knowledge_store.py');
+const backendKnowledgeContracts = read('backend/app/knowledge_contracts.py');
 
 const literalContracts = [
   {
@@ -83,6 +84,11 @@ const literalContracts = [
     label: 'BackendErrorCode',
     typeScript: quotedValues(capture(apiTypes, /export const DEVMATE_BACKEND_ERROR_CODES\s*=\s*\[([\s\S]*?)\]\s*as const;/, 'TypeScript backend error codes')),
     python: quotedValues(capture(backendApiModels, /BackendErrorCode\s*=\s*Literal\[([\s\S]*?)\]/, 'Python backend error codes'))
+  },
+  {
+    label: 'KnowledgeIndexState',
+    typeScript: quotedValues(capture(apiTypes, /export type KnowledgeIndexState\s*=\s*([^;]+);/, 'TypeScript knowledge index states')),
+    python: quotedValues(capture(backendKnowledgeContracts, /IndexState\s*=\s*Literal\[([^\]]+)\]/, 'Python knowledge index states'))
   }
 ];
 
@@ -108,6 +114,32 @@ const numericContracts = [
 for (const [name, typeScriptSource] of numericContracts) {
   const typeScriptValue = numericConstant(typeScriptSource, name, 'typescript');
   const pythonValue = numericConstant(backendApiModels, name, 'python');
+  if (typeScriptValue !== pythonValue) {
+    throw new Error(`${name} differs between TypeScript (${typeScriptValue}) and Python (${pythonValue}).`);
+  }
+}
+
+const knowledgeNumericContracts = [
+  'DEVMATE_KNOWLEDGE_INDEX_API_VERSION',
+  'MAX_WORKSPACE_KEY_CHARACTERS',
+  'MAX_WORKSPACE_ROOT_CHARACTERS',
+  'MAX_RELATIVE_PATH_CHARACTERS',
+  'MAX_LANGUAGE_ID_CHARACTERS',
+  'MAX_CONTENT_HASH_CHARACTERS',
+  'MAX_CHUNK_STABLE_ID_CHARACTERS',
+  'MAX_CHUNK_CHARACTERS',
+  'MAX_CHUNKS_PER_FILE',
+  'MAX_FILE_CHANGES_PER_BATCH',
+  'MAX_INDEX_BATCH_CONTENT_CHARACTERS',
+  'MAX_LEXICAL_QUERY_CHARACTERS',
+  'MAX_LEXICAL_QUERY_TERMS',
+  'MAX_LEXICAL_RESULTS',
+  'MAX_INDEX_INTEGER'
+];
+
+for (const name of knowledgeNumericContracts) {
+  const typeScriptValue = numericConstant(apiTypes, name, 'typescript');
+  const pythonValue = numericConstant(backendKnowledgeContracts, name, 'python');
   if (typeScriptValue !== pythonValue) {
     throw new Error(`${name} differs between TypeScript (${typeScriptValue}) and Python (${pythonValue}).`);
   }
@@ -140,4 +172,4 @@ for (const name of knowledgeStoreStringContracts) {
   }
 }
 
-console.log(`Verified ${literalContracts.length + numericContracts.length + stringContracts.length + knowledgeStoreStringContracts.length} TypeScript/Python API contracts.`);
+console.log(`Verified ${literalContracts.length + numericContracts.length + knowledgeNumericContracts.length + stringContracts.length + knowledgeStoreStringContracts.length} TypeScript/Python API contracts.`);

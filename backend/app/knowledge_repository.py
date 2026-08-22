@@ -5,28 +5,28 @@ import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Literal
 
+from .knowledge_contracts import (
+    INDEX_STATES,
+    MAX_CHUNKS_PER_FILE,
+    MAX_CHUNK_CHARACTERS,
+    MAX_CHUNK_STABLE_ID_CHARACTERS,
+    MAX_CONTENT_HASH_CHARACTERS,
+    MAX_FILE_CHANGES_PER_BATCH,
+    MAX_LANGUAGE_ID_CHARACTERS,
+    MAX_LEXICAL_QUERY_CHARACTERS,
+    MAX_LEXICAL_QUERY_TERMS,
+    MAX_LEXICAL_RESULTS,
+    MAX_RELATIVE_PATH_CHARACTERS,
+    MAX_SQLITE_INTEGER,
+    MAX_WORKSPACE_KEY_CHARACTERS,
+    MAX_WORKSPACE_ROOT_CHARACTERS,
+    IndexState,
+)
 from .knowledge_store import KnowledgeStore
 
 
-IndexState = Literal["empty", "indexing", "ready", "stale", "failed"]
-
-MAX_WORKSPACE_KEY_CHARACTERS = 256
-MAX_WORKSPACE_ROOT_CHARACTERS = 4_096
-MAX_RELATIVE_PATH_CHARACTERS = 1_024
-MAX_LANGUAGE_ID_CHARACTERS = 128
-MAX_CONTENT_HASH_CHARACTERS = 256
-MAX_CHUNK_STABLE_ID_CHARACTERS = 1_280
-MAX_CHUNK_CHARACTERS = 20_000
-MAX_CHUNKS_PER_FILE = 512
-MAX_FILE_CHANGES_PER_BATCH = 500
-MAX_LEXICAL_QUERY_CHARACTERS = 2_000
-MAX_LEXICAL_QUERY_TERMS = 32
-MAX_LEXICAL_RESULTS = 100
-MAX_SQLITE_INTEGER = 9_223_372_036_854_775_807
-
-_INDEX_STATES: frozenset[str] = frozenset(("empty", "indexing", "ready", "stale", "failed"))
+_INDEX_STATES: frozenset[str] = frozenset(INDEX_STATES)
 _SEARCH_TERM_PATTERN = re.compile(r"[^\W_]+(?:_[^\W_]+)*", re.UNICODE)
 
 

@@ -98,6 +98,7 @@ class DevMateApiTests(unittest.TestCase):
                         "streaming",
                         "request-authentication",
                         "strict-response-contracts",
+                        "knowledge-index-v1",
                     ],
                     "backend": "online",
                     "version": "1.0.0",

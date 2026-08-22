@@ -27,6 +27,9 @@ from .dependencies import (
     backend_dependencies,
 )
 from .errors import BackendApiError
+from .knowledge_contracts import DEVMATE_KNOWLEDGE_INDEX_API_VERSION
+from .knowledge_repository import KnowledgeRepository
+from .knowledge_routes import knowledge_router
 from .knowledge_store import KnowledgeStore, knowledge_store_path_from_environment
 from .providers import ChatProvider, OpenAICompatibleProvider
 from .tool_catalog import AGENT_TOOL_DEFINITIONS
@@ -36,6 +39,9 @@ logger = logging.getLogger(__name__)
 
 
 _authenticated_backend_paths = frozenset(("/health", "/ask", "/ask/stream"))
+_authenticated_backend_prefixes = (
+    f"/index/v{DEVMATE_KNOWLEDGE_INDEX_API_VERSION}/",
+)
 
 
 def _environment_backend_token() -> str | None:
@@ -86,7 +92,11 @@ def _backend_error_response(
 
 
 async def authenticate_backend_request(request: Request, call_next):
-    if request.url.path not in _authenticated_backend_paths:
+    requires_authentication = (
+        request.url.path in _authenticated_backend_paths
+        or request.url.path.startswith(_authenticated_backend_prefixes)
+    )
+    if not requires_authentication:
         return await call_next(request)
 
     expected_token = backend_dependencies(request).backend_token_provider()
@@ -171,7 +181,16 @@ def create_app(
     chat_service: ChatService | None = None,
     backend_token_provider: BackendTokenProvider | None = None,
     knowledge_store: KnowledgeStore | None = None,
+    knowledge_repository: KnowledgeRepository | None = None,
 ) -> FastAPI:
+    resolved_knowledge_store = (
+        knowledge_store
+        if knowledge_store is not None
+        else _environment_knowledge_store()
+    )
+    resolved_knowledge_repository = knowledge_repository
+    if resolved_knowledge_repository is None and resolved_knowledge_store is not None:
+        resolved_knowledge_repository = KnowledgeRepository(resolved_knowledge_store)
     application = FastAPI(
         title="DevMate Backend",
         version=DEVMATE_BACKEND_VERSION,
@@ -193,17 +212,15 @@ def create_app(
             if backend_token_provider is not None
             else _environment_backend_token
         ),
-        knowledge_store=(
-            knowledge_store
-            if knowledge_store is not None
-            else _environment_knowledge_store()
-        ),
+        knowledge_store=resolved_knowledge_store,
+        knowledge_repository=resolved_knowledge_repository,
     )
     application.middleware("http")(authenticate_backend_request)
     application.add_exception_handler(BackendApiError, backend_api_error)
     application.add_exception_handler(StarletteHTTPException, framework_http_error)
     application.add_exception_handler(RequestValidationError, request_validation_error)
     application.include_router(api_router)
+    application.include_router(knowledge_router)
     return application
 
 

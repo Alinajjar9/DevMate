@@ -10,6 +10,7 @@ import {
   DEVMATE_BACKEND_PROTOCOL_VERSION,
   DEVMATE_BACKEND_SERVICE,
   DEVMATE_BACKEND_TOKEN_HEADER,
+  DEVMATE_KNOWLEDGE_INDEX_API_VERSION,
   MAX_BACKEND_TOKEN_CHARACTERS,
   MIN_BACKEND_TOKEN_CHARACTERS
 } from './types';
@@ -20,10 +21,25 @@ import type {
   BackendErrorCode,
   FileChange,
   HealthResponse,
+  KnowledgeIndexApplyRequest,
+  KnowledgeIndexMetadata,
+  KnowledgeIndexMetadataUpdateRequest,
+  KnowledgeIndexOpenRequest,
+  KnowledgeIndexOpenResponse,
+  KnowledgeIndexSearchRequest,
+  KnowledgeIndexSearchResponse,
+  KnowledgeIndexWriteResponse,
   TokenUsage
 } from './types';
+import {
+  parseKnowledgeIndexMetadata,
+  parseKnowledgeIndexOpenResponse,
+  parseKnowledgeIndexSearchResponse,
+  parseKnowledgeIndexWriteResponse
+} from './knowledgeIndexProtocol';
 
 const HEALTH_TIMEOUT_MS = 2_000;
+const KNOWLEDGE_INDEX_TIMEOUT_MS = 30_000;
 export const DEFAULT_ASK_TIMEOUT_MS = 930_000;
 const PROVIDER_KEY_HEADER = 'X-DevMate-Provider-Key';
 const MAX_BACKEND_RESPONSE_BYTES = 4_000_000;
@@ -39,6 +55,7 @@ const MAX_ASK_TOOL_ARGUMENT_CHARACTERS = 1_200_000;
 const MAX_ASK_PATH_CHARACTERS = 2_048;
 const backendErrorCodes = new Set<string>(DEVMATE_BACKEND_ERROR_CODES);
 const agentToolNames = new Set<string>(AGENT_TOOL_NAMES);
+const knowledgeIndexPath = `/index/v${DEVMATE_KNOWLEDGE_INDEX_API_VERSION}`;
 
 export type AskStreamEvent =
   | { type: 'delta'; text: string }
@@ -89,6 +106,107 @@ export async function health(
     };
   }
   return { status: 'ok', data: response };
+}
+
+export function openKnowledgeIndex(
+  backendUrl: string,
+  request: KnowledgeIndexOpenRequest,
+  backendToken: string,
+  signal?: AbortSignal
+): Promise<ApiResult<KnowledgeIndexOpenResponse>> {
+  return knowledgeIndexRequest(
+    backendUrl,
+    `${knowledgeIndexPath}/workspaces/open`,
+    request,
+    backendToken,
+    parseKnowledgeIndexOpenResponse,
+    signal
+  );
+}
+
+export function applyKnowledgeIndexChanges(
+  backendUrl: string,
+  request: KnowledgeIndexApplyRequest,
+  backendToken: string,
+  signal?: AbortSignal
+): Promise<ApiResult<KnowledgeIndexWriteResponse>> {
+  return knowledgeIndexRequest(
+    backendUrl,
+    `${knowledgeIndexPath}/files/apply`,
+    request,
+    backendToken,
+    parseKnowledgeIndexWriteResponse,
+    signal
+  );
+}
+
+export function updateKnowledgeIndexMetadata(
+  backendUrl: string,
+  request: KnowledgeIndexMetadataUpdateRequest,
+  backendToken: string,
+  signal?: AbortSignal
+): Promise<ApiResult<KnowledgeIndexMetadata>> {
+  return knowledgeIndexRequest(
+    backendUrl,
+    `${knowledgeIndexPath}/metadata/update`,
+    request,
+    backendToken,
+    parseKnowledgeIndexMetadata,
+    signal
+  );
+}
+
+export function searchKnowledgeIndex(
+  backendUrl: string,
+  request: KnowledgeIndexSearchRequest,
+  backendToken: string,
+  signal?: AbortSignal
+): Promise<ApiResult<KnowledgeIndexSearchResponse>> {
+  return knowledgeIndexRequest(
+    backendUrl,
+    `${knowledgeIndexPath}/search`,
+    request,
+    backendToken,
+    parseKnowledgeIndexSearchResponse,
+    signal
+  );
+}
+
+function knowledgeIndexRequest<T>(
+  backendUrl: string,
+  requestPath: string,
+  request: object,
+  backendToken: string,
+  decodeData: (value: unknown) => T | undefined,
+  signal?: AbortSignal
+): Promise<ApiResult<T>> {
+  if (!isValidBackendToken(backendToken)) {
+    return Promise.resolve(backendAuthenticationUnavailable());
+  }
+  if (!isLoopbackBackendUrl(backendUrl)) {
+    return Promise.resolve({
+      status: 'error',
+      message: 'DevMate only stores workspace source in a backend running on this computer.',
+      errorKind: 'configuration'
+    });
+  }
+  return nodeHttpJsonRequest(
+    backendUrl,
+    requestPath,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'Accept-Encoding': 'identity',
+        [DEVMATE_BACKEND_TOKEN_HEADER]: backendToken
+      },
+      body: JSON.stringify(request)
+    },
+    decodeData,
+    KNOWLEDGE_INDEX_TIMEOUT_MS,
+    signal
+  );
 }
 
 export async function ask(

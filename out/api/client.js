@@ -2,6 +2,10 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.DEFAULT_ASK_TIMEOUT_MS = void 0;
 exports.health = health;
+exports.openKnowledgeIndex = openKnowledgeIndex;
+exports.applyKnowledgeIndexChanges = applyKnowledgeIndexChanges;
+exports.updateKnowledgeIndexMetadata = updateKnowledgeIndexMetadata;
+exports.searchKnowledgeIndex = searchKnowledgeIndex;
 exports.ask = ask;
 exports.askStream = askStream;
 exports.isLoopbackBackendUrl = isLoopbackBackendUrl;
@@ -10,7 +14,9 @@ const https_1 = require("https");
 const string_decoder_1 = require("string_decoder");
 const agentTools_1 = require("../agentTools");
 const types_1 = require("./types");
+const knowledgeIndexProtocol_1 = require("./knowledgeIndexProtocol");
 const HEALTH_TIMEOUT_MS = 2_000;
+const KNOWLEDGE_INDEX_TIMEOUT_MS = 30_000;
 exports.DEFAULT_ASK_TIMEOUT_MS = 930_000;
 const PROVIDER_KEY_HEADER = 'X-DevMate-Provider-Key';
 const MAX_BACKEND_RESPONSE_BYTES = 4_000_000;
@@ -26,6 +32,7 @@ const MAX_ASK_TOOL_ARGUMENT_CHARACTERS = 1_200_000;
 const MAX_ASK_PATH_CHARACTERS = 2_048;
 const backendErrorCodes = new Set(types_1.DEVMATE_BACKEND_ERROR_CODES);
 const agentToolNames = new Set(agentTools_1.AGENT_TOOL_NAMES);
+const knowledgeIndexPath = `/index/v${types_1.DEVMATE_KNOWLEDGE_INDEX_API_VERSION}`;
 async function health(backendUrl, backendToken) {
     if (!isValidBackendToken(backendToken)) {
         return backendAuthenticationUnavailable();
@@ -51,6 +58,40 @@ async function health(backendUrl, backendToken) {
         };
     }
     return { status: 'ok', data: response };
+}
+function openKnowledgeIndex(backendUrl, request, backendToken, signal) {
+    return knowledgeIndexRequest(backendUrl, `${knowledgeIndexPath}/workspaces/open`, request, backendToken, knowledgeIndexProtocol_1.parseKnowledgeIndexOpenResponse, signal);
+}
+function applyKnowledgeIndexChanges(backendUrl, request, backendToken, signal) {
+    return knowledgeIndexRequest(backendUrl, `${knowledgeIndexPath}/files/apply`, request, backendToken, knowledgeIndexProtocol_1.parseKnowledgeIndexWriteResponse, signal);
+}
+function updateKnowledgeIndexMetadata(backendUrl, request, backendToken, signal) {
+    return knowledgeIndexRequest(backendUrl, `${knowledgeIndexPath}/metadata/update`, request, backendToken, knowledgeIndexProtocol_1.parseKnowledgeIndexMetadata, signal);
+}
+function searchKnowledgeIndex(backendUrl, request, backendToken, signal) {
+    return knowledgeIndexRequest(backendUrl, `${knowledgeIndexPath}/search`, request, backendToken, knowledgeIndexProtocol_1.parseKnowledgeIndexSearchResponse, signal);
+}
+function knowledgeIndexRequest(backendUrl, requestPath, request, backendToken, decodeData, signal) {
+    if (!isValidBackendToken(backendToken)) {
+        return Promise.resolve(backendAuthenticationUnavailable());
+    }
+    if (!isLoopbackBackendUrl(backendUrl)) {
+        return Promise.resolve({
+            status: 'error',
+            message: 'DevMate only stores workspace source in a backend running on this computer.',
+            errorKind: 'configuration'
+        });
+    }
+    return nodeHttpJsonRequest(backendUrl, requestPath, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            'Accept-Encoding': 'identity',
+            [types_1.DEVMATE_BACKEND_TOKEN_HEADER]: backendToken
+        },
+        body: JSON.stringify(request)
+    }, decodeData, KNOWLEDGE_INDEX_TIMEOUT_MS, signal);
 }
 async function ask(backendUrl, askRequest, secrets, timeoutMilliseconds = exports.DEFAULT_ASK_TIMEOUT_MS, signal) {
     if (!isValidBackendToken(secrets.backendToken)) {

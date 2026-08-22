@@ -2,6 +2,25 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-22 — Add the authenticated knowledge-index API
+
+### Changed
+
+- Added a versioned `/index/v1/` backend API for opening a workspace index, applying atomic file batches, updating index metadata, and running lexical searches.
+- Isolated index handlers in their own router and injected the repository through the application factory without coupling index operations to chat routes.
+- Required backend-token authentication across the complete index namespace and added stable unavailable, missing-workspace, and index-failure error codes.
+- Added shared TypeScript/Python index versions, states, limits, and the `knowledge-index-v1` health capability.
+- Added extension-side index clients with loopback-only source transfer and strict response decoding; automatic indexing and project retrieval remain unchanged.
+- Added backend round-trip, authentication, validation, unavailable-store, client transport, and malformed-response coverage.
+
+### Verification
+
+- `npm run verify` — 188 extension tests and 105 backend tests passed; 39 cross-language contracts and 19 emitted JavaScript files verified.
+- Focused index API and client coverage — 4 backend API tests and 7 new extension client tests passed.
+- `git diff --check`
+
+---
+
 ## 2026-08-22 — Add the SQLite knowledge-index repository
 
 ### Changed

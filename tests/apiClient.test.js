@@ -3,11 +3,15 @@ const http = require('node:http');
 const test = require('node:test');
 
 const {
+  applyKnowledgeIndexChanges,
   ask,
   askStream,
   DEFAULT_ASK_TIMEOUT_MS,
   health,
-  isLoopbackBackendUrl
+  isLoopbackBackendUrl,
+  openKnowledgeIndex,
+  searchKnowledgeIndex,
+  updateKnowledgeIndexMetadata
 } = require('../out/api/client');
 
 const TEST_BACKEND_TOKEN = 'test-backend-token-that-is-long-enough';
@@ -89,6 +93,143 @@ test('rejects incompatible protocols and missing required capabilities', async (
       });
     });
   }
+});
+
+test('sends authenticated versioned knowledge-index requests and strictly decodes them', async () => {
+  const received = [];
+  await withServer(async (request, response) => {
+    received.push({
+      path: request.url,
+      token: request.headers['x-devmate-backend-token'],
+      body: await readRequestJson(request)
+    });
+    if (request.url === '/index/v1/workspaces/open') {
+      sendJson(response, 200, { status: 'ok', data: knowledgeIndexOpenData() });
+      return;
+    }
+    if (request.url === '/index/v1/files/apply') {
+      sendJson(response, 200, {
+        status: 'ok',
+        data: { upsertedFiles: 1, deletedFiles: 0 }
+      });
+      return;
+    }
+    if (request.url === '/index/v1/metadata/update') {
+      sendJson(response, 200, { status: 'ok', data: knowledgeIndexMetadata() });
+      return;
+    }
+    sendJson(response, 200, { status: 'ok', data: knowledgeIndexSearchData() });
+  }, async (backendUrl) => {
+    const opened = await openKnowledgeIndex(
+      backendUrl,
+      knowledgeIndexOpenRequest(),
+      TEST_BACKEND_TOKEN
+    );
+    const applied = await applyKnowledgeIndexChanges(
+      backendUrl,
+      knowledgeIndexApplyRequest(),
+      TEST_BACKEND_TOKEN
+    );
+    const metadata = await updateKnowledgeIndexMetadata(
+      backendUrl,
+      knowledgeIndexMetadataRequest(),
+      TEST_BACKEND_TOKEN
+    );
+    const searched = await searchKnowledgeIndex(
+      backendUrl,
+      knowledgeIndexSearchRequest(),
+      TEST_BACKEND_TOKEN
+    );
+
+    assert.deepEqual(opened.data, knowledgeIndexOpenData());
+    assert.deepEqual(applied.data, { upsertedFiles: 1, deletedFiles: 0 });
+    assert.deepEqual(metadata.data, knowledgeIndexMetadata());
+    assert.deepEqual(searched.data, knowledgeIndexSearchData());
+  });
+
+  assert.deepEqual(
+    received.map((request) => request.path),
+    [
+      '/index/v1/workspaces/open',
+      '/index/v1/files/apply',
+      '/index/v1/metadata/update',
+      '/index/v1/search'
+    ]
+  );
+  assert.ok(received.every((request) => request.token === TEST_BACKEND_TOKEN));
+  assert.deepEqual(received.map((request) => request.body), [
+    knowledgeIndexOpenRequest(),
+    knowledgeIndexApplyRequest(),
+    knowledgeIndexMetadataRequest(),
+    knowledgeIndexSearchRequest()
+  ]);
+});
+
+test('rejects malformed knowledge-index responses field by field', async (context) => {
+  const cases = [
+    {
+      label: 'open response',
+      call: (backendUrl) => openKnowledgeIndex(
+        backendUrl,
+        knowledgeIndexOpenRequest(),
+        TEST_BACKEND_TOKEN
+      ),
+      data: { ...knowledgeIndexOpenData(), unexpected: true }
+    },
+    {
+      label: 'write response',
+      call: (backendUrl) => applyKnowledgeIndexChanges(
+        backendUrl,
+        knowledgeIndexApplyRequest(),
+        TEST_BACKEND_TOKEN
+      ),
+      data: { upsertedFiles: -1, deletedFiles: 0 }
+    },
+    {
+      label: 'metadata response',
+      call: (backendUrl) => updateKnowledgeIndexMetadata(
+        backendUrl,
+        knowledgeIndexMetadataRequest(),
+        TEST_BACKEND_TOKEN
+      ),
+      data: { ...knowledgeIndexMetadata(), indexState: 'unknown' }
+    },
+    {
+      label: 'search response',
+      call: (backendUrl) => searchKnowledgeIndex(
+        backendUrl,
+        knowledgeIndexSearchRequest(),
+        TEST_BACKEND_TOKEN
+      ),
+      data: {
+        results: [{ ...knowledgeIndexSearchData().results[0], score: Number.POSITIVE_INFINITY }]
+      }
+    }
+  ];
+
+  for (const item of cases) {
+    await context.test(item.label, async () => {
+      await withServer((_request, response) => {
+        sendJson(response, 200, { status: 'ok', data: item.data });
+      }, async (backendUrl) => {
+        const result = await item.call(backendUrl);
+        assert.equal(result.status, 'error');
+        assert.equal(result.errorKind, 'invalid-response');
+      });
+    });
+  }
+});
+
+test('refuses to send workspace source to a non-loopback index backend', async () => {
+  const result = await applyKnowledgeIndexChanges(
+    'https://backend.example.com',
+    knowledgeIndexApplyRequest(),
+    TEST_BACKEND_TOKEN
+  );
+
+  assert.equal(result.status, 'error');
+  assert.equal(result.errorKind, 'configuration');
+  assert.match(result.message, /backend running on this computer/);
 });
 
 test('refuses to send a provider key to a remote backend', async () => {
@@ -451,11 +592,94 @@ function compatibleHealthResult() {
         'chat',
         'streaming',
         'request-authentication',
-        'strict-response-contracts'
+        'strict-response-contracts',
+        'knowledge-index-v1'
       ],
       backend: 'online',
       version: '1.0.0'
     }
+  };
+}
+
+function knowledgeIndexOpenRequest() {
+  return {
+    workspaceKey: 'workspace-one',
+    rootPath: 'C:\\repo',
+    chunkingVersion: 1
+  };
+}
+
+function knowledgeIndexApplyRequest() {
+  return {
+    workspaceKey: 'workspace-one',
+    upserts: [{
+      relativePath: 'src/auth.ts',
+      languageId: 'typescript',
+      contentHash: 'file-hash',
+      sizeBytes: 42,
+      modifiedAt: 100,
+      chunks: [{
+        stableId: 'src/auth.ts:1-1',
+        ordinal: 0,
+        startLine: 1,
+        endLine: 1,
+        content: 'export const loginToken = true;',
+        contentHash: 'chunk-hash',
+        chunkingVersion: 1
+      }]
+    }],
+    deletedPaths: []
+  };
+}
+
+function knowledgeIndexMetadataRequest() {
+  return {
+    workspaceKey: 'workspace-one',
+    chunkingVersion: 1,
+    indexState: 'ready',
+    lastFullScanAt: '2026-08-22T12:00:00Z'
+  };
+}
+
+function knowledgeIndexSearchRequest() {
+  return { workspaceKey: 'workspace-one', query: 'login token', limit: 5 };
+}
+
+function knowledgeIndexMetadata() {
+  return {
+    workspaceKey: 'workspace-one',
+    chunkingVersion: 1,
+    indexState: 'ready',
+    lastFullScanAt: '2026-08-22T12:00:00Z'
+  };
+}
+
+function knowledgeIndexOpenData() {
+  return {
+    workspace: { id: 1, workspaceKey: 'workspace-one', rootPath: 'C:\\repo' },
+    metadata: knowledgeIndexMetadata(),
+    files: [{
+      relativePath: 'src/auth.ts',
+      contentHash: 'file-hash',
+      sizeBytes: 42,
+      modifiedAt: 100
+    }]
+  };
+}
+
+function knowledgeIndexSearchData() {
+  return {
+    results: [{
+      relativePath: 'src/auth.ts',
+      languageId: 'typescript',
+      stableId: 'src/auth.ts:1-1',
+      ordinal: 0,
+      startLine: 1,
+      endLine: 1,
+      content: 'export const loginToken = true;',
+      contentHash: 'chunk-hash',
+      score: 0.75
+    }]
   };
 }
 
@@ -502,4 +726,12 @@ async function withServer(handler, run) {
     server.closeAllConnections?.();
     await new Promise((resolve) => server.close(resolve));
   }
+}
+
+async function readRequestJson(request) {
+  const chunks = [];
+  for await (const chunk of request) {
+    chunks.push(Buffer.from(chunk));
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }

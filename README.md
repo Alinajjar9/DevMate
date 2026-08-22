@@ -223,7 +223,7 @@ The status indicator in the DevMate toolbar shows whether the backend is checkin
 
 DevMate generates a fresh in-memory authentication token whenever it launches the backend. The token is passed only to that child process and is required by `/health`, `/ask`, and `/ask/stream`. Manually started or externally managed backends are intentionally rejected until an explicit secure token-sharing flow is available.
 
-The managed backend also receives an explicit SQLite path below VS Code's private global extension storage. The application opens the versioned knowledge store during startup and closes it during shutdown. The database is not placed in the repository and is not yet used by project retrieval; the current lexical JSON index remains active until the indexing API is introduced.
+The managed backend also receives an explicit SQLite path below VS Code's private global extension storage. The application opens the versioned knowledge store during startup and closes it during shutdown. Its authenticated `/index/v1/` API supports workspace snapshots, atomic file batches, index metadata, and lexical search. The extension does not call that API yet, so the current lexical JSON index remains active until the incremental indexing coordinator is introduced.
 
 ## Settings
 
@@ -322,7 +322,8 @@ The Python backend source remains in the package as a fallback for development o
 | `media/webview.css` | Sidebar layout and visual styles |
 | `media/webview.js` | Browser-side chat state, rendering, and interactions |
 | `src/agentTools.ts` | Tool names, argument parsing, limits, and history compaction |
-| `src/api/` | Extension-to-backend HTTP transport and request types |
+| `src/api/` | Extension-to-backend HTTP transport, request types, and strict knowledge-index response decoding |
+| `src/api/knowledgeIndexProtocol.ts` | Runtime validation for versioned knowledge-index responses |
 | `src/backendManager.ts` | Local backend startup, monitoring, and restart logic |
 | `src/projectIndex.ts` | Local index representation, chunking, and lexical scoring |
 | `src/projectRetriever.ts` | Replaceable project-retrieval contract and current lexical adapter |
@@ -333,6 +334,8 @@ The Python backend source remains in the package as a fallback for development o
 | `backend/app/chat_service.py` | Model-request construction, completion normalization, and token accounting |
 | `backend/app/dependencies.py` | Per-application backend dependency container and route accessors |
 | `backend/app/errors.py` | Shared backend application errors |
+| `backend/app/knowledge_contracts.py` | Shared version, states, and size limits for the knowledge-index protocol |
+| `backend/app/knowledge_routes.py` | Authenticated version-one knowledge-index HTTP routes |
 | `backend/app/knowledge_store.py` | Isolated versioned SQLite schema and transaction boundary for future indexing |
 | `backend/app/knowledge_repository.py` | Transactional workspace, file, chunk, metadata, and FTS data access |
 | `backend/app/main.py` | FastAPI application composition, authentication, and exception handling |
@@ -390,6 +393,6 @@ The workspace must be trusted and VS Code Terminal Shell Integration must be ava
 - Provider redirects are disabled to avoid forwarding credentials to another host.
 - Remote model-provider endpoints require HTTPS; plain HTTP is limited to loopback hosts.
 - Provider hostnames are resolved before each request, every answer must be public (or exact loopback for a local provider), and the connection is pinned to a checked address while retaining the original TLS identity.
-- Backend protocol version 2 uses strictly decoded success and streaming schemas plus stable machine-readable error codes; malformed responses are rejected without displaying untrusted error text.
+- Backend protocol version 2 advertises the version-one knowledge-index capability and uses strictly decoded success, index, and streaming schemas plus stable machine-readable error codes; malformed responses are rejected without displaying untrusted error text.
 - Project and tool content is treated as untrusted data in backend prompts.
 - The model never receives direct filesystem, terminal, or VS Code API access.
