@@ -56,11 +56,13 @@ function entryKey(uri) {
 }
 
 function addDirectory(relativePath, type = 2) {
-  entries.set(entryKey(createUri(path.win32.join(folder.uri.fsPath, relativePath))), {
+  const entry = {
     type,
     content: '',
     dirty: false
-  });
+  };
+  entries.set(entryKey(createUri(path.win32.join(folder.uri.fsPath, relativePath))), entry);
+  return entry;
 }
 
 function addFile(relativePath, content, dirty = false) {
@@ -115,7 +117,7 @@ const vscode = {
     },
     openTextDocument: async (uri) => {
       const entry = entries.get(entryKey(uri));
-      if (!entry || entry.type !== 1) {
+      if (!entry || (entry.type & 1) === 0) {
         throw new MockFileSystemError(`${uri.fsPath} was not found`, 'FileNotFound');
       }
       return {
@@ -263,6 +265,46 @@ test('a missing target created while approval is pending is rejected', async () 
       new AbortController().signal
     ),
     /was created while permission was pending/
+  );
+  assert.equal(applyEditCalls, 0);
+  assert.equal(recordedDiffs.length, 0);
+});
+
+test('a create parent changed to a symbolic link while approval is pending is rejected', async () => {
+  resetWorkspace();
+  const sourceDirectory = entries.get(entryKey(createUri('C:\\repo\\src')));
+  const { mutations, recordedDiffs } = createMutations(async () => {
+    sourceDirectory.type = vscode.FileType.Directory | vscode.FileType.SymbolicLink;
+    return true;
+  });
+
+  await assert.rejects(
+    () => mutations.confirmAndApplyFileChanges(
+      [{ path: 'src/new.ts', content: 'export const value = 1;' }],
+      'Create new.ts',
+      new AbortController().signal
+    ),
+    /symbolic-link path src/
+  );
+  assert.equal(applyEditCalls, 0);
+  assert.equal(recordedDiffs.length, 0);
+});
+
+test('an update target changed to a symbolic link while approval is pending is rejected', async () => {
+  resetWorkspace();
+  const file = addFile('src/app.ts', 'export const value = 1;');
+  const { mutations, recordedDiffs } = createMutations(async () => {
+    file.type = vscode.FileType.File | vscode.FileType.SymbolicLink;
+    return true;
+  });
+
+  await assert.rejects(
+    () => mutations.confirmAndApplyFileChanges(
+      [{ path: 'src/app.ts', content: 'export const value = 2;' }],
+      'Update app.ts',
+      new AbortController().signal
+    ),
+    /symbolic-link path src\/app\.ts/
   );
   assert.equal(applyEditCalls, 0);
   assert.equal(recordedDiffs.length, 0);

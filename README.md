@@ -195,7 +195,7 @@ File operations are executed by the extension, not the backend.
 - Verification commands can be allowed once or remembered as an exact command for the workspace.
 - Proposed file changes can be reviewed in VS Code's native diff editor.
 
-Before applying a change, DevMate checks workspace trust, path boundaries, protected files, symbolic links, file size, binary content, unsaved editor changes, and stale proposals. Approved edits use `WorkspaceEdit` and participate in VS Code's normal undo behaviour.
+Before applying a change, DevMate checks workspace trust, path boundaries, protected files, symbolic links, file size, binary content, unsaved editor changes, and stale proposals. Create and update paths are checked for symbolic links again after approval and after creating required parent directories. Approved edits use `WorkspaceEdit` and participate in VS Code's normal undo behaviour.
 
 ## Verification commands
 

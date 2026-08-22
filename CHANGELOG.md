@@ -2,6 +2,23 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-22 — Revalidate symlink safety before file writes
+
+### Changed
+
+- Recheck every approved create and update path for symbolic-link segments before performing directory or file mutations.
+- Repeat the path check after creating required parent directories and immediately before assembling the VS Code workspace edit.
+- Added regression coverage for a create parent and an update target changing into symbolic links while permission is pending.
+- Keep normal approved file updates unchanged while rejecting both race scenarios before any workspace edit is applied.
+
+### Verification
+
+- `npm run verify` — 180 extension tests and 87 backend tests passed; 21 cross-language contracts and 17 emitted JavaScript files verified.
+- Focused workspace-mutation regression suite — 9 tests passed.
+- `git diff --check`
+
+---
+
 ## 2026-08-22 — Extract backend API routes
 
 ### Changed

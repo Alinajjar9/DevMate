@@ -251,6 +251,7 @@ export class WorkspaceMutations {
     }
 
     for (const change of plannedChanges) {
+      await this.assertNoWorkspaceSymlink(folder, change.path, true);
       if (change.exists) {
         const document = await vscode.workspace.openTextDocument(change.uri);
         if (document.isDirty || document.getText() !== change.originalContent) {
@@ -277,6 +278,9 @@ export class WorkspaceMutations {
         );
       }
     }
+    await Promise.all(
+      plannedChanges.map((change) => this.assertNoWorkspaceSymlink(folder, change.path, true))
+    );
 
     const workspaceEdit = new vscode.WorkspaceEdit();
     for (const change of plannedChanges) {
