@@ -53,6 +53,9 @@ const vscode = {
       segments.join('/')
     )
   },
+  commands: {
+    executeCommand: async () => undefined
+  },
   workspace: {
     workspaceFolders: [folder],
     asRelativePath: (uri) => uri.relativePath,
@@ -155,3 +158,98 @@ test('workspace source rechecks parent links immediately around file reads', asy
     /symbolic-link directory/
   );
 });
+
+test('workspace source exposes bounded document-symbol ranges with safe fallback', async () => {
+  entries.clear();
+  addDirectory('src');
+  const app = addFile('src/app.ts', [
+    'export function app() {',
+    '  return true;',
+    '}',
+    ''
+  ].join('\n'));
+  vscode.workspace.findFiles = async () => [app];
+  let commandCalls = 0;
+  vscode.commands.executeCommand = async (command, uri) => {
+    commandCalls += 1;
+    assert.equal(command, 'vscode.executeDocumentSymbolProvider');
+    assert.equal(uri, app);
+    return [{
+      range: range(0, 0, 2, 1),
+      selectionRange: range(0, 16, 0, 19),
+      children: [{
+        range: range(1, 2, 1, 14),
+        selectionRange: range(1, 9, 1, 13),
+        children: []
+      }]
+    }, {
+      location: {
+        uri: app,
+        range: range(0, 0, 0, 6)
+      }
+    }, {
+      location: {
+        uri: createUri('C:\\other\\outside.ts', 'outside.ts'),
+        range: range(0, 0, 0, 1)
+      }
+    }];
+  };
+  const snapshot = await new VsCodeWorkspaceIndexSource().scan(
+    new AbortController().signal
+  );
+
+  const fileRead = await snapshot.files[0].read(new AbortController().signal);
+  const ranges = await snapshot.files[0].readSymbolRanges(
+    fileRead,
+    new AbortController().signal
+  );
+
+  assert.equal(commandCalls, 1);
+  assert.deepEqual(ranges, [
+    {
+      start: { line: 0, character: 0 },
+      end: { line: 2, character: 1 }
+    },
+    {
+      start: { line: 1, character: 2 },
+      end: { line: 1, character: 14 }
+    },
+    {
+      start: { line: 0, character: 0 },
+      end: { line: 0, character: 6 }
+    }
+  ]);
+
+  vscode.commands.executeCommand = async () => {
+    entries.get(key('src/app.ts')).content = [
+      'export function app() {',
+      '  return null;',
+      '}',
+      ''
+    ].join('\n');
+    return [{
+      range: range(0, 0, 2, 1),
+      selectionRange: range(0, 16, 0, 19),
+      children: []
+    }];
+  };
+  assert.equal(
+    await snapshot.files[0].readSymbolRanges(fileRead, new AbortController().signal),
+    undefined
+  );
+
+  vscode.commands.executeCommand = async () => {
+    throw new Error('Provider unavailable');
+  };
+  assert.equal(
+    await snapshot.files[0].readSymbolRanges(fileRead, new AbortController().signal),
+    undefined
+  );
+});
+
+function range(startLine, startCharacter, endLine, endCharacter) {
+  return {
+    start: { line: startLine, character: startCharacter },
+    end: { line: endLine, character: endCharacter }
+  };
+}

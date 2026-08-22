@@ -227,7 +227,9 @@ The managed backend also receives an explicit SQLite path below VS Code's privat
 
 After the managed backend comes online, the extension performs an initial background synchronization of the first local workspace. It then watches relevant create, change, delete, rename, and workspace-folder events. Event bursts are debounced into one follow-up synchronization, and changes arriving during an active run produce one trailing run. Indexing pauses and active work is cancelled whenever authenticated backend access is unavailable.
 
-Each synchronization reuses the existing project-file limits and exclusions, rejects symbolic-link paths, hashes the eligible files, and sends only changed files and known deletions in bounded batches. Unreadable files leave the SQLite index marked stale instead of deleting previously indexed content. The current chat retrieval path still uses the lexical JSON index; SQLite-backed retrieval, embeddings, and semantic search are later milestones.
+Each synchronization reuses the existing project-file limits and exclusions, rejects symbolic-link paths, hashes the eligible files, and sends only changed files and known deletions in bounded batches. Changed files prefer validated VS Code document-symbol boundaries so declarations stay together where size limits permit. Missing, invalid, or unavailable language-provider results fall back to the existing overlapping line chunks. Symbol lookup is performed only after a fingerprint changes and is revalidated against the exact file snapshot being indexed.
+
+Unreadable files leave the SQLite index marked stale instead of deleting previously indexed content. The current chat retrieval path still uses the lexical JSON index; SQLite-backed retrieval, embeddings, and semantic search are later milestones.
 
 ## Settings
 
@@ -324,6 +326,7 @@ The Python backend source remains in the package as a fallback for development o
 | `src/indexSynchronization.ts` | Cancellable workspace-to-SQLite reconciliation and bounded change batching |
 | `src/workspaceIndexSource.ts` | Safe, bounded VS Code workspace scanning and file revalidation for indexing |
 | `src/workspaceIndexWatcher.ts` | Debounced workspace-change monitoring and authenticated synchronization scheduling |
+| `src/projectChunking.ts` | Validated document-symbol chunk boundaries with bounded line-based fallback |
 | `src/workspaceMutations.ts` | File writes, trust checks, symlink protection, and pre-apply revalidation |
 | `src/webview.ts` | CSP-protected webview shell and packaged asset URLs |
 | `media/webview.css` | Sidebar layout and visual styles |

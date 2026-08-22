@@ -43,7 +43,7 @@ test('initial synchronization hashes, chunks, and stores each workspace file', a
   assert.equal(auth.contentHash, sha256('export function authenticateUser() { return true; }\n'));
   assert.equal(auth.chunks.length, 1);
   assert.equal(auth.chunks[0].ordinal, 0);
-  assert.equal(auth.chunks[0].stableId, 'src/auth.ts:1-1');
+  assert.equal(auth.chunks[0].stableId, 'src/auth.ts:1-1:0');
   assert.equal(auth.chunks[0].chunkingVersion, KNOWLEDGE_INDEX_CHUNKING_VERSION);
   assert.deepEqual(api.metadataRequests.map((request) => request.indexState), [
     'indexing',
@@ -107,6 +107,85 @@ test('chunking-version changes rebuild unchanged files before marking the index 
   assert.equal(api.metadataRequests[0].chunkingVersion, KNOWLEDGE_INDEX_CHUNKING_VERSION);
   assert.equal(api.applyRequests[0].upserts[0].chunks[0].chunkingVersion,
     KNOWLEDGE_INDEX_CHUNKING_VERSION);
+});
+
+test('document symbols are requested only after a file fingerprint changes', async () => {
+  const unchanged = sourceFile(
+    'src/unchanged.ts',
+    'export const unchanged = true;\n',
+    10
+  );
+  const firstSymbol = [
+    'export function firstSymbol() {',
+    ...Array.from({ length: 150 }, () => '  firstValue += 1;'),
+    '}',
+    ''
+  ].join('\n');
+  const secondSymbol = [
+    'export function secondSymbol() {',
+    ...Array.from({ length: 150 }, () => '  secondValue += 1;'),
+    '}',
+    ''
+  ].join('\n');
+  const changedContent = firstSymbol + secondSymbol;
+  const changed = sourceFile('src/changed.ts', changedContent, 20);
+  let unchangedSymbolReads = 0;
+  let changedSymbolReads = 0;
+  unchanged.readSymbolRanges = async () => {
+    unchangedSymbolReads += 1;
+    return [];
+  };
+  changed.readSymbolRanges = async () => {
+    changedSymbolReads += 1;
+    return [
+      offsetRange(changedContent, 0, firstSymbol.length),
+      offsetRange(changedContent, firstSymbol.length, changedContent.length)
+    ];
+  };
+  const api = createApi({
+    files: [
+      fingerprint(unchanged),
+      {
+        relativePath: changed.relativePath,
+        contentHash: sha256('previous content'),
+        sizeBytes: 16,
+        modifiedAt: 1
+      }
+    ]
+  });
+
+  const result = await new KnowledgeIndexSynchronizer(
+    source([unchanged, changed]),
+    api
+  ).synchronize(ACCESS);
+
+  assert.equal(result.kind, 'completed');
+  assert.equal(unchangedSymbolReads, 0);
+  assert.equal(changedSymbolReads, 1);
+  const indexed = api.applyRequests[0].upserts[0];
+  assert.deepEqual(indexed.chunks.map((chunk) => chunk.content), [
+    firstSymbol,
+    secondSymbol
+  ]);
+  assert.equal(new Set(indexed.chunks.map((chunk) => chunk.stableId)).size, 2);
+});
+
+test('document-symbol provider failures retain line-based indexing', async () => {
+  const file = sourceFile(
+    'src/fallback.ts',
+    'export const fallback = true;\n'.repeat(200),
+    10
+  );
+  file.readSymbolRanges = async () => {
+    throw new Error('No language provider is available.');
+  };
+  const api = createApi();
+
+  const result = await new KnowledgeIndexSynchronizer(source([file]), api)
+    .synchronize(ACCESS);
+
+  assert.equal(result.kind, 'completed');
+  assert.ok(api.applyRequests[0].upserts[0].chunks.length > 1);
 });
 
 test('binary and missing files are removed or preserved without claiming a complete scan', async () => {
@@ -261,6 +340,23 @@ function readResult(content, modifiedAt) {
   };
 }
 
+function offsetRange(content, startOffset, endOffset) {
+  return {
+    start: positionAt(content, startOffset),
+    end: positionAt(content, endOffset)
+  };
+}
+
+function positionAt(content, offset) {
+  const prefix = content.slice(0, offset);
+  const line = (prefix.match(/\n/g) ?? []).length;
+  const lastNewline = prefix.lastIndexOf('\n');
+  return {
+    line,
+    character: offset - lastNewline - 1
+  };
+}
+
 function fingerprint(file) {
   const originalRead = file.read;
   const contentByPath = {
@@ -280,7 +376,11 @@ function fingerprint(file) {
   };
 }
 
-function createApi({ files = [], chunkingVersion = 1, applyFailure } = {}) {
+function createApi({
+  files = [],
+  chunkingVersion = KNOWLEDGE_INDEX_CHUNKING_VERSION,
+  applyFailure
+} = {}) {
   const api = {
     applyRequests: [],
     metadataRequests: [],

@@ -2,6 +2,25 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-22 — Split indexed code around real symbols
+
+### Changed
+
+- Added symbol-aware SQLite chunking that prefers validated VS Code document-symbol boundaries while keeping every chunk within the existing size limit.
+- Preserved complete source coverage and retained the overlapping line-based chunker whenever symbols are missing, invalid, excessive, or unavailable.
+- Requested language-provider symbols only after a file fingerprint changes and revalidated file size, modification time, regular-file type, and parent links around the request.
+- Added unique ordinal-qualified chunk identifiers and advanced the SQLite chunking version to 2 so existing indexes rebuild once with the new layout.
+- Kept the active chat retriever on its existing JSON lexical index; this change improves the SQLite data prepared for later lexical and semantic retrieval.
+- Added focused coverage for preferred boundaries, unsafe-range fallback, provider failure, nested and cross-file symbols, unchanged-file skips, and exact source preservation.
+
+### Verification
+
+- `npm run verify` — 210 extension tests and 105 backend tests passed; 39 cross-language contracts and 23 emitted JavaScript files verified.
+- Focused chunking, synchronization, source, and watcher coverage — 26 tests passed.
+- `git diff --check`
+
+---
+
 ## 2026-08-22 — Keep the SQLite code index updated while files change
 
 ### Changed

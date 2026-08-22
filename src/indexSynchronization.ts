@@ -18,9 +18,13 @@ import type {
   KnowledgeIndexOpenResponse,
   KnowledgeIndexWriteResponse
 } from './api/types';
+import {
+  splitProjectContentWithSymbols
+} from './projectChunking';
+import type { ProjectSymbolRange } from './projectChunking';
 import { containsBinaryData, splitProjectContent } from './projectIndex';
 
-export const KNOWLEDGE_INDEX_CHUNKING_VERSION = 1;
+export const KNOWLEDGE_INDEX_CHUNKING_VERSION = 2;
 
 export type KnowledgeIndexAccess = {
   backendUrl: string;
@@ -37,6 +41,10 @@ export type WorkspaceIndexSourceFile = {
   relativePath: string;
   languageId: string;
   read: (signal: AbortSignal) => Promise<WorkspaceIndexFileRead>;
+  readSymbolRanges?: (
+    expectedFile: WorkspaceIndexFileRead,
+    signal: AbortSignal
+  ) => Promise<ProjectSymbolRange[] | undefined>;
 };
 
 export type WorkspaceIndexSnapshot = {
@@ -241,7 +249,7 @@ export class KnowledgeIndexSynchronizer {
           continue;
         }
 
-        await writer.addUpsert(createIndexedFile(file, read, contentHash));
+        await writer.addUpsert(await createIndexedFile(file, read, contentHash, signal));
       }
 
       for (const storedPath of [...storedFiles.keys()].sort()) {
@@ -324,14 +332,30 @@ export function knowledgeIndexWorkspaceKey(
   return `workspace:${sha256Hex(normalizedIdentity)}`;
 }
 
-function createIndexedFile(
+async function createIndexedFile(
   file: WorkspaceIndexSourceFile,
   read: WorkspaceIndexFileRead,
-  contentHash: string
-): KnowledgeIndexFileInput {
+  contentHash: string,
+  signal: AbortSignal
+): Promise<KnowledgeIndexFileInput> {
   const content = new TextDecoder('utf-8').decode(read.bytes);
-  const chunks = splitProjectContent(content, file.relativePath).map((chunk, ordinal) => ({
-    stableId: chunk.id,
+  let symbolRanges: ProjectSymbolRange[] | undefined;
+  if (file.readSymbolRanges) {
+    try {
+      symbolRanges = await file.readSymbolRanges(read, signal);
+      assertNotCancelled(signal);
+    } catch (error) {
+      if (isCancellation(error, signal)) {
+        throw new IndexSynchronizationCancelled();
+      }
+      // Language providers are optional. Invalid or unavailable symbols use the safe fallback.
+    }
+  }
+  const projectChunks = symbolRanges
+    ? splitProjectContentWithSymbols(content, file.relativePath, symbolRanges)
+    : splitProjectContent(content, file.relativePath);
+  const chunks = projectChunks.map((chunk, ordinal) => ({
+    stableId: `${chunk.id}:${ordinal}`,
     ordinal,
     startLine: chunk.startLine,
     endLine: chunk.endLine,

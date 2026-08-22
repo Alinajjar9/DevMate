@@ -37,6 +37,7 @@ exports.VsCodeWorkspaceIndexSource = void 0;
 const vscode = __importStar(require("vscode"));
 const types_1 = require("./api/types");
 const indexSynchronization_1 = require("./indexSynchronization");
+const projectChunking_1 = require("./projectChunking");
 const projectIndex_1 = require("./projectIndex");
 const workspaceContext_1 = require("./workspaceContext");
 class VsCodeWorkspaceIndexSource {
@@ -101,7 +102,8 @@ class VsCodeWorkspaceIndexSource {
                         sizeBytes: currentStat.size,
                         modifiedAt: Math.max(0, Math.trunc(currentStat.mtime))
                     };
-                }
+                },
+                readSymbolRanges: (expectedFile, readSignal) => readDocumentSymbolRanges(folder, uri, relativePath, expectedFile, readSignal)
             });
         }
         return {
@@ -113,6 +115,92 @@ class VsCodeWorkspaceIndexSource {
     }
 }
 exports.VsCodeWorkspaceIndexSource = VsCodeWorkspaceIndexSource;
+async function readDocumentSymbolRanges(folder, uri, relativePath, expectedFile, signal) {
+    assertNotCancelled(signal);
+    try {
+        if (!await hasSafeParentDirectories(folder, relativePath, new Set())) {
+            return undefined;
+        }
+        const stat = await vscode.workspace.fs.stat(uri);
+        if (!matchesExpectedFile(stat, expectedFile)) {
+            return undefined;
+        }
+        const provided = await vscode.commands.executeCommand('vscode.executeDocumentSymbolProvider', uri);
+        assertNotCancelled(signal);
+        const currentBytes = await vscode.workspace.fs.readFile(uri);
+        const currentStat = await vscode.workspace.fs.stat(uri);
+        if (!await hasSafeParentDirectories(folder, relativePath, new Set())
+            || !matchesExpectedFile(currentStat, expectedFile)
+            || !sameBytes(currentBytes, expectedFile.bytes)) {
+            return undefined;
+        }
+        return collectDocumentSymbolRanges(uri, provided);
+    }
+    catch (error) {
+        assertNotCancelled(signal);
+        return undefined;
+    }
+}
+function matchesExpectedFile(stat, expectedFile) {
+    return (stat.type & vscode.FileType.File) !== 0
+        && (stat.type & vscode.FileType.SymbolicLink) === 0
+        && stat.size <= projectIndex_1.MAX_PROJECT_FILE_BYTES
+        && stat.size === expectedFile.sizeBytes
+        && Math.max(0, Math.trunc(stat.mtime)) === expectedFile.modifiedAt;
+}
+function sameBytes(left, right) {
+    if (left.byteLength !== right.byteLength) {
+        return false;
+    }
+    for (let index = 0; index < left.byteLength; index += 1) {
+        if (left[index] !== right[index]) {
+            return false;
+        }
+    }
+    return true;
+}
+function collectDocumentSymbolRanges(uri, provided) {
+    if (!Array.isArray(provided)) {
+        return undefined;
+    }
+    const ranges = [];
+    let exceededLimit = false;
+    const visit = (symbols) => {
+        for (const symbol of symbols) {
+            if (ranges.length >= projectChunking_1.MAX_PROJECT_SYMBOL_RANGES) {
+                exceededLimit = true;
+                return;
+            }
+            if (isDocumentSymbol(symbol)) {
+                ranges.push(projectSymbolRange(symbol.range));
+                visit(symbol.children);
+            }
+            else if (sameUri(symbol.location.uri, uri)) {
+                ranges.push(projectSymbolRange(symbol.location.range));
+            }
+        }
+    };
+    visit(provided);
+    return ranges.length > 0 && !exceededLimit ? ranges : undefined;
+}
+function isDocumentSymbol(symbol) {
+    return 'selectionRange' in symbol && Array.isArray(symbol.children);
+}
+function projectSymbolRange(range) {
+    return {
+        start: {
+            line: range.start.line,
+            character: range.start.character
+        },
+        end: {
+            line: range.end.line,
+            character: range.end.character
+        }
+    };
+}
+function sameUri(left, right) {
+    return left.toString(true) === right.toString(true);
+}
 function isSafeRelativePath(relativePath) {
     if (!relativePath
         || relativePath.length > types_1.MAX_RELATIVE_PATH_CHARACTERS

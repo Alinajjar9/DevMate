@@ -10,6 +10,10 @@ const {
   retrieveProjectChunks,
   splitProjectContent
 } = require('../out/projectIndex');
+const {
+  MAX_PROJECT_SYMBOL_RANGES,
+  splitProjectContentWithSymbols
+} = require('../out/projectChunking');
 
 test('splits project files into bounded overlapping line-aware chunks', () => {
   const content = Array.from(
@@ -23,6 +27,50 @@ test('splits project files into bounded overlapping line-aware chunks', () => {
   assert.equal(chunks.every((chunk) => chunk.startLine <= chunk.endLine), true);
   assert.ok(chunks[1].startLine <= chunks[0].endLine);
   assert.match(chunks[0].id, /^src\/items\.ts:\d+-\d+$/);
+});
+
+test('prefers valid document-symbol boundaries while retaining complete source', () => {
+  const firstSymbol = [
+    'export function firstSymbol() {',
+    ...Array.from({ length: 150 }, () => '  firstValue += 1;'),
+    '}',
+    ''
+  ].join('\n');
+  const secondSymbol = [
+    'export function secondSymbol() {',
+    ...Array.from({ length: 150 }, () => '  secondValue += 1;'),
+    '}',
+    ''
+  ].join('\n');
+  const content = firstSymbol + secondSymbol;
+  const chunks = splitProjectContentWithSymbols(content, 'src/symbols.ts', [
+    offsetRange(content, 0, firstSymbol.length),
+    offsetRange(content, firstSymbol.length, content.length)
+  ]);
+
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks[0].content, firstSymbol);
+  assert.equal(chunks[1].content, secondSymbol);
+  assert.equal(chunks.map((chunk) => chunk.content).join(''), content);
+  assert.equal(chunks.every((chunk) => chunk.content.length <= MAX_PROJECT_CHUNK_CHARACTERS), true);
+});
+
+test('falls back to line chunks for invalid or unbounded symbol ranges', () => {
+  const content = 'export const fallback = true;\n'.repeat(200);
+  const fallback = splitProjectContent(content, 'src/fallback.ts');
+
+  assert.deepEqual(splitProjectContentWithSymbols(content, 'src/fallback.ts', [{
+    start: { line: 999, character: 0 },
+    end: { line: 1_000, character: 0 }
+  }]), fallback);
+  assert.deepEqual(splitProjectContentWithSymbols(
+    content,
+    'src/fallback.ts',
+    Array.from({ length: MAX_PROJECT_SYMBOL_RANGES + 1 }, () => ({
+      start: { line: 0, character: 0 },
+      end: { line: 0, character: 1 }
+    }))
+  ), fallback);
 });
 
 test('creates a bounded index entry while retaining original file metadata', () => {
@@ -108,4 +156,21 @@ function indexedFile(relativePath, content, size = content.length, modifiedAt = 
     languageId: 'typescript',
     content
   }, size, modifiedAt);
+}
+
+function offsetRange(content, startOffset, endOffset) {
+  return {
+    start: positionAt(content, startOffset),
+    end: positionAt(content, endOffset)
+  };
+}
+
+function positionAt(content, offset) {
+  const prefix = content.slice(0, offset);
+  const line = (prefix.match(/\n/g) ?? []).length;
+  const lastNewline = prefix.lastIndexOf('\n');
+  return {
+    line,
+    character: offset - lastNewline - 1
+  };
 }

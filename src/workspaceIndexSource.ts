@@ -7,10 +7,13 @@ import {
   knowledgeIndexWorkspaceKey
 } from './indexSynchronization';
 import type {
+  WorkspaceIndexFileRead,
   WorkspaceIndexSnapshot,
   WorkspaceIndexSource,
   WorkspaceIndexSourceFile
 } from './indexSynchronization';
+import { MAX_PROJECT_SYMBOL_RANGES } from './projectChunking';
+import type { ProjectSymbolRange } from './projectChunking';
 import {
   languageIdForPath,
   MAX_PROJECT_FILE_BYTES,
@@ -103,7 +106,14 @@ export class VsCodeWorkspaceIndexSource implements WorkspaceIndexSource {
             sizeBytes: currentStat.size,
             modifiedAt: Math.max(0, Math.trunc(currentStat.mtime))
           };
-        }
+        },
+        readSymbolRanges: (expectedFile, readSignal) => readDocumentSymbolRanges(
+          folder,
+          uri,
+          relativePath,
+          expectedFile,
+          readSignal
+        )
       });
     }
 
@@ -114,6 +124,113 @@ export class VsCodeWorkspaceIndexSource implements WorkspaceIndexSource {
       unavailablePaths: [...new Set(unavailablePaths)].sort()
     };
   }
+}
+
+async function readDocumentSymbolRanges(
+  folder: vscode.WorkspaceFolder,
+  uri: vscode.Uri,
+  relativePath: string,
+  expectedFile: WorkspaceIndexFileRead,
+  signal: AbortSignal
+): Promise<ProjectSymbolRange[] | undefined> {
+  assertNotCancelled(signal);
+  try {
+    if (!await hasSafeParentDirectories(folder, relativePath, new Set())) {
+      return undefined;
+    }
+    const stat = await vscode.workspace.fs.stat(uri);
+    if (!matchesExpectedFile(stat, expectedFile)) {
+      return undefined;
+    }
+    const provided = await vscode.commands.executeCommand<
+      Array<vscode.DocumentSymbol | vscode.SymbolInformation> | undefined
+    >('vscode.executeDocumentSymbolProvider', uri);
+    assertNotCancelled(signal);
+    const currentBytes = await vscode.workspace.fs.readFile(uri);
+    const currentStat = await vscode.workspace.fs.stat(uri);
+    if (!await hasSafeParentDirectories(folder, relativePath, new Set())
+      || !matchesExpectedFile(currentStat, expectedFile)
+      || !sameBytes(currentBytes, expectedFile.bytes)) {
+      return undefined;
+    }
+    return collectDocumentSymbolRanges(uri, provided);
+  } catch (error) {
+    assertNotCancelled(signal);
+    return undefined;
+  }
+}
+
+function matchesExpectedFile(
+  stat: vscode.FileStat,
+  expectedFile: WorkspaceIndexFileRead
+): boolean {
+  return (stat.type & vscode.FileType.File) !== 0
+    && (stat.type & vscode.FileType.SymbolicLink) === 0
+    && stat.size <= MAX_PROJECT_FILE_BYTES
+    && stat.size === expectedFile.sizeBytes
+    && Math.max(0, Math.trunc(stat.mtime)) === expectedFile.modifiedAt;
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) {
+    return false;
+  }
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function collectDocumentSymbolRanges(
+  uri: vscode.Uri,
+  provided: Array<vscode.DocumentSymbol | vscode.SymbolInformation> | undefined
+): ProjectSymbolRange[] | undefined {
+  if (!Array.isArray(provided)) {
+    return undefined;
+  }
+  const ranges: ProjectSymbolRange[] = [];
+  let exceededLimit = false;
+  const visit = (symbols: Array<vscode.DocumentSymbol | vscode.SymbolInformation>): void => {
+    for (const symbol of symbols) {
+      if (ranges.length >= MAX_PROJECT_SYMBOL_RANGES) {
+        exceededLimit = true;
+        return;
+      }
+      if (isDocumentSymbol(symbol)) {
+        ranges.push(projectSymbolRange(symbol.range));
+        visit(symbol.children);
+      } else if (sameUri(symbol.location.uri, uri)) {
+        ranges.push(projectSymbolRange(symbol.location.range));
+      }
+    }
+  };
+  visit(provided);
+  return ranges.length > 0 && !exceededLimit ? ranges : undefined;
+}
+
+function isDocumentSymbol(
+  symbol: vscode.DocumentSymbol | vscode.SymbolInformation
+): symbol is vscode.DocumentSymbol {
+  return 'selectionRange' in symbol && Array.isArray(symbol.children);
+}
+
+function projectSymbolRange(range: vscode.Range): ProjectSymbolRange {
+  return {
+    start: {
+      line: range.start.line,
+      character: range.start.character
+    },
+    end: {
+      line: range.end.line,
+      character: range.end.character
+    }
+  };
+}
+
+function sameUri(left: vscode.Uri, right: vscode.Uri): boolean {
+  return left.toString(true) === right.toString(true);
 }
 
 function isSafeRelativePath(relativePath: string): boolean {
