@@ -245,7 +245,7 @@ test('working UI exposes tool usage and resumable agent checkpoints', () => {
 test('agent can inspect workspace diagnostics and captured terminal failures', () => {
   const source = readDevMateSource();
   const backendSource = fs.readFileSync(
-    path.join(__dirname, '..', 'backend', 'app', 'main.py'),
+    path.join(__dirname, '..', 'backend', 'app', 'tool_catalog.py'),
     'utf8'
   );
   assert.match(source, /onDidStartTerminalShellExecution/);
@@ -261,7 +261,7 @@ test('agent can inspect workspace diagnostics and captured terminal failures', (
 test('agent can navigate symbols, definitions, and references through VS Code providers', () => {
   const source = readDevMateSource();
   const backendSource = fs.readFileSync(
-    path.join(__dirname, '..', 'backend', 'app', 'main.py'),
+    path.join(__dirname, '..', 'backend', 'app', 'tool_catalog.py'),
     'utf8'
   );
   assert.match(source, /'vscode\.executeDocumentSymbolProvider'/);

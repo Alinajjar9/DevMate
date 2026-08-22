@@ -328,9 +328,10 @@ The Python backend source remains in the package as a fallback for development o
 | `backend/app/api_models.py` | Backend protocol constants and validated request/response contracts |
 | `backend/app/chat_service.py` | Model-request construction, completion normalization, and token accounting |
 | `backend/app/errors.py` | Shared backend application errors |
-| `backend/app/main.py` | FastAPI application factory, routes, and tool schemas |
+| `backend/app/main.py` | FastAPI application factory, authentication, routes, and streaming |
 | `backend/app/prompts.py` | Mode and agent-loop prompts |
 | `backend/app/providers.py` | OpenAI-compatible provider client |
+| `backend/app/tool_catalog.py` | Agent tool descriptions and JSON parameter schemas |
 | `backend/run_backend.py` | Entry point for the standalone backend |
 | `scripts/build-backend.js` | Platform-aware PyInstaller build command |
 | `backend-runtime/` | Generated platform backend included in the VSIX |

@@ -18,7 +18,6 @@ from backend.app.api_models import (
     READ_ONLY_AGENT_TOOLS,
 )
 from backend.app.main import (
-    AGENT_TOOL_DEFINITIONS,
     app,
     create_app,
 )
@@ -30,6 +29,7 @@ from backend.app.providers import (
     ChatToolCall,
     ProviderError,
 )
+from backend.app.tool_catalog import AGENT_TOOL_DEFINITIONS
 
 
 class RecordingProvider:

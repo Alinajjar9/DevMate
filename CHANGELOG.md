@@ -2,6 +2,23 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-22 — Extract the backend tool catalog
+
+### Changed
+
+- Moved all agent tool names, descriptions, JSON parameter schemas, and their existing order into `backend/app/tool_catalog.py` without changing their contents.
+- Kept the application factory responsible for injecting the catalog into `ChatService`, preserving one-way dependencies from routes and composition into the catalog.
+- Updated API characterization tests to import the catalog directly and continue verifying that every supported agent tool has exactly one definition.
+- Reduced `backend/app/main.py` from 728 lines to 386 lines, leaving it focused on FastAPI composition, authentication, errors, routes, and streaming.
+
+### Verification
+
+- `npm run verify` — 178 extension tests and 87 backend tests passed; 21 cross-language contracts and 17 emitted JavaScript files verified.
+- Exact tool-catalog comparison against the previous `main.py` definition block.
+- `git diff --check`
+
+---
+
 ## 2026-08-22 — Extract the backend chat service
 
 ### Changed
