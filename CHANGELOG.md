@@ -2,6 +2,24 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-22 — Establish the project-retrieval evaluation baseline
+
+### Changed
+
+- Added a deterministic 12-file retrieval corpus with 11 exact-identifier, exact-text, conceptual, architectural, and ambiguous questions plus known relevant files.
+- Added a reusable retriever evaluation harness reporting top-one and top-three hits, mean reciprocal rank, recall at five, category results, individual rankings, and complete misses.
+- Characterized the current lexical retriever at 5/11 top-one hits, 7/11 top-three hits, 0.5455 mean reciprocal rank, and 0.6364 mean recall at five.
+- Recorded 100% recall for exact identifiers and the multi-file architecture case, while all four synonym-based conceptual cases remain missed targets for future semantic and hybrid retrieval.
+- Kept production indexing, retrieval, prompts, and user-visible behavior unchanged.
+
+### Verification
+
+- `npm run verify` — 190 extension tests and 105 backend tests passed; 39 cross-language contracts and 19 emitted JavaScript files verified.
+- Focused retrieval evaluation coverage — 2 tests passed.
+- `git diff --check`
+
+---
+
 ## 2026-08-22 — Add the authenticated knowledge-index API
 
 ### Changed

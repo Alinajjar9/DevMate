@@ -1,0 +1,139 @@
+{
+  "version": 1,
+  "description": "A small deterministic corpus for comparing exact, conceptual, architectural, and ambiguous project retrieval.",
+  "workspacePath": "C:/retrieval-evaluation",
+  "files": [
+    {
+      "relativePath": "src/auth/tokenValidator.ts",
+      "languageId": "typescript",
+      "content": "export function validateAccessToken(value: string): boolean {\n  const segments = value.split('.');\n  return segments.length === 3 && segments.every(Boolean);\n}\n"
+    },
+    {
+      "relativePath": "src/security/workspaceBoundary.ts",
+      "languageId": "typescript",
+      "content": "import * as path from 'path';\n\nexport function assertMutationTarget(candidate: string, root: string): void {\n  const relative = path.relative(root, candidate);\n  if (relative.startsWith('..') || path.isAbsolute(relative)) {\n    throw new Error('Target is outside the permitted root.');\n  }\n}\n"
+    },
+    {
+      "relativePath": "src/reliability/retryPolicy.ts",
+      "languageId": "typescript",
+      "content": "export const retryDelays = [250, 750, 1500] as const;\n\nexport function isTransientProviderFailure(status: number): boolean {\n  return [408, 429, 502, 503, 504].includes(status);\n}\n"
+    },
+    {
+      "relativePath": "src/storage/sessionStore.ts",
+      "languageId": "typescript",
+      "content": "export function loadSession(id: string): StoredSession | undefined {\n  return sessions.get(id);\n}\n\nexport function saveSession(session: StoredSession): void {\n  sessions.set(session.id, session);\n}\n"
+    },
+    {
+      "relativePath": "src/ui/messageBridge.ts",
+      "languageId": "typescript",
+      "content": "export function routeIncomingMessage(message: WebviewMessage): void {\n  if (message.command === 'submitQuestion') {\n    requestController.submitQuestion(message.text);\n  }\n}\n\nexport function postToWebview(event: ChatEvent): void {\n  webview.postMessage(event);\n}\n"
+    },
+    {
+      "relativePath": "src/chat/requestController.ts",
+      "languageId": "typescript",
+      "content": "export async function submitQuestion(question: string): Promise<void> {\n  eventSink.emit({ type: 'request-started' });\n  const answer = await backendGateway.streamAnswer(question);\n  eventSink.emit({ type: 'answer-completed', answer });\n}\n"
+    },
+    {
+      "relativePath": "src/api/backendGateway.ts",
+      "languageId": "typescript",
+      "content": "export async function streamAnswer(question: string): Promise<string> {\n  const response = await authenticatedRequest('/ask/stream', { question });\n  return consumeServerSentEvents(response);\n}\n"
+    },
+    {
+      "relativePath": "src/diagnostics/terminalErrors.ts",
+      "languageId": "typescript",
+      "content": "export function collectFailedCommandOutput(events: TerminalExecution[]): string {\n  return events.filter((event) => event.exitCode !== 0)\n    .map((event) => sanitizeAnsi(event.output))\n    .join('\\n');\n}\n"
+    },
+    {
+      "relativePath": "src/security/permissionStore.ts",
+      "languageId": "typescript",
+      "content": "export async function authorizeMutation(operation: MutationOperation): Promise<boolean> {\n  const policy = await loadPolicy(operation.kind);\n  const decision = policy === 'allow' ? true : await presentApproval(operation);\n  return decision;\n}\n"
+    },
+    {
+      "relativePath": "src/docs/fileEditPermissionGuide.ts",
+      "languageId": "typescript",
+      "content": "export const guide = 'File edit permission should be checked before every file change. File edit permission protects each change.';\n"
+    },
+    {
+      "relativePath": "src/catalog/productSearch.ts",
+      "languageId": "typescript",
+      "content": "export function searchProducts(query: string): Product[] {\n  return catalog.filter((product) => product.name.includes(query));\n}\n"
+    },
+    {
+      "relativePath": "src/files/symlinkGuard.ts",
+      "languageId": "typescript",
+      "content": "export async function rejectSymbolicPath(candidate: Uri): Promise<void> {\n  const attributes = await lstat(candidate);\n  if (attributes.type === FileType.SymbolicLink) {\n    throw new UnsafePathError(candidate.fsPath);\n  }\n}\n"
+    }
+  ],
+  "cases": [
+    {
+      "id": "exact-access-token-validator",
+      "category": "exact-identifier",
+      "question": "Where is validateAccessToken implemented?",
+      "relevantFiles": ["src/auth/tokenValidator.ts"]
+    },
+    {
+      "id": "exact-session-save",
+      "category": "exact-identifier",
+      "question": "Find the saveSession implementation.",
+      "relevantFiles": ["src/storage/sessionStore.ts"]
+    },
+    {
+      "id": "exact-stream-answer",
+      "category": "exact-identifier",
+      "question": "Which module implements streamAnswer?",
+      "relevantFiles": ["src/api/backendGateway.ts"]
+    },
+    {
+      "id": "exact-error-message",
+      "category": "exact-text",
+      "question": "Where is Target is outside the permitted root raised?",
+      "relevantFiles": ["src/security/workspaceBoundary.ts"]
+    },
+    {
+      "id": "exact-product-search",
+      "category": "exact-identifier",
+      "question": "Where is searchProducts defined?",
+      "relevantFiles": ["src/catalog/productSearch.ts"]
+    },
+    {
+      "id": "conceptual-workspace-escape",
+      "category": "conceptual",
+      "question": "Where do we stop edits from escaping the project folder?",
+      "relevantFiles": ["src/security/workspaceBoundary.ts"]
+    },
+    {
+      "id": "conceptual-provider-recovery",
+      "category": "conceptual",
+      "question": "How does the agent recover from short-lived model outages?",
+      "relevantFiles": ["src/reliability/retryPolicy.ts"]
+    },
+    {
+      "id": "conceptual-terminal-diagnostics",
+      "category": "conceptual",
+      "question": "How are shell failures included when asking for debugging help?",
+      "relevantFiles": ["src/diagnostics/terminalErrors.ts"]
+    },
+    {
+      "id": "conceptual-linked-directory",
+      "category": "conceptual",
+      "question": "How do we stop a linked directory from redirecting a write?",
+      "relevantFiles": ["src/files/symlinkGuard.ts"]
+    },
+    {
+      "id": "architecture-chat-request-flow",
+      "category": "architecture",
+      "question": "Trace a submitted chat question from the webview to the backend stream.",
+      "relevantFiles": [
+        "src/ui/messageBridge.ts",
+        "src/chat/requestController.ts",
+        "src/api/backendGateway.ts"
+      ]
+    },
+    {
+      "id": "ambiguous-edit-permission",
+      "category": "ambiguous",
+      "question": "Where is file edit permission checked before a change?",
+      "relevantFiles": ["src/security/permissionStore.ts"]
+    }
+  ]
+}

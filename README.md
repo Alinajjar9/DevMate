@@ -345,6 +345,8 @@ The Python backend source remains in the package as a fallback for development o
 | `backend/run_backend.py` | Entry point for the standalone backend |
 | `scripts/build-backend.js` | Platform-aware PyInstaller build command |
 | `backend-runtime/` | Generated platform backend included in the VSIX |
+| `tests/fixtures/project-retrieval-evaluation.json` | Shared corpus and relevance judgments for comparing project retrievers |
+| `tests/helpers/projectRetrievalEvaluation.js` | Retrieval-quality metrics and evaluation harness |
 | `tests/` | Extension tests |
 | `backend/tests/` | Backend tests |
 | `out/` | Compiled JavaScript used by VS Code |
