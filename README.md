@@ -223,7 +223,9 @@ The status indicator in the DevMate toolbar shows whether the backend is checkin
 
 DevMate generates a fresh in-memory authentication token whenever it launches the backend. The token is passed only to that child process and is required by `/health`, `/ask`, and `/ask/stream`. Manually started or externally managed backends are intentionally rejected until an explicit secure token-sharing flow is available.
 
-The managed backend also receives an explicit SQLite path below VS Code's private global extension storage. The application opens the versioned knowledge store during startup and closes it during shutdown. Its authenticated `/index/v1/` API supports workspace snapshots, atomic file batches, index metadata, and lexical search. The extension does not call that API yet, so the current lexical JSON index remains active until the incremental indexing coordinator is introduced.
+The managed backend also receives an explicit SQLite path below VS Code's private global extension storage. The application opens the versioned knowledge store during startup and closes it during shutdown. Its authenticated `/index/v1/` API supports workspace snapshots, atomic file batches, index metadata, and lexical search.
+
+After the managed backend comes online, the extension performs an initial background synchronization of the first local workspace. It reuses the existing project-file limits and exclusions, rejects symbolic-link paths, hashes the eligible files, and sends only changed files and known deletions in bounded batches. Unreadable files leave the SQLite index marked stale instead of deleting previously indexed content. The current chat retrieval path still uses the lexical JSON index; SQLite-backed retrieval, file watchers, embeddings, and semantic search are later milestones.
 
 ## Settings
 
@@ -317,6 +319,8 @@ The Python backend source remains in the package as a fallback for development o
 | `src/agentRunController.ts` | Provider retries, checkpointed agent-loop policy, recovery, and tool iteration |
 | `src/toolExecutor.ts` | Validated tool dispatch, workspace inspection, terminal execution, and mutation routing |
 | `src/workspaceContext.ts` | Workspace identity, scope collection, attachments, and project-index orchestration |
+| `src/indexSynchronization.ts` | Cancellable initial workspace-to-SQLite synchronization and bounded change batching |
+| `src/workspaceIndexSource.ts` | Safe, bounded VS Code workspace scanning and file revalidation for indexing |
 | `src/workspaceMutations.ts` | File writes, trust checks, symlink protection, and pre-apply revalidation |
 | `src/webview.ts` | CSP-protected webview shell and packaged asset URLs |
 | `media/webview.css` | Sidebar layout and visual styles |
@@ -336,7 +340,7 @@ The Python backend source remains in the package as a fallback for development o
 | `backend/app/errors.py` | Shared backend application errors |
 | `backend/app/knowledge_contracts.py` | Shared version, states, and size limits for the knowledge-index protocol |
 | `backend/app/knowledge_routes.py` | Authenticated version-one knowledge-index HTTP routes |
-| `backend/app/knowledge_store.py` | Isolated versioned SQLite schema and transaction boundary for future indexing |
+| `backend/app/knowledge_store.py` | Isolated versioned SQLite schema and transaction boundary for the code index |
 | `backend/app/knowledge_repository.py` | Transactional workspace, file, chunk, metadata, and FTS data access |
 | `backend/app/main.py` | FastAPI application composition, authentication, and exception handling |
 | `backend/app/prompts.py` | Mode and agent-loop prompts |
@@ -391,7 +395,7 @@ The workspace must be trusted and VS Code Terminal Shell Integration must be ava
 - Provider keys are stored in VS Code SecretStorage.
 - Provider keys and workspace context are forwarded only after the managed loopback backend proves possession of its per-process token.
 - The backend token is kept in extension-host memory, passed through the child-process environment, and never sent to the model provider.
-- The future SQLite knowledge database is kept below VS Code's private global extension storage rather than inside a workspace.
+- The SQLite knowledge database is kept below VS Code's private global extension storage rather than inside a workspace.
 - Provider redirects are disabled to avoid forwarding credentials to another host.
 - Remote model-provider endpoints require HTTPS; plain HTTP is limited to loopback hosts.
 - Provider hostnames are resolved before each request, every answer must be public (or exact loopback for a local provider), and the connection is pinned to a checked address while retaining the original TLS identity.

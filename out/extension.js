@@ -41,11 +41,15 @@ const client_1 = require("./api/client");
 const types_1 = require("./api/types");
 const backendManager_1 = require("./backendManager");
 const chatViewProvider_1 = require("./chatViewProvider");
+const indexSynchronization_1 = require("./indexSynchronization");
+const workspaceIndexSource_1 = require("./workspaceIndexSource");
 function activate(context) {
     const backendOutput = vscode.window.createOutputChannel('DevMate Backend');
     const knowledgeStorePath = vscode.Uri.joinPath(context.globalStorageUri, 'knowledge', types_1.DEVMATE_KNOWLEDGE_STORE_FILE_NAME).fsPath;
     let chatViewProvider;
-    const backendManager = new backendManager_1.LocalBackendManager({
+    const knowledgeIndexSynchronizer = new indexSynchronization_1.KnowledgeIndexSynchronizer(new workspaceIndexSource_1.VsCodeWorkspaceIndexSource(), indexSynchronization_1.defaultKnowledgeIndexApi, (message) => backendOutput.append(`[DevMate] Knowledge index: ${message}\n`));
+    let backendManager;
+    backendManager = new backendManager_1.LocalBackendManager({
         extensionPath: context.extensionUri.fsPath,
         knowledgeStorePath,
         getBackendUrl: chatViewProvider_1.getBackendUrl,
@@ -53,7 +57,16 @@ function activate(context) {
         getConfiguredPythonPath: () => vscode.workspace.getConfiguration('devMate').get('backendPythonPath', ''),
         healthCheck: async (backendUrl, backendToken) => (await (0, client_1.health)(backendUrl, backendToken)).status === 'ok',
         fileExists: (filePath) => fs.existsSync(filePath),
-        onStatus: (status) => chatViewProvider?.notifyBackendStatusChanged(status),
+        onStatus: (status) => {
+            chatViewProvider?.notifyBackendStatusChanged(status);
+            const backendToken = backendManager.requestToken;
+            if (status.state === 'online' && backendToken) {
+                void knowledgeIndexSynchronizer.synchronize({
+                    backendUrl: (0, chatViewProvider_1.getBackendUrl)(),
+                    backendToken
+                });
+            }
+        },
         onOutput: (value) => backendOutput.append(value)
     });
     chatViewProvider = new chatViewProvider_1.DevMateChatViewProvider(context, backendManager, backendOutput);
@@ -86,7 +99,7 @@ function activate(context) {
     statusBarItem.tooltip = 'Open DevMate';
     statusBarItem.command = 'devMate.openChat';
     statusBarItem.show();
-    context.subscriptions.push(chatViewProvider, backendManager, backendOutput, viewRegistration, diffContentRegistration, workspaceTrustRegistration, backendConfigurationRegistration, openChatCommand, statusBarItem);
+    context.subscriptions.push(chatViewProvider, knowledgeIndexSynchronizer, backendManager, backendOutput, viewRegistration, diffContentRegistration, workspaceTrustRegistration, backendConfigurationRegistration, openChatCommand, statusBarItem);
     void backendManager.start();
 }
 function deactivate() {

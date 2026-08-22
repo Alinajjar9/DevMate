@@ -2,6 +2,25 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-22 — Synchronize workspace files into the SQLite index
+
+### Changed
+
+- Added a cancellable initial synchronization that starts in the background after the authenticated managed backend comes online.
+- Scanned the first local workspace with the existing project exclusions and size limits, rejected symbolic-link paths, and revalidated files immediately around each read.
+- Added stable workspace identities, SHA-256 file fingerprints, complete bounded-file chunking, and chunk-version rebuilds.
+- Compared each scan with the stored SQLite snapshot and sent only changed files and known deletions in batches that respect the shared API limits.
+- Preserved previously indexed content when a path cannot be read, exposed ready, stale, indexing, and failed states, and left chat retrieval on the existing JSON lexical index.
+- Added focused coverage for initial and incremental synchronization, deletions, unavailable and binary files, rebuilds, batching, cancellation, failures, Windows path casing, and symbolic-link safety.
+
+### Verification
+
+- `npm run verify` — 201 extension tests and 105 backend tests passed; 39 cross-language contracts and 21 emitted JavaScript files verified.
+- Focused synchronization and workspace-source coverage — 11 tests passed.
+- `git diff --check`
+
+---
+
 ## 2026-08-22 — Establish the project-retrieval evaluation baseline
 
 ### Changed

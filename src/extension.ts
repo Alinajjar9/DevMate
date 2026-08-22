@@ -4,6 +4,11 @@ import { health } from './api/client';
 import { DEVMATE_KNOWLEDGE_STORE_FILE_NAME } from './api/types';
 import { LocalBackendManager } from './backendManager';
 import { DevMateChatViewProvider, getBackendUrl } from './chatViewProvider';
+import {
+  KnowledgeIndexSynchronizer,
+  defaultKnowledgeIndexApi
+} from './indexSynchronization';
+import { VsCodeWorkspaceIndexSource } from './workspaceIndexSource';
 
 export function activate(context: vscode.ExtensionContext): void {
   const backendOutput = vscode.window.createOutputChannel('DevMate Backend');
@@ -13,7 +18,13 @@ export function activate(context: vscode.ExtensionContext): void {
     DEVMATE_KNOWLEDGE_STORE_FILE_NAME
   ).fsPath;
   let chatViewProvider: DevMateChatViewProvider | undefined;
-  const backendManager = new LocalBackendManager({
+  const knowledgeIndexSynchronizer = new KnowledgeIndexSynchronizer(
+    new VsCodeWorkspaceIndexSource(),
+    defaultKnowledgeIndexApi,
+    (message) => backendOutput.append(`[DevMate] Knowledge index: ${message}\n`)
+  );
+  let backendManager: LocalBackendManager;
+  backendManager = new LocalBackendManager({
     extensionPath: context.extensionUri.fsPath,
     knowledgeStorePath,
     getBackendUrl,
@@ -29,7 +40,16 @@ export function activate(context: vscode.ExtensionContext): void {
       await health(backendUrl, backendToken)
     ).status === 'ok',
     fileExists: (filePath) => fs.existsSync(filePath),
-    onStatus: (status) => chatViewProvider?.notifyBackendStatusChanged(status),
+    onStatus: (status) => {
+      chatViewProvider?.notifyBackendStatusChanged(status);
+      const backendToken = backendManager.requestToken;
+      if (status.state === 'online' && backendToken) {
+        void knowledgeIndexSynchronizer.synchronize({
+          backendUrl: getBackendUrl(),
+          backendToken
+        });
+      }
+    },
     onOutput: (value) => backendOutput.append(value)
   });
   chatViewProvider = new DevMateChatViewProvider(context, backendManager, backendOutput);
@@ -79,6 +99,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     chatViewProvider,
+    knowledgeIndexSynchronizer,
     backendManager,
     backendOutput,
     viewRegistration,
