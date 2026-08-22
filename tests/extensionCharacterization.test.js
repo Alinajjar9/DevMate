@@ -72,6 +72,7 @@ const {
 } = require('../out/toolExecutor');
 const { WorkspaceContext } = require('../out/workspaceContext');
 const { WorkspaceMutations } = require('../out/workspaceMutations');
+const { LexicalProjectRetriever } = require('../out/projectRetriever');
 Module._load = originalModuleLoad;
 
 const {
@@ -235,7 +236,18 @@ test('collects active-file and selection context with explicit attachments first
 
 test('collects project context with attachments before deduplicated lexical results', async () => {
   const statuses = [];
-  const workspaceContext = new WorkspaceContext(undefined, (status) => statuses.push(status));
+  const retrievalRequests = [];
+  const lexicalRetriever = new LexicalProjectRetriever();
+  const workspaceContext = new WorkspaceContext(
+    undefined,
+    (status) => statuses.push(status),
+    {
+      retrieve: async (request) => {
+        retrievalRequests.push(request);
+        return lexicalRetriever.retrieve(request);
+      }
+    }
+  );
   const attachment = {
     source: 'attachment',
     filePath: 'C:\\repo\\README.md',
@@ -283,6 +295,11 @@ test('collects project context with attachments before deduplicated lexical resu
     collected.apiScope.items.map((item) => item.filePath),
     [attachment.filePath, 'C:\\repo\\src\\auth.ts']
   );
+  assert.equal(retrievalRequests.length, 1);
+  assert.equal(retrievalRequests[0].index, index);
+  assert.equal(retrievalRequests[0].question, 'Where is the login token validated?');
+  assert.equal(retrievalRequests[0].limits.maxChunks, 4);
+  assert.equal(retrievalRequests[0].limits.excludedFilePaths.has(attachment.filePath), true);
   assert.match(collected.info.detail, /2 files/);
   assert.deepEqual(statuses, [
     'Refreshing project index',

@@ -38,13 +38,16 @@ exports.normalizeRelativeWorkspacePath = normalizeRelativeWorkspacePath;
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const projectIndex_1 = require("./projectIndex");
+const projectRetriever_1 = require("./projectRetriever");
 class WorkspaceContext {
     storageDirectory;
     reportStatus;
+    projectRetriever;
     projectIndexCache;
-    constructor(storageDirectory, reportStatus = () => undefined) {
+    constructor(storageDirectory, reportStatus = () => undefined, projectRetriever = new projectRetriever_1.LexicalProjectRetriever()) {
         this.storageDirectory = storageDirectory;
         this.reportStatus = reportStatus;
+        this.projectRetriever = projectRetriever;
     }
     getConversationWorkspace() {
         const folder = vscode.workspace.workspaceFolders?.[0];
@@ -187,10 +190,14 @@ class WorkspaceContext {
             this.reportStatus(refresh.changedFiles > 0 || refresh.removedFiles > 0
                 ? `Indexed ${formatFileCount(refresh.index.files.length)}`
                 : 'Searching project index');
-            const chunks = (0, projectIndex_1.retrieveProjectChunks)(refresh.index, question, {
-                maxChunks: remainingFiles,
-                maxCharacters: Math.max(0, remainingCharacters - remainingFiles * 64),
-                excludedFilePaths: attachedPaths
+            const chunks = await this.projectRetriever.retrieve({
+                index: refresh.index,
+                question,
+                limits: {
+                    maxChunks: remainingFiles,
+                    maxCharacters: Math.max(0, remainingCharacters - remainingFiles * 64),
+                    excludedFilePaths: attachedPaths
+                }
             });
             const retrievedItems = this.createRetrievedProjectItems(chunks, remainingCharacters);
             if (retrievedItems.length > 0) {

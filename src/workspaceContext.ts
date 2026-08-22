@@ -17,7 +17,6 @@ import {
   parseStoredProjectIndex,
   PROJECT_EXCLUDE_GLOB,
   PROJECT_INDEX_FILE_NAME,
-  retrieveProjectChunks,
   selectProjectContext,
   shouldSkipProjectFile
 } from './projectIndex';
@@ -26,6 +25,8 @@ import type {
   ProjectIndex,
   RetrievedProjectChunk
 } from './projectIndex';
+import { LexicalProjectRetriever } from './projectRetriever';
+import type { ProjectRetriever } from './projectRetriever';
 import type { ConversationWorkspace } from './sessions';
 
 export type ScopeKind = 'project' | 'activeFile' | 'selection';
@@ -46,7 +47,8 @@ export class WorkspaceContext {
 
   constructor(
     private readonly storageDirectory: vscode.Uri | undefined,
-    private readonly reportStatus: (text: string) => void = () => undefined
+    private readonly reportStatus: (text: string) => void = () => undefined,
+    private readonly projectRetriever: ProjectRetriever = new LexicalProjectRetriever()
   ) {}
 
   getConversationWorkspace(): ConversationWorkspace | undefined {
@@ -240,10 +242,14 @@ export class WorkspaceContext {
       this.reportStatus(refresh.changedFiles > 0 || refresh.removedFiles > 0
         ? `Indexed ${formatFileCount(refresh.index.files.length)}`
         : 'Searching project index');
-      const chunks = retrieveProjectChunks(refresh.index, question, {
-        maxChunks: remainingFiles,
-        maxCharacters: Math.max(0, remainingCharacters - remainingFiles * 64),
-        excludedFilePaths: attachedPaths
+      const chunks = await this.projectRetriever.retrieve({
+        index: refresh.index,
+        question,
+        limits: {
+          maxChunks: remainingFiles,
+          maxCharacters: Math.max(0, remainingCharacters - remainingFiles * 64),
+          excludedFilePaths: attachedPaths
+        }
       });
       const retrievedItems = this.createRetrievedProjectItems(chunks, remainingCharacters);
       if (retrievedItems.length > 0) {

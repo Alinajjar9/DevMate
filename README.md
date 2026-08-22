@@ -322,7 +322,8 @@ The Python backend source remains in the package as a fallback for development o
 | `src/agentTools.ts` | Tool names, argument parsing, limits, and history compaction |
 | `src/api/` | Extension-to-backend HTTP transport and request types |
 | `src/backendManager.ts` | Local backend startup, monitoring, and restart logic |
-| `src/projectIndex.ts` | Local chunking and lexical retrieval |
+| `src/projectIndex.ts` | Local index representation, chunking, and lexical scoring |
+| `src/projectRetriever.ts` | Replaceable project-retrieval contract and current lexical adapter |
 | `src/sessions.ts` | Project-bound conversation storage |
 | `src/permissions.ts` | File and command permission storage |
 | `backend/app/api_models.py` | Backend protocol constants and validated request/response contracts |

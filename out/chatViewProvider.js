@@ -50,6 +50,7 @@ const fileTools_2 = require("./fileTools");
 const llmProfiles_1 = require("./llmProfiles");
 const permissions_1 = require("./permissions");
 const projectIndex_1 = require("./projectIndex");
+const projectRetriever_1 = require("./projectRetriever");
 const workspaceContext_1 = require("./workspaceContext");
 const workspaceMutations_1 = require("./workspaceMutations");
 const toolExecutor_1 = require("./toolExecutor");
@@ -83,7 +84,7 @@ class DevMateChatViewProvider {
         this.backendManager = backendManager;
         this.backendOutput = backendOutput;
         this.extensionUri = extensionContext.extensionUri;
-        this.workspaceContext = new workspaceContext_1.WorkspaceContext(extensionContext.storageUri, (text) => this.postStatus(text));
+        this.workspaceContext = new workspaceContext_1.WorkspaceContext(extensionContext.storageUri, (text) => this.postStatus(text), new projectRetriever_1.LexicalProjectRetriever());
         this.workspaceMutations = new workspaceMutations_1.WorkspaceMutations({
             getPermissionPolicy: () => this.getPermissionPolicy(),
             requestPermission: (summary, files) => this.requestFileChangePermission(summary, files),

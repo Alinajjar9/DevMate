@@ -100,6 +100,7 @@ import {
   PROJECT_EXCLUDE_GLOB,
   shouldSkipProjectFile
 } from './projectIndex';
+import { LexicalProjectRetriever } from './projectRetriever';
 import {
   normalizeRelativeWorkspacePath,
   WorkspaceContext
@@ -255,7 +256,8 @@ export class DevMateChatViewProvider implements
     this.extensionUri = extensionContext.extensionUri;
     this.workspaceContext = new WorkspaceContext(
       extensionContext.storageUri,
-      (text) => this.postStatus(text)
+      (text) => this.postStatus(text),
+      new LexicalProjectRetriever()
     );
     this.workspaceMutations = new WorkspaceMutations({
       getPermissionPolicy: () => this.getPermissionPolicy(),
