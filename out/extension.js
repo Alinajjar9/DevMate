@@ -42,13 +42,15 @@ const types_1 = require("./api/types");
 const backendManager_1 = require("./backendManager");
 const chatViewProvider_1 = require("./chatViewProvider");
 const indexSynchronization_1 = require("./indexSynchronization");
+const projectRetriever_1 = require("./projectRetriever");
 const workspaceIndexSource_1 = require("./workspaceIndexSource");
 const workspaceIndexWatcher_1 = require("./workspaceIndexWatcher");
 function activate(context) {
     const backendOutput = vscode.window.createOutputChannel('DevMate Backend');
     const knowledgeStorePath = vscode.Uri.joinPath(context.globalStorageUri, 'knowledge', types_1.DEVMATE_KNOWLEDGE_STORE_FILE_NAME).fsPath;
     let chatViewProvider;
-    const knowledgeIndexSynchronizer = new indexSynchronization_1.KnowledgeIndexSynchronizer(new workspaceIndexSource_1.VsCodeWorkspaceIndexSource(), indexSynchronization_1.defaultKnowledgeIndexApi, (message) => backendOutput.append(`[DevMate] Knowledge index: ${message}\n`));
+    const workspaceIndexSource = new workspaceIndexSource_1.VsCodeWorkspaceIndexSource();
+    const knowledgeIndexSynchronizer = new indexSynchronization_1.KnowledgeIndexSynchronizer(workspaceIndexSource, indexSynchronization_1.defaultKnowledgeIndexApi, (message) => backendOutput.append(`[DevMate] Knowledge index: ${message}\n`));
     const workspaceIndexCoordinator = new workspaceIndexWatcher_1.WorkspaceIndexCoordinator(new workspaceIndexWatcher_1.VsCodeWorkspaceIndexChangeSource(), (access, signal) => knowledgeIndexSynchronizer.synchronize(access, signal));
     let backendManager;
     backendManager = new backendManager_1.LocalBackendManager({
@@ -74,7 +76,16 @@ function activate(context) {
         },
         onOutput: (value) => backendOutput.append(value)
     });
-    chatViewProvider = new chatViewProvider_1.DevMateChatViewProvider(context, backendManager, backendOutput);
+    const projectRetriever = new projectRetriever_1.SqliteLexicalProjectRetriever({
+        getAccess: () => {
+            const backendToken = backendManager.requestToken;
+            return backendToken
+                ? { backendUrl: (0, chatViewProvider_1.getBackendUrl)(), backendToken }
+                : undefined;
+        },
+        readCurrentFile: (relativePath, signal) => workspaceIndexSource.readCurrentFile(relativePath, signal)
+    });
+    chatViewProvider = new chatViewProvider_1.DevMateChatViewProvider(context, backendManager, backendOutput, projectRetriever);
     const viewRegistration = vscode.window.registerWebviewViewProvider(chatViewProvider_1.DevMateChatViewProvider.viewId, chatViewProvider, {
         webviewOptions: {
             retainContextWhenHidden: true

@@ -2,6 +2,25 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-22 — Use SQLite for project code search
+
+### Changed
+
+- Connected Project scope to the authenticated SQLite FTS5/BM25 search API through the existing replaceable `ProjectRetriever` boundary.
+- Added lazy JSON fallback for missing authentication, empty or failed searches, unavailable files, and stale indexed chunks; successful SQLite searches no longer refresh the legacy index on every request.
+- Reread selected workspace files through the bounded symlink-safe source boundary and verified chunk hashes, line ranges, current paths, exclusions, and file diversity before adding source to model context.
+- Forwarded request cancellation through context collection and prevented cancelled SQLite searches from starting an expensive fallback scan.
+- Measured 7/11 top-one hits, 7/11 top-three hits, 0.6364 mean reciprocal rank, and 0.6364 recall at five on the shared corpus, compared with the legacy retriever's 5/11, 7/11, 0.5455, and 0.6364.
+- Kept embeddings and semantic ranking out of this step; synonym-heavy conceptual queries remain documented misses for the next retrieval milestone.
+
+### Verification
+
+- `npm run verify` — 214 extension tests and 106 backend tests passed; 39 cross-language contracts and 23 emitted JavaScript files verified.
+- Focused retrieval, context, synchronization, and workspace-source coverage — 31 extension tests and 1 backend evaluation test passed.
+- `git diff --check`
+
+---
+
 ## 2026-08-22 — Split indexed code around real symbols
 
 ### Changed

@@ -15,6 +15,7 @@ import type {
 import { MAX_PROJECT_SYMBOL_RANGES } from './projectChunking';
 import type { ProjectSymbolRange } from './projectChunking';
 import {
+  containsBinaryData,
   languageIdForPath,
   MAX_PROJECT_FILE_BYTES,
   MAX_PROJECT_INDEX_FILES,
@@ -23,7 +24,50 @@ import {
 } from './projectIndex';
 import { normalizeRelativeWorkspacePath } from './workspaceContext';
 
+export type CurrentWorkspaceIndexFile = {
+  filePath: string;
+  relativePath: string;
+  languageId: string;
+  content: string;
+};
+
 export class VsCodeWorkspaceIndexSource implements WorkspaceIndexSource {
+  async readCurrentFile(
+    relativePath: string,
+    signal?: AbortSignal
+  ): Promise<CurrentWorkspaceIndexFile | undefined> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    const normalizedPath = normalizeRelativeWorkspacePath(relativePath);
+    if (!folder
+      || folder.uri.scheme !== 'file'
+      || !isSafeRelativePath(normalizedPath)
+      || shouldSkipProjectFile(normalizedPath)) {
+      return undefined;
+    }
+    const readSignal = signal ?? new AbortController().signal;
+    try {
+      const uri = vscode.Uri.joinPath(folder.uri, ...normalizedPath.split('/'));
+      const read = await readValidatedWorkspaceFile(
+        folder,
+        uri,
+        normalizedPath,
+        readSignal
+      );
+      if (containsBinaryData(read.bytes)) {
+        return undefined;
+      }
+      return {
+        filePath: uri.fsPath,
+        relativePath: normalizedPath,
+        languageId: languageIdForPath(normalizedPath),
+        content: new TextDecoder('utf-8').decode(read.bytes)
+      };
+    } catch (error) {
+      assertNotCancelled(readSignal);
+      return undefined;
+    }
+  }
+
   async scan(signal: AbortSignal): Promise<WorkspaceIndexSnapshot | undefined> {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder || folder.uri.scheme !== 'file') {
@@ -81,32 +125,12 @@ export class VsCodeWorkspaceIndexSource implements WorkspaceIndexSource {
       files.push({
         relativePath,
         languageId: languageIdForPath(relativePath),
-        read: async (readSignal) => {
-          assertNotCancelled(readSignal);
-          if (!await hasSafeParentDirectories(folder, relativePath, new Set())) {
-            throw new Error(`${relativePath} is behind a symbolic-link directory.`);
-          }
-          const bytes = await vscode.workspace.fs.readFile(uri);
-          const currentStat = await vscode.workspace.fs.stat(uri);
-          const parentsRemainSafe = await hasSafeParentDirectories(
-            folder,
-            relativePath,
-            new Set()
-          );
-          assertNotCancelled(readSignal);
-          if (!parentsRemainSafe
-            || (currentStat.type & vscode.FileType.File) === 0
-            || (currentStat.type & vscode.FileType.SymbolicLink) !== 0
-            || currentStat.size > MAX_PROJECT_FILE_BYTES
-            || currentStat.size !== bytes.byteLength) {
-            throw new Error(`${relativePath} changed while it was being indexed.`);
-          }
-          return {
-            bytes,
-            sizeBytes: currentStat.size,
-            modifiedAt: Math.max(0, Math.trunc(currentStat.mtime))
-          };
-        },
+        read: (readSignal) => readValidatedWorkspaceFile(
+          folder,
+          uri,
+          relativePath,
+          readSignal
+        ),
         readSymbolRanges: (expectedFile, readSignal) => readDocumentSymbolRanges(
           folder,
           uri,
@@ -124,6 +148,44 @@ export class VsCodeWorkspaceIndexSource implements WorkspaceIndexSource {
       unavailablePaths: [...new Set(unavailablePaths)].sort()
     };
   }
+}
+
+async function readValidatedWorkspaceFile(
+  folder: vscode.WorkspaceFolder,
+  uri: vscode.Uri,
+  relativePath: string,
+  signal: AbortSignal
+): Promise<WorkspaceIndexFileRead> {
+  assertNotCancelled(signal);
+  if (!await hasSafeParentDirectories(folder, relativePath, new Set())) {
+    throw new Error(`${relativePath} is behind a symbolic-link directory.`);
+  }
+  const initialStat = await vscode.workspace.fs.stat(uri);
+  if ((initialStat.type & vscode.FileType.File) === 0
+    || (initialStat.type & vscode.FileType.SymbolicLink) !== 0
+    || initialStat.size > MAX_PROJECT_FILE_BYTES) {
+    throw new Error(`${relativePath} is not a safe indexable file.`);
+  }
+  const bytes = await vscode.workspace.fs.readFile(uri);
+  const currentStat = await vscode.workspace.fs.stat(uri);
+  const parentsRemainSafe = await hasSafeParentDirectories(
+    folder,
+    relativePath,
+    new Set()
+  );
+  assertNotCancelled(signal);
+  if (!parentsRemainSafe
+    || (currentStat.type & vscode.FileType.File) === 0
+    || (currentStat.type & vscode.FileType.SymbolicLink) !== 0
+    || currentStat.size > MAX_PROJECT_FILE_BYTES
+    || currentStat.size !== bytes.byteLength) {
+    throw new Error(`${relativePath} changed while it was being indexed.`);
+  }
+  return {
+    bytes,
+    sizeBytes: currentStat.size,
+    modifiedAt: Math.max(0, Math.trunc(currentStat.mtime))
+  };
 }
 
 async function readDocumentSymbolRanges(

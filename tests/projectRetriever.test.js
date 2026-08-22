@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { createHash } = require('node:crypto');
 const test = require('node:test');
 
 const {
@@ -6,7 +7,15 @@ const {
   createIndexedProjectFile,
   retrieveProjectChunks
 } = require('../out/projectIndex');
-const { LexicalProjectRetriever } = require('../out/projectRetriever');
+const {
+  LexicalProjectRetriever,
+  SqliteLexicalProjectRetriever
+} = require('../out/projectRetriever');
+
+const ACCESS = {
+  backendUrl: 'http://127.0.0.1:8000',
+  backendToken: 'test-backend-token-that-is-long-enough'
+};
 
 test('lexical project retriever preserves the existing ranking and limits', async () => {
   const index = createEmptyProjectIndex('C:/repo');
@@ -36,6 +45,180 @@ test('lexical project retriever preserves the existing ranking and limits', asyn
   assert.equal(actual.some((result) => result.relativePath === 'README.md'), false);
 });
 
+test('SQLite lexical retrieval returns only exact current source without loading JSON', async () => {
+  const authContent = [
+    'export function validateLoginToken(token) {',
+    '  return token.length > 10;',
+    '}',
+    ''
+  ].join('\n');
+  const catalogContent = 'export function listProducts() { return []; }\n';
+  let fallbackLoads = 0;
+  const searchCalls = [];
+  const files = new Map([
+    ['src/auth.ts', currentFile('src/auth.ts', authContent)],
+    ['src/catalog.ts', currentFile('src/catalog.ts', catalogContent)]
+  ]);
+  const retriever = new SqliteLexicalProjectRetriever({
+    getAccess: () => ACCESS,
+    readCurrentFile: async (relativePath) => files.get(relativePath),
+    search: async (access, request, signal) => {
+      searchCalls.push({ access, request, signal });
+      return {
+        status: 'ok',
+        data: {
+          results: [
+            searchItem('src/auth.ts', authContent, 1, 3, 4),
+            searchItem('src/auth.ts', authContent, 1, 3, 3),
+            searchItem('src/catalog.ts', catalogContent, 1, 1, 2)
+          ]
+        }
+      };
+    }
+  });
+  const signal = new AbortController().signal;
+
+  const results = await retriever.retrieve({
+    workspaceKey: 'workspace:test',
+    question: 'Where is the login token validated?',
+    loadIndex: async () => {
+      fallbackLoads += 1;
+      return createEmptyProjectIndex('C:/repo');
+    },
+    limits: {
+      maxChunks: 2,
+      maxCharacters: 4_000,
+      excludedFilePaths: new Set(['C:/repo/src/catalog.ts'])
+    },
+    signal
+  });
+
+  assert.equal(fallbackLoads, 0);
+  assert.equal(searchCalls.length, 1);
+  assert.deepEqual(searchCalls[0], {
+    access: ACCESS,
+    request: {
+      workspaceKey: 'workspace:test',
+      query: 'Where is the login token validated?',
+      limit: 20
+    },
+    signal
+  });
+  assert.equal(results.length, 1);
+  assert.equal(results[0].relativePath, 'src/auth.ts');
+  assert.equal(results[0].content, authContent);
+  assert.equal(results[0].totalCharacters, authContent.length);
+});
+
+test('SQLite lexical retrieval falls back for missing access, failed searches, and stale source', async () => {
+  const fallbackResult = {
+    filePath: 'C:/repo/src/fallback.ts',
+    relativePath: 'src/fallback.ts',
+    languageId: 'typescript',
+    totalCharacters: 22,
+    startLine: 1,
+    endLine: 1,
+    content: 'export const fallback;',
+    score: 1
+  };
+  const fallbackRequests = [];
+  const fallback = {
+    retrieve: async (request) => {
+      fallbackRequests.push(request);
+      return [fallbackResult];
+    }
+  };
+  const noAccess = new SqliteLexicalProjectRetriever({
+    getAccess: () => undefined,
+    readCurrentFile: async () => undefined,
+    fallback,
+    search: async () => {
+      throw new Error('Search must not run without authenticated access.');
+    }
+  });
+  const request = {
+    workspaceKey: 'workspace:test',
+    question: 'fallback',
+    limits: { maxChunks: 2, maxCharacters: 4_000 }
+  };
+
+  assert.deepEqual(await noAccess.retrieve(request), [fallbackResult]);
+
+  const failedSearch = new SqliteLexicalProjectRetriever({
+    getAccess: () => ACCESS,
+    readCurrentFile: async () => undefined,
+    fallback,
+    search: async () => ({
+      status: 'error',
+      errorKind: 'http',
+      message: 'The index is unavailable.'
+    })
+  });
+  assert.deepEqual(await failedSearch.retrieve(request), [fallbackResult]);
+
+  const emptySearch = new SqliteLexicalProjectRetriever({
+    getAccess: () => ACCESS,
+    readCurrentFile: async () => undefined,
+    fallback,
+    search: async () => ({
+      status: 'ok',
+      data: { results: [] }
+    })
+  });
+  assert.deepEqual(await emptySearch.retrieve(request), [fallbackResult]);
+
+  const stale = new SqliteLexicalProjectRetriever({
+    getAccess: () => ACCESS,
+    readCurrentFile: async (relativePath) => currentFile(
+      relativePath,
+      'export const current = true;\n'
+    ),
+    fallback,
+    search: async () => ({
+      status: 'ok',
+      data: {
+        results: [searchItem(
+          'src/stale.ts',
+          'export const stale = true;\n',
+          1,
+          1,
+          1
+        )]
+      }
+    })
+  });
+
+  assert.deepEqual(await stale.retrieve(request), [fallbackResult]);
+  assert.equal(fallbackRequests.length, 4);
+});
+
+test('cancelled SQLite searches do not start expensive fallback indexing', async () => {
+  let fallbackCalls = 0;
+  const retriever = new SqliteLexicalProjectRetriever({
+    getAccess: () => ACCESS,
+    readCurrentFile: async () => undefined,
+    fallback: {
+      retrieve: async () => {
+        fallbackCalls += 1;
+        return [];
+      }
+    },
+    search: async () => ({
+      status: 'error',
+      errorKind: 'cancelled'
+    })
+  });
+
+  const results = await retriever.retrieve({
+    workspaceKey: 'workspace:test',
+    question: 'cancelled',
+    limits: { maxChunks: 5, maxCharacters: 40_000 }
+  });
+
+  assert.deepEqual(results, []);
+  assert.equal(fallbackCalls, 0);
+});
+
 function indexedFile(relativePath, content) {
   return createIndexedProjectFile({
     filePath: `C:/repo/${relativePath}`,
@@ -43,4 +226,27 @@ function indexedFile(relativePath, content) {
     languageId: 'typescript',
     content
   }, content.length, 1);
+}
+
+function currentFile(relativePath, content) {
+  return {
+    filePath: `C:/repo/${relativePath}`,
+    relativePath,
+    languageId: 'typescript',
+    content
+  };
+}
+
+function searchItem(relativePath, content, startLine, endLine, score) {
+  return {
+    relativePath,
+    languageId: 'typescript',
+    stableId: `${relativePath}:${startLine}-${endLine}:0`,
+    ordinal: 0,
+    startLine,
+    endLine,
+    content,
+    contentHash: createHash('sha256').update(content).digest('hex'),
+    score
+  };
 }

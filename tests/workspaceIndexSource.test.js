@@ -113,7 +113,8 @@ test('workspace source keeps only bounded regular files behind safe directories'
     app
   ];
 
-  const snapshot = await new VsCodeWorkspaceIndexSource().scan(new AbortController().signal);
+  const source = new VsCodeWorkspaceIndexSource();
+  const snapshot = await source.scan(new AbortController().signal);
 
   assert.equal(snapshot.rootPath, folder.uri.fsPath);
   assert.deepEqual(snapshot.files.map((file) => file.relativePath), ['src/app.ts']);
@@ -122,6 +123,31 @@ test('workspace source keeps only bounded regular files behind safe directories'
   assert.equal(new TextDecoder().decode(read.bytes), 'export const app = true;\n');
   assert.equal(read.sizeBytes, Buffer.byteLength('export const app = true;\n'));
   assert.equal(read.modifiedAt, 2);
+  assert.deepEqual(
+    await source.readCurrentFile('src/app.ts'),
+    {
+      filePath: app.fsPath,
+      relativePath: 'src/app.ts',
+      languageId: 'typescript',
+      content: 'export const app = true;\n'
+    }
+  );
+  assert.equal(await source.readCurrentFile('../outside.ts'), undefined);
+  assert.equal(await source.readCurrentFile('src/app.js.map'), undefined);
+  assert.equal(await source.readCurrentFile('src/link.ts'), undefined);
+});
+
+test('current-file reads reject binary content and symbolic-link parents', async () => {
+  entries.clear();
+  addDirectory('src');
+  addFile('src/binary.dat', 'visible\0hidden');
+  const source = new VsCodeWorkspaceIndexSource();
+
+  assert.equal(await source.readCurrentFile('src/binary.dat'), undefined);
+
+  entries.get(key('src')).type = 2 | 64;
+  addFile('src/app.ts', 'export const app = true;\n');
+  assert.equal(await source.readCurrentFile('src/app.ts'), undefined);
 });
 
 test('workspace source skips non-file workspaces and honors cancellation', async () => {

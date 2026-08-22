@@ -296,13 +296,17 @@ test('collects project context with attachments before deduplicated lexical resu
     [attachment.filePath, 'C:\\repo\\src\\auth.ts']
   );
   assert.equal(retrievalRequests.length, 1);
-  assert.equal(retrievalRequests[0].index, index);
+  assert.equal(retrievalRequests[0].index, undefined);
+  assert.equal(typeof retrievalRequests[0].loadIndex, 'function');
+  assert.equal(retrievalRequests[0].workspacePath, workspaceFolder.uri.fsPath);
+  assert.match(retrievalRequests[0].workspaceKey, /^workspace:[a-f0-9]{64}$/);
   assert.equal(retrievalRequests[0].question, 'Where is the login token validated?');
   assert.equal(retrievalRequests[0].limits.maxChunks, 4);
   assert.equal(retrievalRequests[0].limits.excludedFilePaths.has(attachment.filePath), true);
   assert.match(collected.info.detail, /2 files/);
   assert.deepEqual(statuses, [
-    'Refreshing project index',
+    'Searching project index',
+    'Refreshing fallback project index',
     'Indexed 2 files',
     'Retrieved 1 relevant project excerpt'
   ]);

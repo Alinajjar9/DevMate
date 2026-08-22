@@ -8,6 +8,7 @@ import {
   KnowledgeIndexSynchronizer,
   defaultKnowledgeIndexApi
 } from './indexSynchronization';
+import { SqliteLexicalProjectRetriever } from './projectRetriever';
 import { VsCodeWorkspaceIndexSource } from './workspaceIndexSource';
 import {
   VsCodeWorkspaceIndexChangeSource,
@@ -22,8 +23,9 @@ export function activate(context: vscode.ExtensionContext): void {
     DEVMATE_KNOWLEDGE_STORE_FILE_NAME
   ).fsPath;
   let chatViewProvider: DevMateChatViewProvider | undefined;
+  const workspaceIndexSource = new VsCodeWorkspaceIndexSource();
   const knowledgeIndexSynchronizer = new KnowledgeIndexSynchronizer(
-    new VsCodeWorkspaceIndexSource(),
+    workspaceIndexSource,
     defaultKnowledgeIndexApi,
     (message) => backendOutput.append(`[DevMate] Knowledge index: ${message}\n`)
   );
@@ -62,7 +64,22 @@ export function activate(context: vscode.ExtensionContext): void {
     },
     onOutput: (value) => backendOutput.append(value)
   });
-  chatViewProvider = new DevMateChatViewProvider(context, backendManager, backendOutput);
+  const projectRetriever = new SqliteLexicalProjectRetriever({
+    getAccess: () => {
+      const backendToken = backendManager.requestToken;
+      return backendToken
+        ? { backendUrl: getBackendUrl(), backendToken }
+        : undefined;
+    },
+    readCurrentFile: (relativePath, signal) =>
+      workspaceIndexSource.readCurrentFile(relativePath, signal)
+  });
+  chatViewProvider = new DevMateChatViewProvider(
+    context,
+    backendManager,
+    backendOutput,
+    projectRetriever
+  );
   const viewRegistration = vscode.window.registerWebviewViewProvider(
     DevMateChatViewProvider.viewId,
     chatViewProvider,

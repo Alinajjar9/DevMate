@@ -1,6 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import type { AskContextItem, AskScope } from './api/types';
+import { knowledgeIndexWorkspaceKey } from './indexSynchronization';
 import {
   containsBinaryData,
   createBoundedContextItem,
@@ -68,7 +69,8 @@ export class WorkspaceContext {
   async collectScope(
     scope: ScopeKind,
     question?: string,
-    attachments: Iterable<vscode.Uri> = []
+    attachments: Iterable<vscode.Uri> = [],
+    signal?: AbortSignal
   ): Promise<CollectedScope | undefined> {
     if (scope === 'project') {
       const folder = vscode.workspace.workspaceFolders?.[0];
@@ -94,7 +96,7 @@ export class WorkspaceContext {
           )
         : [];
       const items = question
-        ? await this.collectProjectItems(folder, question, attachmentItems)
+        ? await this.collectProjectItems(folder, question, attachmentItems, signal)
         : [];
       const includedCharacters = items.reduce(
         (total, item) => total + item.includedCharacters,
@@ -219,7 +221,8 @@ export class WorkspaceContext {
   private async collectProjectItems(
     folder: vscode.WorkspaceFolder,
     question: string,
-    attachmentItems: AskContextItem[]
+    attachmentItems: AskContextItem[],
+    signal?: AbortSignal
   ): Promise<AskScope['items']> {
     const includedAttachmentCharacters = attachmentItems.reduce(
       (total, item) => total + item.includedCharacters,
@@ -237,19 +240,33 @@ export class WorkspaceContext {
     const attachedPaths = new Set(attachmentItems.map((item) => item.filePath));
 
     try {
-      this.reportStatus('Refreshing project index');
-      const refresh = await this.refreshProjectIndex(folder);
-      this.reportStatus(refresh.changedFiles > 0 || refresh.removedFiles > 0
-        ? `Indexed ${formatFileCount(refresh.index.files.length)}`
-        : 'Searching project index');
+      let refreshPromise: ReturnType<WorkspaceContext['refreshProjectIndex']> | undefined;
+      const loadFallbackIndex = async (): Promise<ProjectIndex> => {
+        this.reportStatus('Refreshing fallback project index');
+        refreshPromise ??= this.refreshProjectIndex(folder);
+        const refresh = await refreshPromise;
+        this.reportStatus(refresh.changedFiles > 0 || refresh.removedFiles > 0
+          ? `Indexed ${formatFileCount(refresh.index.files.length)}`
+          : 'Searching fallback project index');
+        return refresh.index;
+      };
+      this.reportStatus('Searching project index');
+      const workspacePath = folder.uri.scheme === 'file'
+        ? folder.uri.fsPath
+        : folder.uri.toString();
       const chunks = await this.projectRetriever.retrieve({
-        index: refresh.index,
+        loadIndex: loadFallbackIndex,
+        workspaceKey: folder.uri.scheme === 'file'
+          ? knowledgeIndexWorkspaceKey(folder.uri.toString(true))
+          : undefined,
+        workspacePath,
         question,
         limits: {
           maxChunks: remainingFiles,
           maxCharacters: Math.max(0, remainingCharacters - remainingFiles * 64),
           excludedFilePaths: attachedPaths
-        }
+        },
+        signal
       });
       const retrievedItems = this.createRetrievedProjectItems(chunks, remainingCharacters);
       if (retrievedItems.length > 0) {
@@ -258,7 +275,14 @@ export class WorkspaceContext {
       }
       this.reportStatus('Using project context fallback');
     } catch {
+      if (signal?.aborted) {
+        return attachmentItems;
+      }
       this.reportStatus('Project index unavailable — using fallback');
+    }
+
+    if (signal?.aborted) {
+      return attachmentItems;
     }
 
     return this.collectRankedProjectItems(

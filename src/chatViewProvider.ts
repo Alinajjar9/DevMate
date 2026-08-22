@@ -101,6 +101,7 @@ import {
   shouldSkipProjectFile
 } from './projectIndex';
 import { LexicalProjectRetriever } from './projectRetriever';
+import type { ProjectRetriever } from './projectRetriever';
 import {
   normalizeRelativeWorkspacePath,
   WorkspaceContext
@@ -251,13 +252,14 @@ export class DevMateChatViewProvider implements
   constructor(
     private readonly extensionContext: vscode.ExtensionContext,
     private readonly backendManager: LocalBackendManager,
-    private readonly backendOutput: vscode.OutputChannel
+    private readonly backendOutput: vscode.OutputChannel,
+    projectRetriever: ProjectRetriever = new LexicalProjectRetriever()
   ) {
     this.extensionUri = extensionContext.extensionUri;
     this.workspaceContext = new WorkspaceContext(
       extensionContext.storageUri,
       (text) => this.postStatus(text),
-      new LexicalProjectRetriever()
+      projectRetriever
     );
     this.workspaceMutations = new WorkspaceMutations({
       getPermissionPolicy: () => this.getPermissionPolicy(),
@@ -945,11 +947,16 @@ export class DevMateChatViewProvider implements
     return this.workspaceContext.getConversationWorkspace();
   }
 
-  private collectScope(scope: ScopeKind, question?: string): Promise<CollectedScope | undefined> {
+  private collectScope(
+    scope: ScopeKind,
+    question?: string,
+    signal?: AbortSignal
+  ): Promise<CollectedScope | undefined> {
     return this.workspaceContext.collectScope(
       scope,
       question,
-      this.attachedFiles.values()
+      this.attachedFiles.values(),
+      signal
     );
   }
 
@@ -1956,7 +1963,7 @@ export class DevMateChatViewProvider implements
     }
 
     this.postStatus('Collecting context');
-    const collectedScope = await this.collectScope(message.scope.kind, question);
+    const collectedScope = await this.collectScope(message.scope.kind, question, signal);
     if (this.finishCancelledRequest(signal)) {
       return;
     }

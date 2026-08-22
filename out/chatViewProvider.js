@@ -79,12 +79,12 @@ class DevMateChatViewProvider {
     activeRequestDiffs = new Map();
     sessionStore;
     agentCheckpoint;
-    constructor(extensionContext, backendManager, backendOutput) {
+    constructor(extensionContext, backendManager, backendOutput, projectRetriever = new projectRetriever_1.LexicalProjectRetriever()) {
         this.extensionContext = extensionContext;
         this.backendManager = backendManager;
         this.backendOutput = backendOutput;
         this.extensionUri = extensionContext.extensionUri;
-        this.workspaceContext = new workspaceContext_1.WorkspaceContext(extensionContext.storageUri, (text) => this.postStatus(text), new projectRetriever_1.LexicalProjectRetriever());
+        this.workspaceContext = new workspaceContext_1.WorkspaceContext(extensionContext.storageUri, (text) => this.postStatus(text), projectRetriever);
         this.workspaceMutations = new workspaceMutations_1.WorkspaceMutations({
             getPermissionPolicy: () => this.getPermissionPolicy(),
             requestPermission: (summary, files) => this.requestFileChangePermission(summary, files),
@@ -651,8 +651,8 @@ class DevMateChatViewProvider {
     getConversationWorkspace() {
         return this.workspaceContext.getConversationWorkspace();
     }
-    collectScope(scope, question) {
-        return this.workspaceContext.collectScope(scope, question, this.attachedFiles.values());
+    collectScope(scope, question, signal) {
+        return this.workspaceContext.collectScope(scope, question, this.attachedFiles.values(), signal);
     }
     async pickWorkspaceFiles() {
         const folder = vscode.workspace.workspaceFolders?.[0];
@@ -1384,7 +1384,7 @@ class DevMateChatViewProvider {
             return;
         }
         this.postStatus('Collecting context');
-        const collectedScope = await this.collectScope(message.scope.kind, question);
+        const collectedScope = await this.collectScope(message.scope.kind, question, signal);
         if (this.finishCancelledRequest(signal)) {
             return;
         }

@@ -148,17 +148,18 @@ An unfinished tool run is stored as a bounded checkpoint. If the request fails o
 
 ## Project retrieval
 
-Project scope uses a local lexical index. DevMate:
+Project scope uses the local SQLite lexical index when the authenticated managed backend is available. DevMate:
 
-1. Finds eligible text files in the first workspace folder.
-2. Excludes dependencies, generated files, build output, credentials, lock files, and binary files.
-3. Splits files into overlapping, line-aware chunks.
-4. Scores chunks using paths, identifiers, keywords, and BM25-style text matching.
-5. Sends only the strongest bounded excerpts to the provider.
+1. Indexes eligible text files from the first workspace folder in the background.
+2. Excludes dependencies, generated files, build output, credentials, lock files, symbolic links, and binary files.
+3. Prefers VS Code document-symbol boundaries and falls back to bounded overlapping line chunks.
+4. Searches chunk content with SQLite FTS5/BM25 and keeps results diverse by file.
+5. Rereads each selected file and verifies the exact chunk hash and line range before using it.
+6. Sends only the strongest bounded excerpts to the provider.
 
-The index is stored in VS Code's private workspace storage, not inside the repository. Changed files are refreshed on the next Project request.
+The SQLite index is stored in VS Code's private global extension storage, not inside the repository. If authenticated SQLite search is unavailable, empty, fails, or contains no usable current chunks, DevMate falls back to the previous JSON lexical index. That fallback index is refreshed lazily only when needed; cancellation stops retrieval without starting fallback work.
 
-This version does not use embeddings. Lexical retrieval is predictable and works well for code identifiers, while semantic or hybrid retrieval remains possible future work.
+This version does not use embeddings. On the checked-in evaluation corpus, SQLite lexical retrieval produces 7 of 11 top-one hits, 7 of 11 top-three hits, and 0.6364 recall at five. Synonym-heavy conceptual searches remain the main weakness and are the target of the later semantic and hybrid retriever.
 
 ## Agent tools
 
@@ -229,7 +230,7 @@ After the managed backend comes online, the extension performs an initial backgr
 
 Each synchronization reuses the existing project-file limits and exclusions, rejects symbolic-link paths, hashes the eligible files, and sends only changed files and known deletions in bounded batches. Changed files prefer validated VS Code document-symbol boundaries so declarations stay together where size limits permit. Missing, invalid, or unavailable language-provider results fall back to the existing overlapping line chunks. Symbol lookup is performed only after a fingerprint changes and is revalidated against the exact file snapshot being indexed.
 
-Unreadable files leave the SQLite index marked stale instead of deleting previously indexed content. The current chat retrieval path still uses the lexical JSON index; SQLite-backed retrieval, embeddings, and semantic search are later milestones.
+Unreadable files leave the SQLite index marked stale instead of deleting previously indexed content. Project chat now uses authenticated SQLite lexical retrieval first and keeps the previous JSON index as a lazy compatibility fallback. Embeddings and semantic search remain later milestones.
 
 ## Settings
 
@@ -336,7 +337,7 @@ The Python backend source remains in the package as a fallback for development o
 | `src/api/knowledgeIndexProtocol.ts` | Runtime validation for versioned knowledge-index responses |
 | `src/backendManager.ts` | Local backend startup, monitoring, and restart logic |
 | `src/projectIndex.ts` | Local index representation, chunking, and lexical scoring |
-| `src/projectRetriever.ts` | Replaceable project-retrieval contract and current lexical adapter |
+| `src/projectRetriever.ts` | SQLite-first lexical retrieval, exact-source validation, and lazy JSON fallback |
 | `src/sessions.ts` | Project-bound conversation storage |
 | `src/permissions.ts` | File and command permission storage |
 | `backend/app/api_models.py` | Backend protocol constants and validated request/response contracts |

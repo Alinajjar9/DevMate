@@ -37,6 +37,7 @@ exports.WorkspaceContext = void 0;
 exports.normalizeRelativeWorkspacePath = normalizeRelativeWorkspacePath;
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
+const indexSynchronization_1 = require("./indexSynchronization");
 const projectIndex_1 = require("./projectIndex");
 const projectRetriever_1 = require("./projectRetriever");
 class WorkspaceContext {
@@ -62,7 +63,7 @@ class WorkspaceContext {
             name: folder.name
         };
     }
-    async collectScope(scope, question, attachments = []) {
+    async collectScope(scope, question, attachments = [], signal) {
         if (scope === 'project') {
             const folder = vscode.workspace.workspaceFolders?.[0];
             if (!folder) {
@@ -82,7 +83,7 @@ class WorkspaceContext {
                 ? await this.collectAttachmentItems(attachments, projectIndex_1.MAX_PROJECT_FILES, projectIndex_1.MAX_PROJECT_CONTEXT_CHARACTERS)
                 : [];
             const items = question
-                ? await this.collectProjectItems(folder, question, attachmentItems)
+                ? await this.collectProjectItems(folder, question, attachmentItems, signal)
                 : [];
             const includedCharacters = items.reduce((total, item) => total + item.includedCharacters, 0);
             const detail = question
@@ -175,7 +176,7 @@ class WorkspaceContext {
             return undefined;
         }
     }
-    async collectProjectItems(folder, question, attachmentItems) {
+    async collectProjectItems(folder, question, attachmentItems, signal) {
         const includedAttachmentCharacters = attachmentItems.reduce((total, item) => total + item.includedCharacters, 0);
         if (attachmentItems.length >= projectIndex_1.MAX_PROJECT_FILES
             || includedAttachmentCharacters >= projectIndex_1.MAX_PROJECT_CONTEXT_CHARACTERS) {
@@ -185,19 +186,33 @@ class WorkspaceContext {
         const remainingCharacters = projectIndex_1.MAX_PROJECT_CONTEXT_CHARACTERS - includedAttachmentCharacters;
         const attachedPaths = new Set(attachmentItems.map((item) => item.filePath));
         try {
-            this.reportStatus('Refreshing project index');
-            const refresh = await this.refreshProjectIndex(folder);
-            this.reportStatus(refresh.changedFiles > 0 || refresh.removedFiles > 0
-                ? `Indexed ${formatFileCount(refresh.index.files.length)}`
-                : 'Searching project index');
+            let refreshPromise;
+            const loadFallbackIndex = async () => {
+                this.reportStatus('Refreshing fallback project index');
+                refreshPromise ??= this.refreshProjectIndex(folder);
+                const refresh = await refreshPromise;
+                this.reportStatus(refresh.changedFiles > 0 || refresh.removedFiles > 0
+                    ? `Indexed ${formatFileCount(refresh.index.files.length)}`
+                    : 'Searching fallback project index');
+                return refresh.index;
+            };
+            this.reportStatus('Searching project index');
+            const workspacePath = folder.uri.scheme === 'file'
+                ? folder.uri.fsPath
+                : folder.uri.toString();
             const chunks = await this.projectRetriever.retrieve({
-                index: refresh.index,
+                loadIndex: loadFallbackIndex,
+                workspaceKey: folder.uri.scheme === 'file'
+                    ? (0, indexSynchronization_1.knowledgeIndexWorkspaceKey)(folder.uri.toString(true))
+                    : undefined,
+                workspacePath,
                 question,
                 limits: {
                     maxChunks: remainingFiles,
                     maxCharacters: Math.max(0, remainingCharacters - remainingFiles * 64),
                     excludedFilePaths: attachedPaths
-                }
+                },
+                signal
             });
             const retrievedItems = this.createRetrievedProjectItems(chunks, remainingCharacters);
             if (retrievedItems.length > 0) {
@@ -207,7 +222,13 @@ class WorkspaceContext {
             this.reportStatus('Using project context fallback');
         }
         catch {
+            if (signal?.aborted) {
+                return attachmentItems;
+            }
             this.reportStatus('Project index unavailable — using fallback');
+        }
+        if (signal?.aborted) {
+            return attachmentItems;
         }
         return this.collectRankedProjectItems(folder, question, attachmentItems, remainingFiles, remainingCharacters);
     }
