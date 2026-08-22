@@ -2,10 +2,11 @@ import json
 import logging
 import os
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
 from typing import Annotated, Literal
 
-from fastapi import Depends, FastAPI, Header, Request
+from fastapi import APIRouter, Depends, FastAPI, Header, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
@@ -322,6 +323,15 @@ class BackendApiError(Exception):
         self.status_code = status_code
         self.error_code = error_code
         self.message = message
+
+
+BackendTokenProvider = Callable[[], str | None]
+
+
+@dataclass(frozen=True, slots=True)
+class BackendDependencies:
+    chat_provider: ChatProvider
+    backend_token_provider: BackendTokenProvider
 
 
 AGENT_TOOL_DEFINITIONS = (
@@ -666,13 +676,23 @@ AGENT_TOOL_DEFINITIONS = (
 )
 
 
-app = FastAPI(title="DevMate Backend", version=DEVMATE_BACKEND_VERSION)
-_chat_provider = OpenAICompatibleProvider()
+_api_router = APIRouter()
 _authenticated_backend_paths = frozenset(("/health", "/ask", "/ask/stream"))
 
 
-def get_chat_provider() -> ChatProvider:
-    return _chat_provider
+def _environment_backend_token() -> str | None:
+    return os.environ.get(DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE)
+
+
+def _backend_dependencies(request: Request) -> BackendDependencies:
+    dependencies = getattr(request.app.state, "devmate_dependencies", None)
+    if not isinstance(dependencies, BackendDependencies):
+        raise RuntimeError("DevMate backend dependencies are not configured.")
+    return dependencies
+
+
+def get_chat_provider(request: Request) -> ChatProvider:
+    return _backend_dependencies(request).chat_provider
 
 
 def _safe_error_message(value: object, fallback: str) -> str:
@@ -701,12 +721,11 @@ def _provider_api_error(error: ProviderError) -> BackendApiError:
     return BackendApiError(error.status_code, error.error_code, str(error))
 
 
-@app.middleware("http")
 async def authenticate_backend_request(request: Request, call_next):
     if request.url.path not in _authenticated_backend_paths:
         return await call_next(request)
 
-    expected_token = os.environ.get(DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE)
+    expected_token = _backend_dependencies(request).backend_token_provider()
     provided_token = request.headers.get(DEVMATE_BACKEND_TOKEN_HEADER)
     if (
         expected_token is None
@@ -728,7 +747,6 @@ async def authenticate_backend_request(request: Request, call_next):
     return await call_next(request)
 
 
-@app.exception_handler(BackendApiError)
 async def backend_api_error(
     _request: Request,
     error: BackendApiError,
@@ -740,7 +758,6 @@ async def backend_api_error(
     )
 
 
-@app.exception_handler(StarletteHTTPException)
 async def framework_http_error(
     _request: Request,
     error: StarletteHTTPException,
@@ -759,7 +776,6 @@ async def framework_http_error(
     )
 
 
-@app.exception_handler(RequestValidationError)
 async def request_validation_error(
     request: Request,
     error: RequestValidationError,
@@ -785,8 +801,8 @@ async def request_validation_error(
     )
 
 
-@app.get("/health", response_model=HealthResult)
-async def health() -> HealthResult:
+@_api_router.get("/health", response_model=HealthResult)
+async def health(request: Request) -> HealthResult:
     return HealthResult(
         status="ok",
         data=HealthData(
@@ -794,12 +810,12 @@ async def health() -> HealthResult:
             protocolVersion=DEVMATE_BACKEND_PROTOCOL_VERSION,
             capabilities=list(DEVMATE_BACKEND_CAPABILITIES),
             backend="online",
-            version=app.version,
+            version=request.app.version,
         ),
     )
 
 
-@app.post("/ask", response_model=AskResult)
+@_api_router.post("/ask", response_model=AskResult)
 async def ask(
     request: AskRequest,
     chat_provider: Annotated[ChatProvider, Depends(get_chat_provider)],
@@ -829,7 +845,7 @@ async def ask(
     )
 
 
-@app.post("/ask/stream")
+@_api_router.post("/ask/stream")
 async def ask_stream(
     request: AskRequest,
     chat_provider: Annotated[ChatProvider, Depends(get_chat_provider)],
@@ -941,6 +957,38 @@ async def ask_stream(
         media_type="application/x-ndjson",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def create_app(
+    *,
+    chat_provider: ChatProvider | None = None,
+    backend_token_provider: BackendTokenProvider | None = None,
+) -> FastAPI:
+    application = FastAPI(
+        title="DevMate Backend",
+        version=DEVMATE_BACKEND_VERSION,
+    )
+    application.state.devmate_dependencies = BackendDependencies(
+        chat_provider=(
+            chat_provider
+            if chat_provider is not None
+            else OpenAICompatibleProvider()
+        ),
+        backend_token_provider=(
+            backend_token_provider
+            if backend_token_provider is not None
+            else _environment_backend_token
+        ),
+    )
+    application.middleware("http")(authenticate_backend_request)
+    application.add_exception_handler(BackendApiError, backend_api_error)
+    application.add_exception_handler(StarletteHTTPException, framework_http_error)
+    application.add_exception_handler(RequestValidationError, request_validation_error)
+    application.include_router(_api_router)
+    return application
+
+
+app = create_app()
 
 
 def _build_completion_request(

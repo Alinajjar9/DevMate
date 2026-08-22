@@ -65,7 +65,7 @@ this is called lexical retrieval. it is local and predictable. it works especial
 
 - first, the user writes a question and sends it. the message is saved to the current session before the provider call starts.
 - the extension makes sure the backend is online. it collects the selected scope, attachments, conversation history, model settings, and available tools.
-- the backend validates the request and builds the model messages. it sends them to the chosen provider and streams progress back.
+- the backend validates the request and builds the model messages. it sends them to the chosen provider and streams progress back. protocol version 2 gives errors stable codes, and the extension validates every final response and stream event before using it.
 - if the model gives a final answer, devmate shows it and saves the completed turn.
 - if the model asks for tools, the extension validates and executes them one by one. results return to the model. this loop can repeat through reading, editing, testing, reading a failure, repairing, and testing again.
 - when the request finishes, devmate shows a short answer and a file change summary. clicking a changed file opens a native diff when the snapshot is still available.

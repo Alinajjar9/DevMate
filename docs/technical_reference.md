@@ -59,9 +59,10 @@ the backend does not edit files or run commands. local actions are done by the e
 3. `WorkspaceContext.collectScope` gathers project, file, selection, and attached-file context.
 4. `AgentRunController` builds the bounded model request and `askStream` sends it with the separate backend token to `/ask/stream`.
 5. the backend validates `AskRequest`, builds messages, and calls the provider.
-6. final text ends the request.
-7. `ToolExecutor.execute` validates and executes requested tool calls.
-8. tool results are added to bounded history and sent in the next provider request.
+6. protocol version 2 requires `strict-response-contracts`; `src/api/client.ts` decodes each success field, error envelope, and ndjson event before forwarding it.
+7. final text ends the request.
+8. `ToolExecutor.execute` validates and executes requested tool calls.
+9. tool results are added to bounded history and sent in the next provider request.
 9. the completed answer and file summary are saved to the session.
 
 ## modes
@@ -121,6 +122,7 @@ mutating or executable:
 - api keys use vs code `SecretStorage`
 - remote model-provider urls require https; provider http and non-public destinations are limited to exact loopback hosts
 - provider dns answers are rejected if any address is private, link-local, multicast, reserved, unspecified, or otherwise non-public; requests are pinned to a checked address while the original host is retained for http host routing and tls sni
+- backend errors use a shared bounded code vocabulary; malformed success data, unknown or out-of-order stream events, and unrecognized error envelopes become local `invalid-response` failures
 
 ## permissions and workspace trust
 

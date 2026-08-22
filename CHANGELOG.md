@@ -2,6 +2,22 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-21 — Add an isolated backend application factory
+
+### Changed
+
+- Added `create_app()` as the single FastAPI composition boundary while keeping the module-level `app` entry point used by VS Code, Uvicorn, and packaged builds.
+- Inject the chat provider and backend-token source per application instead of relying on a module-global provider or test-only dependency overrides.
+- Register authentication, exception handlers, and API routes for every application instance without changing endpoint paths or response contracts.
+- Build a fresh backend application for each API test and verify that provider and authentication state cannot leak between application instances.
+
+### Verification
+
+- `npm run verify` — 178 extension tests and 85 backend tests passed; 21 cross-language contracts and 17 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-21 — Enforce strict backend response contracts
 
 ### Changed
