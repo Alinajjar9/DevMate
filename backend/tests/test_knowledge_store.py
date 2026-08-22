@@ -9,11 +9,15 @@ from uuid import uuid4
 
 from backend.app import knowledge_store as knowledge_store_module
 from backend.app.knowledge_store import (
+    DEVMATE_KNOWLEDGE_STORE_FILE_NAME,
+    DEVMATE_KNOWLEDGE_STORE_PATH_ENVIRONMENT_VARIABLE,
     KNOWLEDGE_SCHEMA_VERSION,
+    MAX_KNOWLEDGE_STORE_PATH_CHARACTERS,
     KnowledgeStore,
     KnowledgeStoreError,
     KnowledgeStoreMigrationError,
     SchemaMigration,
+    knowledge_store_path_from_environment,
 )
 
 
@@ -238,6 +242,34 @@ class KnowledgeStoreTests(unittest.TestCase):
         store = KnowledgeStore(self.database_path)
         with self.assertRaisesRegex(KnowledgeStoreError, "not open"):
             _ = store.connection
+
+    def test_reads_only_an_explicit_private_database_path_from_the_environment(self) -> None:
+        expected_path = self.temporary_directory / DEVMATE_KNOWLEDGE_STORE_FILE_NAME
+
+        self.assertIsNone(knowledge_store_path_from_environment({}))
+        self.assertEqual(
+            knowledge_store_path_from_environment({
+                DEVMATE_KNOWLEDGE_STORE_PATH_ENVIRONMENT_VARIABLE: str(expected_path),
+            }),
+            expected_path,
+        )
+
+    def test_rejects_invalid_environment_database_paths(self) -> None:
+        invalid_paths = (
+            "",
+            f"relative/{DEVMATE_KNOWLEDGE_STORE_FILE_NAME}",
+            str(self.temporary_directory / "unexpected.sqlite3"),
+            str(self.temporary_directory / DEVMATE_KNOWLEDGE_STORE_FILE_NAME) + "\0suffix",
+            "x" * (MAX_KNOWLEDGE_STORE_PATH_CHARACTERS + 1),
+        )
+        for invalid_path in invalid_paths:
+            with (
+                self.subTest(invalid_path=invalid_path[:80]),
+                self.assertRaisesRegex(KnowledgeStoreError, "path is invalid"),
+            ):
+                knowledge_store_path_from_environment({
+                    DEVMATE_KNOWLEDGE_STORE_PATH_ENVIRONMENT_VARIABLE: invalid_path,
+                })
 
 
 if __name__ == "__main__":

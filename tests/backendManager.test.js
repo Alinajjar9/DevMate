@@ -47,6 +47,7 @@ test('rejects an externally managed backend without a shared token', async () =>
   let healthChecks = 0;
   const manager = new LocalBackendManager({
     extensionPath: 'C:\\DevMate',
+    knowledgeStorePath: path.resolve('private-storage', 'devmate-knowledge.sqlite3'),
     getBackendUrl: () => 'http://127.0.0.1:8000',
     isManagementEnabled: () => false,
     getConfiguredPythonPath: () => '',
@@ -75,6 +76,7 @@ test('serializes concurrent lifecycle starts while rejecting unauthenticated lis
   let healthChecks = 0;
   const manager = new LocalBackendManager({
     extensionPath: 'C:\\DevMate',
+    knowledgeStorePath: path.resolve('private-storage', 'devmate-knowledge.sqlite3'),
     getBackendUrl: () => 'http://127.0.0.1:8000',
     isManagementEnabled: () => true,
     getConfiguredPythonPath: () => '',
@@ -105,20 +107,36 @@ test('generates distinct backend tokens and injects them only into the child env
   assert.notEqual(first, second);
   assert.match(first, /^[A-Za-z0-9_-]{43}$/);
 
-  const parentEnvironment = { PATH: 'safe-path', DEVMATE_BACKEND_TOKEN: 'stale-token' };
-  const childEnvironment = backendLaunchEnvironment(first, parentEnvironment);
+  const knowledgeStorePath = path.resolve('private-storage', 'devmate-knowledge.sqlite3');
+  const parentEnvironment = {
+    PATH: 'safe-path',
+    DEVMATE_BACKEND_TOKEN: 'stale-token',
+    DEVMATE_KNOWLEDGE_STORE_PATH: 'stale-database-path'
+  };
+  const childEnvironment = backendLaunchEnvironment(
+    first,
+    knowledgeStorePath,
+    parentEnvironment
+  );
   assert.deepEqual(childEnvironment, {
     PATH: 'safe-path',
     DEVMATE_BACKEND_TOKEN: first,
+    DEVMATE_KNOWLEDGE_STORE_PATH: knowledgeStorePath,
     PYTHONUNBUFFERED: '1',
     PYTHONDONTWRITEBYTECODE: '1'
   });
   assert.equal(parentEnvironment.DEVMATE_BACKEND_TOKEN, 'stale-token');
+  assert.equal(parentEnvironment.DEVMATE_KNOWLEDGE_STORE_PATH, 'stale-database-path');
+  assert.throws(
+    () => backendLaunchEnvironment(first, 'relative/devmate-knowledge.sqlite3'),
+    /must be absolute/
+  );
 });
 
 test('reports missing bundled backend files without launching a process', async () => {
   const manager = new LocalBackendManager({
     extensionPath: 'C:\\DevMate',
+    knowledgeStorePath: path.resolve('private-storage', 'devmate-knowledge.sqlite3'),
     getBackendUrl: () => 'http://127.0.0.1:8000',
     isManagementEnabled: () => true,
     getConfiguredPythonPath: () => '',

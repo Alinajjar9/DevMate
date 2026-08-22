@@ -2,6 +2,24 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-22 — Wire the private knowledge-store lifecycle
+
+### Changed
+
+- Derived a fixed SQLite path from VS Code's private global extension storage and passed it only to backend processes managed by DevMate.
+- Added strict backend validation for the database environment variable, requiring a bounded absolute path and the shared knowledge-store filename.
+- Opened and migrated the injected `KnowledgeStore` through the FastAPI lifespan and closed it cleanly during shutdown.
+- Kept manual and external backends optional and left project retrieval on the existing lexical JSON index; this change adds no indexing routes or user-visible retrieval behavior.
+- Added shared TypeScript/Python contract checks plus focused coverage for child-environment isolation, path validation, and application lifecycle ownership.
+
+### Verification
+
+- `npm run verify` — 181 extension tests and 95 backend tests passed; 23 cross-language contracts and 18 emitted JavaScript files verified.
+- Focused knowledge-store and lifecycle coverage — 7 knowledge-store tests and 1 application-lifecycle test passed within the backend suite.
+- `git diff --check`
+
+---
+
 ## 2026-08-22 — Add the SQLite knowledge-store foundation
 
 ### Changed

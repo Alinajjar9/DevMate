@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from fastapi import Request
 
 from .chat_service import ChatService
+from .knowledge_store import KnowledgeStore
 from .providers import ChatProvider
 
 
@@ -15,6 +16,7 @@ class BackendDependencies:
     chat_provider: ChatProvider
     chat_service: ChatService
     backend_token_provider: BackendTokenProvider
+    knowledge_store: KnowledgeStore | None
 
 
 def backend_dependencies(request: Request) -> BackendDependencies:

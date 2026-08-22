@@ -38,13 +38,16 @@ exports.deactivate = deactivate;
 const fs = __importStar(require("fs"));
 const vscode = __importStar(require("vscode"));
 const client_1 = require("./api/client");
+const types_1 = require("./api/types");
 const backendManager_1 = require("./backendManager");
 const chatViewProvider_1 = require("./chatViewProvider");
 function activate(context) {
     const backendOutput = vscode.window.createOutputChannel('DevMate Backend');
+    const knowledgeStorePath = vscode.Uri.joinPath(context.globalStorageUri, 'knowledge', types_1.DEVMATE_KNOWLEDGE_STORE_FILE_NAME).fsPath;
     let chatViewProvider;
     const backendManager = new backendManager_1.LocalBackendManager({
         extensionPath: context.extensionUri.fsPath,
+        knowledgeStorePath,
         getBackendUrl: chatViewProvider_1.getBackendUrl,
         isManagementEnabled: () => vscode.workspace.getConfiguration('devMate').get('manageLocalBackend', true),
         getConfiguredPythonPath: () => vscode.workspace.getConfiguration('devMate').get('backendPythonPath', ''),

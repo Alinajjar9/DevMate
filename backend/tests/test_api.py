@@ -45,6 +45,22 @@ class RecordingProvider:
         return self.answer
 
 
+class RecordingKnowledgeStore:
+    def __init__(self) -> None:
+        self.open_calls = 0
+        self.close_calls = 0
+        self.is_open = False
+
+    def open(self) -> "RecordingKnowledgeStore":
+        self.open_calls += 1
+        self.is_open = True
+        return self
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self.is_open = False
+
+
 class DevMateApiTests(unittest.TestCase):
     backend_token = "test-backend-token-that-is-long-enough"
 
@@ -145,6 +161,27 @@ class DevMateApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(isolated_provider.requests), 1)
         self.assertEqual(self.provider.requests, [])
+
+    def test_app_lifespan_opens_and_closes_the_injected_knowledge_store(self) -> None:
+        knowledge_store = RecordingKnowledgeStore()
+        lifecycle_app = create_app(
+            chat_provider=RecordingProvider(),
+            backend_token_provider=lambda: self.backend_token,
+            knowledge_store=knowledge_store,
+        )
+
+        self.assertEqual(knowledge_store.open_calls, 0)
+        with TestClient(
+            lifecycle_app,
+            headers={DEVMATE_BACKEND_TOKEN_HEADER: self.backend_token},
+        ) as lifecycle_client:
+            self.assertEqual(lifecycle_client.get("/health").status_code, 200)
+            self.assertEqual(knowledge_store.open_calls, 1)
+            self.assertEqual(knowledge_store.close_calls, 0)
+            self.assertTrue(knowledge_store.is_open)
+
+        self.assertEqual(knowledge_store.close_calls, 1)
+        self.assertFalse(knowledge_store.is_open)
 
     def test_default_app_reads_the_current_environment_token(self) -> None:
         environment_token = "environment-backend-token-that-is-long-enough"

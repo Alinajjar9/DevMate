@@ -1,14 +1,21 @@
 import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { health } from './api/client';
+import { DEVMATE_KNOWLEDGE_STORE_FILE_NAME } from './api/types';
 import { LocalBackendManager } from './backendManager';
 import { DevMateChatViewProvider, getBackendUrl } from './chatViewProvider';
 
 export function activate(context: vscode.ExtensionContext): void {
   const backendOutput = vscode.window.createOutputChannel('DevMate Backend');
+  const knowledgeStorePath = vscode.Uri.joinPath(
+    context.globalStorageUri,
+    'knowledge',
+    DEVMATE_KNOWLEDGE_STORE_FILE_NAME
+  ).fsPath;
   let chatViewProvider: DevMateChatViewProvider | undefined;
   const backendManager = new LocalBackendManager({
     extensionPath: context.extensionUri.fsPath,
+    knowledgeStorePath,
     getBackendUrl,
     isManagementEnabled: () => vscode.workspace.getConfiguration('devMate').get<boolean>(
       'manageLocalBackend',

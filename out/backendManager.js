@@ -57,12 +57,16 @@ exports.BACKEND_RESTART_WINDOW_MS = 60_000;
 function createBackendRequestToken() {
     return (0, crypto_1.randomBytes)(32).toString('base64url');
 }
-function backendLaunchEnvironment(backendToken, environment = process.env) {
+function backendLaunchEnvironment(backendToken, knowledgeStorePath, environment = process.env) {
+    if (!path.isAbsolute(knowledgeStorePath) || knowledgeStorePath.includes('\0')) {
+        throw new Error('The managed backend knowledge-store path must be absolute.');
+    }
     return {
         ...environment,
         PYTHONUNBUFFERED: '1',
         PYTHONDONTWRITEBYTECODE: '1',
-        [types_1.DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE]: backendToken
+        [types_1.DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE]: backendToken,
+        [types_1.DEVMATE_KNOWLEDGE_STORE_PATH_ENVIRONMENT_VARIABLE]: knowledgeStorePath
     };
 }
 function isPythonVerificationCommand(command) {
@@ -413,7 +417,7 @@ class LocalBackendManager {
                     ? path.dirname(launcher.executable)
                     : this.options.extensionPath,
                 windowsHide: true,
-                env: backendLaunchEnvironment(backendToken)
+                env: backendLaunchEnvironment(backendToken, this.options.knowledgeStorePath)
             });
         }
         catch (error) {

@@ -2,7 +2,10 @@ import { spawn } from 'child_process';
 import type { ChildProcessWithoutNullStreams } from 'child_process';
 import { randomBytes } from 'crypto';
 import * as path from 'path';
-import { DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE } from './api/types';
+import {
+  DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE,
+  DEVMATE_KNOWLEDGE_STORE_PATH_ENVIRONMENT_VARIABLE
+} from './api/types';
 import type { ValidatedCommand } from './commandTools';
 
 export const BACKEND_HEALTH_INTERVAL_MS = 10_000;
@@ -44,6 +47,7 @@ export type BackendLauncher = PythonLauncher & {
 
 export type LocalBackendManagerOptions = {
   extensionPath: string;
+  knowledgeStorePath: string;
   getBackendUrl: () => string;
   isManagementEnabled: () => boolean;
   getConfiguredPythonPath: () => string;
@@ -59,13 +63,18 @@ export function createBackendRequestToken(): string {
 
 export function backendLaunchEnvironment(
   backendToken: string,
+  knowledgeStorePath: string,
   environment: NodeJS.ProcessEnv = process.env
 ): NodeJS.ProcessEnv {
+  if (!path.isAbsolute(knowledgeStorePath) || knowledgeStorePath.includes('\0')) {
+    throw new Error('The managed backend knowledge-store path must be absolute.');
+  }
   return {
     ...environment,
     PYTHONUNBUFFERED: '1',
     PYTHONDONTWRITEBYTECODE: '1',
-    [DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE]: backendToken
+    [DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE]: backendToken,
+    [DEVMATE_KNOWLEDGE_STORE_PATH_ENVIRONMENT_VARIABLE]: knowledgeStorePath
   };
 }
 
@@ -478,7 +487,7 @@ export class LocalBackendManager {
             ? path.dirname(launcher.executable)
             : this.options.extensionPath,
           windowsHide: true,
-          env: backendLaunchEnvironment(backendToken)
+          env: backendLaunchEnvironment(backendToken, this.options.knowledgeStorePath)
         }
       );
     } catch (error) {

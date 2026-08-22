@@ -1,6 +1,8 @@
 import logging
 import os
 import secrets
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -25,6 +27,7 @@ from .dependencies import (
     backend_dependencies,
 )
 from .errors import BackendApiError
+from .knowledge_store import KnowledgeStore, knowledge_store_path_from_environment
 from .providers import ChatProvider, OpenAICompatibleProvider
 from .tool_catalog import AGENT_TOOL_DEFINITIONS
 
@@ -37,6 +40,27 @@ _authenticated_backend_paths = frozenset(("/health", "/ask", "/ask/stream"))
 
 def _environment_backend_token() -> str | None:
     return os.environ.get(DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE)
+
+
+def _environment_knowledge_store() -> KnowledgeStore | None:
+    database_path = knowledge_store_path_from_environment()
+    return KnowledgeStore(database_path) if database_path is not None else None
+
+
+@asynccontextmanager
+async def backend_lifespan(application: FastAPI) -> AsyncIterator[None]:
+    dependencies = getattr(application.state, "devmate_dependencies", None)
+    if not isinstance(dependencies, BackendDependencies):
+        raise RuntimeError("DevMate backend dependencies are not configured.")
+
+    knowledge_store = dependencies.knowledge_store
+    if knowledge_store is not None:
+        knowledge_store.open()
+    try:
+        yield
+    finally:
+        if knowledge_store is not None:
+            knowledge_store.close()
 
 
 def _safe_error_message(value: object, fallback: str) -> str:
@@ -146,10 +170,12 @@ def create_app(
     chat_provider: ChatProvider | None = None,
     chat_service: ChatService | None = None,
     backend_token_provider: BackendTokenProvider | None = None,
+    knowledge_store: KnowledgeStore | None = None,
 ) -> FastAPI:
     application = FastAPI(
         title="DevMate Backend",
         version=DEVMATE_BACKEND_VERSION,
+        lifespan=backend_lifespan,
     )
     application.state.devmate_dependencies = BackendDependencies(
         chat_provider=(
@@ -166,6 +192,11 @@ def create_app(
             backend_token_provider
             if backend_token_provider is not None
             else _environment_backend_token
+        ),
+        knowledge_store=(
+            knowledge_store
+            if knowledge_store is not None
+            else _environment_knowledge_store()
         ),
     )
     application.middleware("http")(authenticate_backend_request)

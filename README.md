@@ -223,6 +223,8 @@ The status indicator in the DevMate toolbar shows whether the backend is checkin
 
 DevMate generates a fresh in-memory authentication token whenever it launches the backend. The token is passed only to that child process and is required by `/health`, `/ask`, and `/ask/stream`. Manually started or externally managed backends are intentionally rejected until an explicit secure token-sharing flow is available.
 
+The managed backend also receives an explicit SQLite path below VS Code's private global extension storage. The application opens the versioned knowledge store during startup and closes it during shutdown. The database is not placed in the repository and is not yet used by project retrieval; the current lexical JSON index remains active until the indexing API is introduced.
+
 ## Settings
 
 The gear button in the DevMate toolbar opens the main settings dialog.
@@ -383,6 +385,7 @@ The workspace must be trusted and VS Code Terminal Shell Integration must be ava
 - Provider keys are stored in VS Code SecretStorage.
 - Provider keys and workspace context are forwarded only after the managed loopback backend proves possession of its per-process token.
 - The backend token is kept in extension-host memory, passed through the child-process environment, and never sent to the model provider.
+- The future SQLite knowledge database is kept below VS Code's private global extension storage rather than inside a workspace.
 - Provider redirects are disabled to avoid forwarding credentials to another host.
 - Remote model-provider endpoints require HTTPS; plain HTTP is limited to loopback hosts.
 - Provider hostnames are resolved before each request, every answer must be public (or exact loopback for a local provider), and the connection is pinned to a checked address while retaining the original TLS identity.

@@ -51,6 +51,7 @@ const agentTools = read('src/agentTools.ts');
 const projectIndex = read('src/projectIndex.ts');
 const sessions = read('src/sessions.ts');
 const backendApiModels = read('backend/app/api_models.py');
+const backendKnowledgeStore = read('backend/app/knowledge_store.py');
 
 const literalContracts = [
   {
@@ -126,4 +127,17 @@ for (const name of stringContracts) {
   }
 }
 
-console.log(`Verified ${literalContracts.length + numericContracts.length + stringContracts.length} TypeScript/Python API contracts.`);
+const knowledgeStoreStringContracts = [
+  'DEVMATE_KNOWLEDGE_STORE_PATH_ENVIRONMENT_VARIABLE',
+  'DEVMATE_KNOWLEDGE_STORE_FILE_NAME'
+];
+
+for (const name of knowledgeStoreStringContracts) {
+  const typeScriptValue = stringConstant(apiTypes, name, 'typescript');
+  const pythonValue = stringConstant(backendKnowledgeStore, name, 'python');
+  if (typeScriptValue !== pythonValue) {
+    throw new Error(`${name} differs between TypeScript (${typeScriptValue}) and Python (${pythonValue}).`);
+  }
+}
+
+console.log(`Verified ${literalContracts.length + numericContracts.length + stringContracts.length + knowledgeStoreStringContracts.length} TypeScript/Python API contracts.`);

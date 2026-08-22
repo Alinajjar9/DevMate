@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import os
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+
+
+DEVMATE_KNOWLEDGE_STORE_PATH_ENVIRONMENT_VARIABLE = "DEVMATE_KNOWLEDGE_STORE_PATH"
+DEVMATE_KNOWLEDGE_STORE_FILE_NAME = "devmate-knowledge.sqlite3"
+MAX_KNOWLEDGE_STORE_PATH_CHARACTERS = 4_096
 
 
 class KnowledgeStoreError(RuntimeError):
@@ -132,6 +138,25 @@ _SCHEMA_MIGRATIONS = (
     ),
 )
 KNOWLEDGE_SCHEMA_VERSION = _SCHEMA_MIGRATIONS[-1].version
+
+
+def knowledge_store_path_from_environment(
+    environment: Mapping[str, str] | None = None,
+) -> Path | None:
+    source = os.environ if environment is None else environment
+    value = source.get(DEVMATE_KNOWLEDGE_STORE_PATH_ENVIRONMENT_VARIABLE)
+    if value is None:
+        return None
+    if not value or len(value) > MAX_KNOWLEDGE_STORE_PATH_CHARACTERS or "\0" in value:
+        raise KnowledgeStoreError("The knowledge-store path is invalid.")
+
+    database_path = Path(value)
+    if (
+        not database_path.is_absolute()
+        or database_path.name != DEVMATE_KNOWLEDGE_STORE_FILE_NAME
+    ):
+        raise KnowledgeStoreError("The knowledge-store path is invalid.")
+    return database_path
 
 
 class KnowledgeStore:
