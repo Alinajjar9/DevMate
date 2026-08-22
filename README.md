@@ -334,6 +334,7 @@ The Python backend source remains in the package as a fallback for development o
 | `backend/app/dependencies.py` | Per-application backend dependency container and route accessors |
 | `backend/app/errors.py` | Shared backend application errors |
 | `backend/app/knowledge_store.py` | Isolated versioned SQLite schema and transaction boundary for future indexing |
+| `backend/app/knowledge_repository.py` | Transactional workspace, file, chunk, metadata, and FTS data access |
 | `backend/app/main.py` | FastAPI application composition, authentication, and exception handling |
 | `backend/app/prompts.py` | Mode and agent-loop prompts |
 | `backend/app/providers.py` | OpenAI-compatible provider client |

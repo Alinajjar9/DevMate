@@ -2,6 +2,24 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-22 — Add the SQLite knowledge-index repository
+
+### Changed
+
+- Added a backend-only `KnowledgeRepository` with bounded records for indexed files, chunks, fingerprints, metadata, and lexical results.
+- Added idempotent workspace registration, stale-version detection, atomic batches for file replacement and deletion, workspace cleanup, and explicit index-state transitions.
+- Added workspace-isolated SQLite FTS/BM25 search with generated safe query expressions, deterministic ordering, and bounded result limits.
+- Kept database access separate from filesystem collection, chunking, HTTP routes, and VS Code integration; the extension still uses its existing lexical JSON index.
+- Added focused coverage for replacement, deletion, metadata, chunk-version consistency, workspace isolation, input validation, cascades, safe search parsing, and whole-batch rollback.
+
+### Verification
+
+- `npm run verify` — 181 extension tests and 101 backend tests passed; 23 cross-language contracts and 18 emitted JavaScript files verified.
+- Focused knowledge-repository suite — 6 tests passed.
+- `git diff --check`
+
+---
+
 ## 2026-08-22 — Wire the private knowledge-store lifecycle
 
 ### Changed
