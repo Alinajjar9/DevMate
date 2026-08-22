@@ -2,6 +2,40 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-22 — Extract the backend chat service
+
+### Changed
+
+- Moved completion-request construction, mode-specific tool filtering, response normalization, textual tool-call compatibility, file-change parsing, used-file tracking, and token accounting into `backend/app/chat_service.py`.
+- Injected one `ChatService` per FastAPI application through the existing application factory while keeping provider calls and NDJSON streaming orchestration in the routes.
+- Moved the shared `BackendApiError` into a lower-level error boundary so the service and routes remain independent without circular imports.
+- Added direct service coverage for bounded provider requests, tool filtering, provider-key normalization, used-file deduplication, and validated tool results.
+- Reduced `backend/app/main.py` from 981 lines to 728 lines without intentionally changing behavior.
+
+### Verification
+
+- `npm run verify` — 178 extension tests and 87 backend tests passed; 21 cross-language contracts and 17 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
+## 2026-08-22 — Extract backend API contracts
+
+### Changed
+
+- Moved backend protocol constants, shared literal types, validation limits, and Pydantic request and response models into `backend/app/api_models.py`.
+- Made the contract module a low-level dependency with no imports from routes, prompts, or providers, preserving a one-way backend import graph.
+- Updated provider and prompt modules to consume shared provider, reasoning, mode, and scope types from the contract boundary.
+- Pointed API tests and TypeScript/Python contract verification directly at the new module while preserving every HTTP and streaming response shape.
+- Reduced `backend/app/main.py` from 1,237 lines to 981 lines without intentionally changing behavior.
+
+### Verification
+
+- `npm run verify` — 178 extension tests and 85 backend tests passed; 21 cross-language contracts and 17 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-21 — Add an isolated backend application factory
 
 ### Changed

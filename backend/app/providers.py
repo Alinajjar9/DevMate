@@ -10,18 +10,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from .api_models import ProviderErrorCode, ProviderName, ReasoningEffort
 
-ProviderName = Literal["openai", "ollama"]
-ProviderErrorCode = Literal[
-    "provider_configuration",
-    "provider_authentication_failed",
-    "provider_not_found",
-    "provider_rate_limited",
-    "provider_timeout",
-    "provider_unavailable",
-    "provider_invalid_response",
-]
-ReasoningEffort = Literal["auto", "low", "medium", "high", "xhigh"]
 MessageRole = Literal["system", "user", "assistant", "tool"]
 ProviderAddressResolver = Callable[[str, int], Awaitable[Sequence[str]]]
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"

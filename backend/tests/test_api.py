@@ -5,8 +5,7 @@ from typing import get_args
 
 from fastapi.testclient import TestClient
 
-from backend.app.main import (
-    AGENT_TOOL_DEFINITIONS,
+from backend.app.api_models import (
     AgentToolName,
     DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE,
     DEVMATE_BACKEND_TOKEN_HEADER,
@@ -17,6 +16,9 @@ from backend.app.main import (
     MAX_PROJECT_FILE_CHARACTERS,
     MUTATING_AGENT_TOOLS,
     READ_ONLY_AGENT_TOOLS,
+)
+from backend.app.main import (
+    AGENT_TOOL_DEFINITIONS,
     app,
     create_app,
 )

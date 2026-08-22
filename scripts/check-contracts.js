@@ -50,39 +50,38 @@ const apiTypes = read('src/api/types.ts');
 const agentTools = read('src/agentTools.ts');
 const projectIndex = read('src/projectIndex.ts');
 const sessions = read('src/sessions.ts');
-const backendMain = read('backend/app/main.py');
-const backendPrompts = read('backend/app/prompts.py');
+const backendApiModels = read('backend/app/api_models.py');
 
 const literalContracts = [
   {
     label: 'AssistantMode',
     typeScript: quotedValues(capture(apiTypes, /export type AssistantMode\s*=\s*([^;]+);/, 'TypeScript AssistantMode')),
-    python: quotedValues(capture(backendPrompts, /AssistantMode\s*=\s*Literal\[([^\]]+)\]/, 'Python AssistantMode'))
+    python: quotedValues(capture(backendApiModels, /AssistantMode\s*=\s*Literal\[([^\]]+)\]/, 'Python AssistantMode'))
   },
   {
     label: 'ScopeType',
     typeScript: quotedValues(capture(apiTypes, /export type ScopeType\s*=\s*([^;]+);/, 'TypeScript ScopeType')),
-    python: quotedValues(capture(backendPrompts, /ScopeType\s*=\s*Literal\[([^\]]+)\]/, 'Python ScopeType'))
+    python: quotedValues(capture(backendApiModels, /ScopeType\s*=\s*Literal\[([^\]]+)\]/, 'Python ScopeType'))
   },
   {
     label: 'ContextSource',
     typeScript: quotedValues(capture(apiTypes, /export type ContextSource\s*=\s*([^;]+);/, 'TypeScript ContextSource')),
-    python: quotedValues(capture(backendMain, /ContextSource\s*=\s*Literal\[([^\]]+)\]/, 'Python ContextSource'))
+    python: quotedValues(capture(backendApiModels, /ContextSource\s*=\s*Literal\[([^\]]+)\]/, 'Python ContextSource'))
   },
   {
     label: 'AgentToolName',
     typeScript: quotedValues(capture(agentTools, /export const AGENT_TOOL_NAMES\s*=\s*\[([\s\S]*?)\]\s*as const;/, 'TypeScript agent tools')),
-    python: quotedValues(capture(backendMain, /AgentToolName\s*=\s*Literal\[([\s\S]*?)\]/, 'Python agent tools'))
+    python: quotedValues(capture(backendApiModels, /AgentToolName\s*=\s*Literal\[([\s\S]*?)\]/, 'Python agent tools'))
   },
   {
     label: 'BackendCapability',
     typeScript: quotedValues(capture(apiTypes, /export const DEVMATE_BACKEND_CAPABILITIES\s*=\s*\[([\s\S]*?)\]\s*as const;/, 'TypeScript backend capabilities')),
-    python: quotedValues(capture(backendMain, /BackendCapability\s*=\s*Literal\[([^\]]+)\]/, 'Python backend capabilities'))
+    python: quotedValues(capture(backendApiModels, /BackendCapability\s*=\s*Literal\[([^\]]+)\]/, 'Python backend capabilities'))
   },
   {
     label: 'BackendErrorCode',
     typeScript: quotedValues(capture(apiTypes, /export const DEVMATE_BACKEND_ERROR_CODES\s*=\s*\[([\s\S]*?)\]\s*as const;/, 'TypeScript backend error codes')),
-    python: quotedValues(capture(backendMain, /BackendErrorCode\s*=\s*Literal\[([\s\S]*?)\]/, 'Python backend error codes'))
+    python: quotedValues(capture(backendApiModels, /BackendErrorCode\s*=\s*Literal\[([\s\S]*?)\]/, 'Python backend error codes'))
   }
 ];
 
@@ -107,7 +106,7 @@ const numericContracts = [
 
 for (const [name, typeScriptSource] of numericContracts) {
   const typeScriptValue = numericConstant(typeScriptSource, name, 'typescript');
-  const pythonValue = numericConstant(backendMain, name, 'python');
+  const pythonValue = numericConstant(backendApiModels, name, 'python');
   if (typeScriptValue !== pythonValue) {
     throw new Error(`${name} differs between TypeScript (${typeScriptValue}) and Python (${pythonValue}).`);
   }
@@ -121,7 +120,7 @@ const stringContracts = [
 
 for (const name of stringContracts) {
   const typeScriptValue = stringConstant(apiTypes, name, 'typescript');
-  const pythonValue = stringConstant(backendMain, name, 'python');
+  const pythonValue = stringConstant(backendApiModels, name, 'python');
   if (typeScriptValue !== pythonValue) {
     throw new Error(`${name} differs between TypeScript (${typeScriptValue}) and Python (${pythonValue}).`);
   }

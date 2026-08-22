@@ -9,320 +9,40 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, FastAPI, Header, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field, model_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from .code_changes import CodeChangeParseError, parse_code_change_response
-from .prompts import AssistantMode, ScopeType, build_chat_messages
+from .api_models import (
+    DEVMATE_BACKEND_CAPABILITIES,
+    DEVMATE_BACKEND_PROTOCOL_VERSION,
+    DEVMATE_BACKEND_SERVICE,
+    DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE,
+    DEVMATE_BACKEND_TOKEN_HEADER,
+    DEVMATE_BACKEND_VERSION,
+    MAX_BACKEND_TOKEN_CHARACTERS,
+    MIN_BACKEND_TOKEN_CHARACTERS,
+    AskRequest,
+    AskResult,
+    BackendErrorCode,
+    BackendErrorResult,
+    HealthData,
+    HealthResult,
+    ValidationIssue,
+)
+from .chat_service import ChatService
+from .errors import BackendApiError
 from .providers import (
     ChatCompletion,
-    ChatCompletionRequest,
     ChatProvider,
     ChatToolDefinition,
     OpenAICompatibleProvider,
     ProviderError,
-    ProviderName,
-    ReasoningEffort,
 )
 from .text_tool_calls import (
     classify_text_tool_call_prefix,
-    looks_like_text_tool_call,
-    parse_text_tool_calls,
 )
 
 
 logger = logging.getLogger(__name__)
-
-
-DEVMATE_BACKEND_VERSION = "1.0.0"
-DEVMATE_BACKEND_SERVICE = "devmate-backend"
-DEVMATE_BACKEND_PROTOCOL_VERSION = 2
-DEVMATE_BACKEND_TOKEN_HEADER = "X-DevMate-Backend-Token"
-DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE = "DEVMATE_BACKEND_TOKEN"
-MIN_BACKEND_TOKEN_CHARACTERS = 32
-MAX_BACKEND_TOKEN_CHARACTERS = 512
-BackendCapability = Literal[
-    "chat",
-    "streaming",
-    "request-authentication",
-    "strict-response-contracts",
-]
-DEVMATE_BACKEND_CAPABILITIES: tuple[BackendCapability, ...] = (
-    "chat",
-    "streaming",
-    "request-authentication",
-    "strict-response-contracts",
-)
-BackendErrorCode = Literal[
-    "backend_authentication_failed",
-    "request_validation_failed",
-    "route_unavailable",
-    "provider_configuration",
-    "provider_authentication_failed",
-    "provider_not_found",
-    "provider_rate_limited",
-    "provider_timeout",
-    "provider_unavailable",
-    "provider_invalid_response",
-    "model_invalid_response",
-    "internal_error",
-]
-ContextSource = Literal["file", "selection", "attachment"]
-MAX_CONTEXT_CHARACTERS = 20_000
-MAX_PROJECT_CONTEXT_FILES = 5
-MAX_PROJECT_FILE_CHARACTERS = 8_000
-MAX_PROJECT_CONTEXT_CHARACTERS = 40_000
-MAX_ATTACHED_FILES = 5
-MAX_REQUEST_CONTEXT_ITEMS = 6
-MAX_REQUEST_CONTEXT_CHARACTERS = 40_000
-MAX_AGENT_TOOL_STEPS = 100
-MAX_AGENT_TOOL_RESULT_CHARACTERS = 10_000
-MAX_AGENT_TOOL_HISTORY_CHARACTERS = 80_000
-MAX_CONVERSATION_TURNS = 6
-MAX_CONVERSATION_TURN_CHARACTERS = 6_000
-MAX_CONVERSATION_HISTORY_CHARACTERS = 20_000
-AgentToolName = Literal[
-    "list_files",
-    "read_file",
-    "search_code",
-    "get_symbols",
-    "find_definition",
-    "find_references",
-    "get_diagnostics",
-    "read_terminal_errors",
-    "create_file",
-    "edit_file",
-    "delete_file",
-    "rename_file",
-    "move_file",
-    "install_dependencies",
-    "run_command",
-]
-READ_ONLY_AGENT_TOOLS: tuple[AgentToolName, ...] = (
-    "list_files",
-    "read_file",
-    "search_code",
-    "get_symbols",
-    "find_definition",
-    "find_references",
-    "get_diagnostics",
-    "read_terminal_errors",
-)
-MUTATING_AGENT_TOOLS: tuple[AgentToolName, ...] = (
-    "create_file",
-    "edit_file",
-    "delete_file",
-    "rename_file",
-    "move_file",
-    "install_dependencies",
-    "run_command",
-)
-
-
-def _utf16_character_count(value: str) -> int:
-    return len(value.encode("utf-16-le")) // 2
-
-
-class LlmSettings(BaseModel):
-    provider: ProviderName
-    model: str = Field(min_length=1, max_length=120)
-    baseUrl: str | None = Field(default=None, max_length=2_048)
-    maxTokens: int = Field(ge=128, le=32_000)
-    temperature: float = Field(ge=0, le=2)
-    reasoningEffort: ReasoningEffort = "auto"
-    timeoutSeconds: float = Field(default=900, ge=10, le=1_800)
-
-
-class AskContextItem(BaseModel):
-    source: ContextSource
-    filePath: str = Field(min_length=1)
-    languageId: str = Field(min_length=1)
-    content: str = Field(max_length=MAX_CONTEXT_CHARACTERS)
-    includedCharacters: int = Field(ge=0, le=MAX_CONTEXT_CHARACTERS)
-    totalCharacters: int = Field(ge=0)
-    truncated: bool
-
-    @model_validator(mode="after")
-    def validate_character_metadata(self) -> "AskContextItem":
-        if self.includedCharacters != _utf16_character_count(self.content):
-            raise ValueError("includedCharacters must match the content length")
-        if self.includedCharacters > self.totalCharacters:
-            raise ValueError("includedCharacters cannot exceed totalCharacters")
-        if self.truncated != (self.includedCharacters < self.totalCharacters):
-            raise ValueError("truncated must match the included and total character counts")
-        return self
-
-
-class AskScope(BaseModel):
-    type: ScopeType
-    workspacePath: str | None = None
-    items: list[AskContextItem] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def validate_items_for_scope(self) -> "AskScope":
-        attachments = [item for item in self.items if item.source == "attachment"]
-        primary_items = [item for item in self.items if item.source != "attachment"]
-
-        if len(attachments) > MAX_ATTACHED_FILES:
-            raise ValueError("scope contains too many attached files")
-        if len(self.items) > MAX_REQUEST_CONTEXT_ITEMS:
-            raise ValueError("scope contains too many context items")
-        if sum(item.includedCharacters for item in self.items) > MAX_REQUEST_CONTEXT_CHARACTERS:
-            raise ValueError("scope exceeds the total context limit")
-        if any(
-            item.includedCharacters > MAX_PROJECT_FILE_CHARACTERS
-            for item in attachments
-        ):
-            raise ValueError("scope contains an oversized attached file")
-        if self.type == "file" and (
-            len(primary_items) != 1 or primary_items[0].source != "file"
-        ):
-            raise ValueError("file scope requires exactly one file context item")
-        if self.type == "selection" and (
-            len(primary_items) != 1 or primary_items[0].source != "selection"
-        ):
-            raise ValueError("selection scope requires exactly one selection context item")
-        if self.type == "project" and any(
-            item.source not in {"file", "attachment"} for item in self.items
-        ):
-            raise ValueError("project scope can only contain file context items")
-        if self.type == "project" and len(self.items) > MAX_PROJECT_CONTEXT_FILES:
-            raise ValueError("project scope contains too many context files")
-        if self.type == "project" and sum(
-            item.includedCharacters for item in self.items
-        ) > MAX_PROJECT_CONTEXT_CHARACTERS:
-            raise ValueError("project scope exceeds the total context limit")
-        if self.type == "project" and any(
-            item.includedCharacters > MAX_PROJECT_FILE_CHARACTERS
-            for item in primary_items
-        ):
-            raise ValueError("project scope contains an oversized context file")
-        return self
-
-
-class AgentToolStep(BaseModel):
-    callId: str = Field(min_length=1, max_length=120)
-    name: AgentToolName
-    arguments: dict[str, object] = Field(default_factory=dict)
-    result: str = Field(max_length=MAX_AGENT_TOOL_RESULT_CHARACTERS)
-    isError: bool = False
-
-    @model_validator(mode="after")
-    def validate_arguments_size(self) -> "AgentToolStep":
-        if len(json.dumps(self.arguments, separators=(",", ":"))) > 4_000:
-            raise ValueError("tool arguments are too large")
-        return self
-
-
-class ConversationTurn(BaseModel):
-    user: str = Field(min_length=1, max_length=MAX_CONVERSATION_TURN_CHARACTERS)
-    assistant: str = Field(min_length=1, max_length=MAX_CONVERSATION_TURN_CHARACTERS)
-
-
-class AskRequest(BaseModel):
-    question: str = Field(min_length=1)
-    mode: AssistantMode
-    scope: AskScope
-    settings: LlmSettings
-    toolsEnabled: bool = True
-    enabledTools: list[AgentToolName] | None = None
-    agentEditsEnabled: bool = False
-    forceFinalAnswer: bool = False
-    disableThinking: bool = False
-    toolHistory: list[AgentToolStep] = Field(
-        default_factory=list,
-        max_length=MAX_AGENT_TOOL_STEPS,
-    )
-    conversationHistory: list[ConversationTurn] = Field(
-        default_factory=list,
-        max_length=MAX_CONVERSATION_TURNS,
-    )
-
-    @model_validator(mode="after")
-    def validate_tool_history(self) -> "AskRequest":
-        call_ids = [step.callId for step in self.toolHistory]
-        if len(call_ids) != len(set(call_ids)):
-            raise ValueError("tool history contains duplicate call ids")
-        if sum(len(step.result) for step in self.toolHistory) > MAX_AGENT_TOOL_HISTORY_CHARACTERS:
-            raise ValueError("tool history is too large")
-        if self.enabledTools is not None and len(self.enabledTools) != len(set(self.enabledTools)):
-            raise ValueError("enabled tools contains duplicates")
-        if sum(
-            len(turn.user) + len(turn.assistant)
-            for turn in self.conversationHistory
-        ) > MAX_CONVERSATION_HISTORY_CHARACTERS:
-            raise ValueError("conversation history is too large")
-        return self
-
-
-class HealthData(BaseModel):
-    service: Literal["devmate-backend"]
-    protocolVersion: Literal[2]
-    capabilities: list[BackendCapability]
-    backend: Literal["online"]
-    version: str
-
-
-class HealthResult(BaseModel):
-    status: Literal["ok"]
-    data: HealthData
-
-
-class FileChange(BaseModel):
-    path: str
-    content: str
-
-
-class AgentToolCall(BaseModel):
-    id: str = Field(min_length=1, max_length=120)
-    name: AgentToolName
-    arguments: dict[str, object]
-
-
-class TokenUsage(BaseModel):
-    inputTokens: int = Field(ge=0)
-    outputTokens: int = Field(ge=0)
-    totalTokens: int = Field(ge=0)
-    exact: bool
-
-
-class AskData(BaseModel):
-    answer: str
-    usedFiles: list[str]
-    changes: list[FileChange] = Field(default_factory=list)
-    toolCalls: list[AgentToolCall] = Field(default_factory=list)
-    tokenUsage: TokenUsage
-
-
-class AskResult(BaseModel):
-    status: Literal["ok"]
-    data: AskData
-
-
-class ValidationIssue(BaseModel):
-    location: list[str | int]
-    message: str
-    type: str
-
-
-class BackendErrorResult(BaseModel):
-    status: Literal["error"]
-    errorCode: BackendErrorCode
-    message: str
-    issues: list[ValidationIssue] = Field(default_factory=list)
-
-
-class BackendApiError(Exception):
-    def __init__(
-        self,
-        status_code: int,
-        error_code: BackendErrorCode,
-        message: str,
-    ) -> None:
-        super().__init__(message)
-        self.status_code = status_code
-        self.error_code = error_code
-        self.message = message
 
 
 BackendTokenProvider = Callable[[], str | None]
@@ -331,6 +51,7 @@ BackendTokenProvider = Callable[[], str | None]
 @dataclass(frozen=True, slots=True)
 class BackendDependencies:
     chat_provider: ChatProvider
+    chat_service: ChatService
     backend_token_provider: BackendTokenProvider
 
 
@@ -695,6 +416,10 @@ def get_chat_provider(request: Request) -> ChatProvider:
     return _backend_dependencies(request).chat_provider
 
 
+def get_chat_service(request: Request) -> ChatService:
+    return _backend_dependencies(request).chat_service
+
+
 def _safe_error_message(value: object, fallback: str) -> str:
     if not isinstance(value, str):
         return fallback
@@ -819,12 +544,13 @@ async def health(request: Request) -> HealthResult:
 async def ask(
     request: AskRequest,
     chat_provider: Annotated[ChatProvider, Depends(get_chat_provider)],
+    chat_service: Annotated[ChatService, Depends(get_chat_service)],
     provider_api_key: Annotated[
         str | None,
         Header(alias="X-DevMate-Provider-Key", max_length=10_000),
     ] = None,
 ) -> AskResult:
-    completion_request, enabled_tools, used_files = _build_completion_request(
+    completion_request, enabled_tools, used_files = chat_service.build_completion_request(
         request,
         provider_api_key,
     )
@@ -836,12 +562,12 @@ async def ask(
     completion = completion_value if isinstance(completion_value, ChatCompletion) else ChatCompletion(
         content=completion_value
     )
-    return _ask_result_from_completion(
+    return chat_service.result_from_completion(
         request,
         completion,
         enabled_tools,
         used_files,
-        _completion_token_usage(completion_request, completion),
+        chat_service.completion_token_usage(completion_request, completion),
     )
 
 
@@ -849,19 +575,20 @@ async def ask(
 async def ask_stream(
     request: AskRequest,
     chat_provider: Annotated[ChatProvider, Depends(get_chat_provider)],
+    chat_service: Annotated[ChatService, Depends(get_chat_service)],
     provider_api_key: Annotated[
         str | None,
         Header(alias="X-DevMate-Provider-Key", max_length=10_000),
     ] = None,
 ) -> StreamingResponse:
-    completion_request, enabled_tools, used_files = _build_completion_request(
+    completion_request, enabled_tools, used_files = chat_service.build_completion_request(
         request,
         provider_api_key,
     )
 
     async def event_stream() -> AsyncIterator[str]:
         yield _stream_line({"type": "start"})
-        initial_usage = _completion_token_usage(completion_request, None)
+        initial_usage = chat_service.completion_token_usage(completion_request, None)
         yield _stream_line({"type": "usage", "usage": initial_usage.model_dump(mode="json")})
         completion: ChatCompletion | None = None
         reasoning_announced = False
@@ -910,7 +637,7 @@ async def ask_stream(
                     "provider_invalid_response",
                     "The model provider ended its stream without a final response.",
                 )
-            completion, converted_text_tool = _normalize_text_tool_completion(completion)
+            completion, converted_text_tool = chat_service.normalize_text_tool_completion(completion)
             if converted_text_tool and not tool_announced:
                 tool_announced = True
                 yield _stream_line({"type": "progress", "phase": "Preparing project tool call"})
@@ -918,12 +645,12 @@ async def ask_stream(
                 yield _stream_line({"type": "delta", "text": preview_buffer})
             elif preview_mode == "answer" and preview_buffer:
                 yield _stream_line({"type": "delta", "text": preview_buffer})
-            result = _ask_result_from_completion(
+            result = chat_service.result_from_completion(
                 request,
                 completion,
                 enabled_tools,
                 used_files,
-                _completion_token_usage(completion_request, completion),
+                chat_service.completion_token_usage(completion_request, completion),
             )
             yield _stream_line({"type": "final", "result": result.model_dump(mode="json")})
         except ProviderError as error:
@@ -962,6 +689,7 @@ async def ask_stream(
 def create_app(
     *,
     chat_provider: ChatProvider | None = None,
+    chat_service: ChatService | None = None,
     backend_token_provider: BackendTokenProvider | None = None,
 ) -> FastAPI:
     application = FastAPI(
@@ -973,6 +701,11 @@ def create_app(
             chat_provider
             if chat_provider is not None
             else OpenAICompatibleProvider()
+        ),
+        chat_service=(
+            chat_service
+            if chat_service is not None
+            else ChatService(AGENT_TOOL_DEFINITIONS)
         ),
         backend_token_provider=(
             backend_token_provider
@@ -991,247 +724,5 @@ def create_app(
 app = create_app()
 
 
-def _build_completion_request(
-    request: AskRequest,
-    provider_api_key: str | None,
-) -> tuple[ChatCompletionRequest, tuple[AgentToolName, ...], list[str]]:
-    used_files = _used_files(request.scope)
-    api_key = provider_api_key.strip() if provider_api_key else None
-    requested_tools = (
-        tuple(request.enabledTools)
-        if request.enabledTools is not None
-        else READ_ONLY_AGENT_TOOLS if request.toolsEnabled else ()
-    )
-    mode_tools = READ_ONLY_AGENT_TOOLS if request.mode == "ideas" else (
-        *READ_ONLY_AGENT_TOOLS,
-        *MUTATING_AGENT_TOOLS,
-    )
-    enabled_tools = tuple(
-        tool for tool in requested_tools if tool in mode_tools
-    ) if not request.forceFinalAnswer else ()
-    tools_enabled = bool(enabled_tools)
-    messages = build_chat_messages(
-        mode=request.mode,
-        scope_type=request.scope.type,
-        question=request.question,
-        context_items=request.scope.items,
-        tool_steps=request.toolHistory,
-        tools_enabled=tools_enabled,
-        force_final_answer=request.forceFinalAnswer,
-        disable_thinking=request.disableThinking,
-        agent_edits_enabled=request.agentEditsEnabled,
-        conversation_turns=request.conversationHistory,
-    )
-    return ChatCompletionRequest(
-        provider=request.settings.provider,
-        model=request.settings.model,
-        base_url=request.settings.baseUrl,
-        api_key=api_key if request.settings.provider == "openai" else None,
-        messages=messages,
-        max_tokens=request.settings.maxTokens,
-        temperature=request.settings.temperature,
-        reasoning_effort=request.settings.reasoningEffort,
-        timeout_seconds=request.settings.timeoutSeconds,
-        tools=tuple(
-            definition
-            for definition in AGENT_TOOL_DEFINITIONS
-            if definition.name in enabled_tools
-        ),
-        force_final_answer=request.forceFinalAnswer,
-        disable_thinking=request.disableThinking,
-    ), enabled_tools, used_files
-
-
-def _ask_result_from_completion(
-    request: AskRequest,
-    completion: ChatCompletion,
-    enabled_tools: tuple[AgentToolName, ...],
-    used_files: list[str],
-    token_usage: TokenUsage,
-) -> AskResult:
-    completion, _ = _normalize_text_tool_completion(completion)
-    tools_enabled = bool(enabled_tools)
-    if completion.tool_calls:
-        if not tools_enabled:
-            raise BackendApiError(
-                502,
-                "model_invalid_response",
-                "The model requested another tool when DevMate required a final answer.",
-            )
-        tool_calls = _parse_agent_tool_calls(completion.tool_calls, set(enabled_tools))
-        history_call_ids = {step.callId for step in request.toolHistory}
-        if any(tool_call.id in history_call_ids for tool_call in tool_calls):
-            raise BackendApiError(
-                502,
-                "model_invalid_response",
-                "The model reused an invalid tool-call id.",
-            )
-        return AskResult(
-            status="ok",
-            data=AskData(
-                answer="",
-                usedFiles=used_files,
-                toolCalls=tool_calls,
-                tokenUsage=token_usage,
-            ),
-        )
-
-    answer = completion.content
-    if not answer:
-        if completion.reasoning_content or completion.finish_reason in {"length", "max_tokens"}:
-            raise BackendApiError(
-                502,
-                "model_invalid_response",
-                (
-                    "The model used its response budget for reasoning without producing "
-                    "a final answer. Increase devMate.maxTokens or try again."
-                ),
-            )
-        raise BackendApiError(
-            502,
-            "model_invalid_response",
-            "The model provider returned an empty final answer.",
-        )
-
-    changes: list[FileChange] = []
-    if request.mode == "code" and not request.agentEditsEnabled:
-        try:
-            answer, parsed_changes = parse_code_change_response(answer)
-        except CodeChangeParseError as error:
-            raise BackendApiError(
-                502,
-                "model_invalid_response",
-                str(error),
-            ) from error
-        changes = [
-            FileChange(path=change.path, content=change.content)
-            for change in parsed_changes
-        ]
-
-    return AskResult(
-        status="ok",
-        data=AskData(
-            answer=answer,
-            usedFiles=used_files,
-            changes=changes,
-            tokenUsage=token_usage,
-        ),
-    )
-
-
-def _normalize_text_tool_completion(
-    completion: ChatCompletion,
-) -> tuple[ChatCompletion, bool]:
-    if completion.tool_calls or not completion.content:
-        return completion, False
-    if not looks_like_text_tool_call(completion.content):
-        return completion, False
-    tool_calls = parse_text_tool_calls(completion.content)
-    if not tool_calls:
-        raise BackendApiError(
-            502,
-            "model_invalid_response",
-            "The model returned a malformed textual tool call.",
-        )
-    return ChatCompletion(
-        content=None,
-        tool_calls=tool_calls,
-        finish_reason=completion.finish_reason,
-        reasoning_content=completion.reasoning_content,
-        usage=completion.usage,
-    ), True
-
-
-def _completion_token_usage(
-    request: ChatCompletionRequest,
-    completion: ChatCompletion | None,
-) -> TokenUsage:
-    if completion and completion.usage:
-        return TokenUsage(
-            inputTokens=completion.usage.input_tokens,
-            outputTokens=completion.usage.output_tokens,
-            totalTokens=completion.usage.total_tokens,
-            exact=True,
-        )
-
-    input_characters = 0
-    for message in request.messages:
-        input_characters += len(message.role) + len(message.content or "")
-        input_characters += len(message.tool_call_id or "")
-        for tool_call in message.tool_calls:
-            input_characters += len(tool_call.id) + len(tool_call.name) + len(tool_call.arguments)
-    for tool in request.tools:
-        input_characters += len(tool.name) + len(tool.description)
-        input_characters += len(json.dumps(tool.parameters, separators=(",", ":"), ensure_ascii=False))
-
-    output_characters = 0
-    if completion:
-        output_characters += len(completion.content or "")
-        output_characters += len(completion.reasoning_content or "")
-        for tool_call in completion.tool_calls:
-            output_characters += len(tool_call.id) + len(tool_call.name) + len(tool_call.arguments)
-    input_tokens = _estimated_token_count(input_characters)
-    output_tokens = _estimated_token_count(output_characters)
-    return TokenUsage(
-        inputTokens=input_tokens,
-        outputTokens=output_tokens,
-        totalTokens=input_tokens + output_tokens,
-        exact=False,
-    )
-
-
-def _estimated_token_count(character_count: int) -> int:
-    return 0 if character_count <= 0 else max(1, (character_count + 3) // 4)
-
-
 def _stream_line(value: dict[str, object]) -> str:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False) + "\n"
-
-
-def _parse_agent_tool_calls(
-    tool_calls: tuple[object, ...],
-    enabled_tools: set[AgentToolName],
-) -> list[AgentToolCall]:
-    parsed_calls: list[AgentToolCall] = []
-    seen_ids: set[str] = set()
-    for tool_call in tool_calls:
-        call_id = getattr(tool_call, "id", "")
-        name = getattr(tool_call, "name", "")
-        arguments_json = getattr(tool_call, "arguments", "")
-        if (
-            not isinstance(call_id, str)
-            or not call_id
-            or len(call_id) > 120
-            or call_id in seen_ids
-            or name not in enabled_tools
-            or not isinstance(arguments_json, str)
-            or len(arguments_json) > 1_200_000
-        ):
-            raise BackendApiError(
-                502,
-                "model_invalid_response",
-                "The model requested an invalid tool.",
-            )
-        try:
-            arguments = json.loads(arguments_json)
-        except (TypeError, json.JSONDecodeError) as error:
-            raise BackendApiError(
-                502,
-                "model_invalid_response",
-                "The model returned invalid tool arguments.",
-            ) from error
-        if not isinstance(arguments, dict):
-            raise BackendApiError(
-                502,
-                "model_invalid_response",
-                "The model returned invalid tool arguments.",
-            )
-        seen_ids.add(call_id)
-        parsed_calls.append(
-            AgentToolCall(id=call_id, name=name, arguments=arguments)
-        )
-    return parsed_calls
-
-
-def _used_files(scope: AskScope) -> list[str]:
-    return list(dict.fromkeys(item.filePath for item in scope.items))

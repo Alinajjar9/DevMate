@@ -325,7 +325,10 @@ The Python backend source remains in the package as a fallback for development o
 | `src/projectIndex.ts` | Local chunking and lexical retrieval |
 | `src/sessions.ts` | Project-bound conversation storage |
 | `src/permissions.ts` | File and command permission storage |
-| `backend/app/main.py` | FastAPI application factory, routes, validation, and tool schemas |
+| `backend/app/api_models.py` | Backend protocol constants and validated request/response contracts |
+| `backend/app/chat_service.py` | Model-request construction, completion normalization, and token accounting |
+| `backend/app/errors.py` | Shared backend application errors |
+| `backend/app/main.py` | FastAPI application factory, routes, and tool schemas |
 | `backend/app/prompts.py` | Mode and agent-loop prompts |
 | `backend/app/providers.py` | OpenAI-compatible provider client |
 | `backend/run_backend.py` | Entry point for the standalone backend |

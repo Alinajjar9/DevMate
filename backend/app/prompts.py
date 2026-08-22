@@ -1,11 +1,8 @@
 import json
-from typing import Literal, Protocol, Sequence
+from typing import Protocol, Sequence
 
+from .api_models import AssistantMode, ScopeType
 from .providers import ChatMessage, ChatToolCall
-
-
-AssistantMode = Literal["ideas", "code", "debug"]
-ScopeType = Literal["project", "file", "selection"]
 
 
 class ContextItem(Protocol):
