@@ -1,13 +1,12 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SqliteProjectRetriever = exports.LexicalProjectRetriever = exports.RECIPROCAL_RANK_FUSION_CONSTANT = exports.SEMANTIC_SEARCH_CAPABILITY = void 0;
-exports.fuseProjectSearchResults = fuseProjectSearchResults;
+exports.SqliteProjectRetriever = exports.LexicalProjectRetriever = exports.SEMANTIC_SEARCH_CAPABILITY = void 0;
 const crypto_1 = require("crypto");
 const client_1 = require("./api/client");
 const types_1 = require("./api/types");
 const projectIndex_1 = require("./projectIndex");
+const projectSearchRanking_1 = require("./projectSearchRanking");
 exports.SEMANTIC_SEARCH_CAPABILITY = 'semantic-search-v1';
-exports.RECIPROCAL_RANK_FUSION_CONSTANT = 60;
 class LexicalProjectRetriever {
     async retrieve(request) {
         const index = request.index ?? await request.loadIndex?.();
@@ -56,11 +55,7 @@ class SqliteProjectRetriever {
         }
         const lexicalResults = successfulResults(lexicalResponse);
         const semanticResults = successfulResults(semanticResponse);
-        const rankedResults = lexicalResults.length > 0 && semanticResults.length > 0
-            ? fuseProjectSearchResults(lexicalResults, semanticResults, resultLimit)
-            : semanticResults.length > 0
-                ? semanticResults
-                : lexicalResults;
+        const rankedResults = (0, projectSearchRanking_1.rankProjectSearchResults)(lexicalResults, semanticResults, request.question, resultLimit);
         if (rankedResults.length === 0) {
             return this.fallback.retrieve(request);
         }
@@ -154,67 +149,10 @@ class SqliteProjectRetriever {
     }
 }
 exports.SqliteProjectRetriever = SqliteProjectRetriever;
-function fuseProjectSearchResults(lexicalResults, semanticResults, limit) {
-    const boundedLimit = Number.isFinite(limit)
-        ? Math.max(0, Math.floor(limit))
-        : 0;
-    if (boundedLimit === 0) {
-        return [];
-    }
-    const entries = new Map();
-    const addRanking = (results) => {
-        const seen = new Set();
-        for (let index = 0; index < results.length; index += 1) {
-            const result = results[index];
-            const key = searchResultKey(result);
-            if (seen.has(key)) {
-                continue;
-            }
-            seen.add(key);
-            const rank = index + 1;
-            const contribution = 1 / (exports.RECIPROCAL_RANK_FUSION_CONSTANT + rank);
-            const existing = entries.get(key);
-            if (existing) {
-                existing.score += contribution;
-                existing.bestRank = Math.min(existing.bestRank, rank);
-                existing.sourceCount += 1;
-            }
-            else {
-                entries.set(key, {
-                    result,
-                    score: contribution,
-                    bestRank: rank,
-                    sourceCount: 1
-                });
-            }
-        }
-    };
-    addRanking(lexicalResults);
-    addRanking(semanticResults);
-    return [...entries.values()]
-        .sort((left, right) => (right.score - left.score
-        || right.sourceCount - left.sourceCount
-        || left.bestRank - right.bestRank
-        || compareSearchResults(left.result, right.result)))
-        .slice(0, boundedLimit)
-        .map((entry) => ({ ...entry.result, score: entry.score }));
-}
 function successfulResults(response) {
     return response?.status === 'ok' && response.data
         ? response.data.results
         : [];
-}
-function searchResultKey(result) {
-    return `${normalizeFilePath(result.relativePath)}\0${result.stableId}`;
-}
-function compareSearchResults(left, right) {
-    return compareText(left.relativePath.toLocaleLowerCase('en-US'), right.relativePath.toLocaleLowerCase('en-US'))
-        || compareText(left.relativePath, right.relativePath)
-        || left.ordinal - right.ordinal
-        || compareText(left.stableId, right.stableId);
-}
-function compareText(left, right) {
-    return left < right ? -1 : left > right ? 1 : 0;
 }
 function exactCurrentChunk(fileContent, result) {
     if (sha256Hex(result.content) !== result.contentHash) {

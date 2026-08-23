@@ -154,7 +154,7 @@ Project scope uses the local SQLite knowledge index when the authenticated manag
 2. Excludes dependencies, generated files, build output, credentials, lock files, symbolic links, and binary files.
 3. Prefers VS Code document-symbol boundaries and falls back to bounded overlapping line chunks.
 4. Generates optional local-first embeddings and ranks compatible cached vectors by exact cosine similarity.
-5. Combines semantic and SQLite FTS5/BM25 positions with Reciprocal Rank Fusion, then falls back to the legacy JSON lexical index when neither produces usable current source.
+5. Combines semantic and SQLite FTS5/BM25 positions with Reciprocal Rank Fusion, then applies small capped filename, path, and exact-identifier boosts.
 6. Rereads each selected file and verifies the exact chunk hash and line range before using it.
 7. Sends only the strongest bounded excerpts to the provider.
 
@@ -170,7 +170,7 @@ The authenticated `/index/v1/embeddings/synchronize` route exposes that service 
 
 Embedding profiles are managed separately under **DevMate settings → Semantic code index**. Local Ollama is the default when adding a profile. Non-loopback endpoints require HTTPS and an explicit confirmation that the provider may receive bounded project source-code chunks and search queries. Saving or selecting a profile refreshes background vector generation for the last ready workspace index.
 
-When the backend advertises semantic-search support and the selected profile has compatible cached vectors, DevMate embeds the question once and performs an exact cosine comparison over the workspace vectors in bounded pages. Semantic and lexical searches begin together. Their ranked positions are combined with equal-weight Reciprocal Rank Fusion, which rewards chunks found by both without comparing incompatible cosine and BM25 score scales. Results are deterministically deduplicated and reread from disk before use. Missing profiles, incompatible vectors, and provider failures leave lexical ranking available; if neither strategy yields usable current source, DevMate uses the JSON fallback.
+When the backend advertises semantic-search support and the selected profile has compatible cached vectors, DevMate embeds the question once and performs an exact cosine comparison over the workspace vectors in bounded pages. Semantic and lexical searches begin together. Their ranked positions are combined with equal-weight Reciprocal Rank Fusion, which rewards chunks found by both without comparing incompatible cosine and BM25 score scales. Small query-aware boosts then favor an explicitly named file, matching path terms, or an exact code identifier found in a chunk. The total boost is capped so it cannot replace the underlying retrieval rankings. Results are deterministically deduplicated and reread from disk before use. Missing profiles, incompatible vectors, and provider failures leave lexical ranking available; if neither strategy yields usable current source, DevMate uses the JSON fallback.
 
 On the checked-in evaluation corpus, SQLite lexical retrieval produces 7 of 11 top-one hits, 7 of 11 top-three hits, and 0.6364 recall at five. These numbers remain the model-independent lexical baseline; hybrid effectiveness also depends on the configured embedding model.
 
@@ -354,7 +354,8 @@ The Python backend source remains in the package as a fallback for development o
 | `src/embeddingProfileController.ts` | Validated embedding-profile persistence and UI-facing operations |
 | `src/providerUrlPolicy.ts` | Shared chat and embedding provider URL security policy |
 | `src/projectIndex.ts` | Local index representation, chunking, and lexical scoring |
-| `src/projectRetriever.ts` | Hybrid rank fusion, capability-gated semantic retrieval, exact-source validation, and lexical fallback |
+| `src/projectRetriever.ts` | Capability-gated project retrieval, exact-source validation, and lexical fallback |
+| `src/projectSearchRanking.ts` | Reciprocal Rank Fusion plus bounded filename, path, and exact-identifier boosts |
 | `src/sessions.ts` | Project-bound conversation storage |
 | `src/permissions.ts` | File and command permission storage |
 | `backend/app/api_models.py` | Backend protocol constants and validated request/response contracts |
@@ -412,7 +413,7 @@ The workspace must be trusted and VS Code Terminal Shell Integration must be ava
 ## Known limitations
 
 - Only the first folder in a multi-root workspace is used.
-- Hybrid retrieval currently uses fixed equal weights and does not yet apply filename, path, or symbol boosts.
+- Hybrid retrieval currently uses fixed equal weights and fixed bounded query-signal boosts; it does not yet expose diagnostic retrieval modes or language-server symbol-graph ranking.
 - Code navigation depends on installed VS Code language providers.
 - Completed change snapshots are kept in memory, so an old native diff may be unavailable after reloading VS Code.
 - Standalone backend builds are platform-specific and currently prepared for Windows x64.

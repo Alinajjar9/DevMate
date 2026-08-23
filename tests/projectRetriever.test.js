@@ -8,11 +8,13 @@ const {
   retrieveProjectChunks
 } = require('../out/projectIndex');
 const {
-  fuseProjectSearchResults,
   LexicalProjectRetriever,
-  RECIPROCAL_RANK_FUSION_CONSTANT,
   SqliteProjectRetriever
 } = require('../out/projectRetriever');
+const {
+  fuseProjectSearchResults,
+  RECIPROCAL_RANK_FUSION_CONSTANT
+} = require('../out/projectSearchRanking');
 
 const ACCESS = {
   backendUrl: 'http://127.0.0.1:8000',

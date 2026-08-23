@@ -2,6 +2,25 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Prioritize filenames and code identifiers
+
+### Changed
+
+- Added query-aware ranking after Reciprocal Rank Fusion so explicitly named files, matching path terms, and exact code identifiers can move precise results above nearby conceptual matches.
+- Capped the combined query-signal boost so it refines the lexical and semantic rankings without replacing strong cross-strategy agreement.
+- Applied the same normalized rank scale when only lexical or semantic search succeeds, preserving deterministic fallback behavior while allowing precise query signals to help.
+- Moved rank fusion and query-signal scoring into the focused `src/projectSearchRanking.ts` module so retrieval orchestration remains separate from ranking policy.
+- Kept identifier matching language-neutral and local to the already retrieved bounded chunks; this step adds no database schema, provider request, or language-server dependency.
+- Kept diagnostic retrieval modes, configurable ranking weights, context budgeting, and chat compaction unchanged for later milestones.
+
+### Verification
+
+- Focused project ranking and retriever coverage — 12 tests passed.
+- `npm run verify` — 261 extension tests and 142 backend tests passed; 49 cross-language contracts and 28 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-23 — Combine semantic and exact code search
 
 ### Changed
