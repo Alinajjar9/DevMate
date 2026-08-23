@@ -4,8 +4,6 @@ import type { FileChangeSummaryItem } from './fileTools';
 import { AGENT_TOOL_NAMES } from './agentTools';
 import type { AgentToolName } from './agentTools';
 
-export const CONVERSATION_SESSIONS_STORAGE_KEY = 'devMate.conversationSessions.v2';
-export const LEGACY_CONVERSATION_SESSIONS_STORAGE_KEY = 'devMate.conversationSessions.v1';
 export const MAX_CONVERSATION_SESSIONS = 20;
 export const MAX_SESSION_TURNS = 30;
 export const MAX_SESSION_CHARACTERS = 120_000;
@@ -282,38 +280,6 @@ export function parseConversationSessionStore(value: unknown): ConversationSessi
     return undefined;
   }
   return parseSessions(value.sessions, value.activeSessionId);
-}
-
-export function migrateLegacyConversationSessionStore(
-  value: unknown,
-  workspace: ConversationWorkspace
-): ConversationSessionStore | undefined {
-  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.sessions)) {
-    return undefined;
-  }
-  const migrated = value.sessions.map((candidate) => isRecord(candidate)
-    ? {
-      ...candidate,
-      workspaceId: workspace.id,
-      workspaceName: workspace.name
-    }
-    : candidate);
-  return parseSessions(migrated, value.activeSessionId);
-}
-
-export function mergeConversationSessionStores(
-  primary: ConversationSessionStore,
-  imported: ConversationSessionStore
-): ConversationSessionStore {
-  const importedIds = new Set(imported.sessions.map((session) => session.id));
-  return {
-    version: 2,
-    activeSessionId: imported.activeSessionId || primary.activeSessionId,
-    sessions: boundStoreSessions([
-      ...imported.sessions,
-      ...primary.sessions.filter((session) => !importedIds.has(session.id))
-    ].sort((left, right) => right.updatedAt - left.updatedAt))
-  };
 }
 
 export function addConversationSession(

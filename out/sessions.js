@@ -1,14 +1,12 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MAX_AGENT_CHECKPOINT_AGE_MS = exports.AGENT_CHECKPOINT_STORAGE_KEY = exports.MAX_CONVERSATION_HISTORY_CHARACTERS = exports.MAX_CONVERSATION_TURN_CHARACTERS = exports.MAX_CONVERSATION_TURNS = exports.MAX_SESSION_TITLE_CHARACTERS = exports.MAX_SESSION_STORE_CHARACTERS = exports.MAX_SESSION_CHARACTERS = exports.MAX_SESSION_TURNS = exports.MAX_CONVERSATION_SESSIONS = exports.LEGACY_CONVERSATION_SESSIONS_STORAGE_KEY = exports.CONVERSATION_SESSIONS_STORAGE_KEY = void 0;
+exports.MAX_AGENT_CHECKPOINT_AGE_MS = exports.AGENT_CHECKPOINT_STORAGE_KEY = exports.MAX_CONVERSATION_HISTORY_CHARACTERS = exports.MAX_CONVERSATION_TURN_CHARACTERS = exports.MAX_CONVERSATION_TURNS = exports.MAX_SESSION_TITLE_CHARACTERS = exports.MAX_SESSION_STORE_CHARACTERS = exports.MAX_SESSION_CHARACTERS = exports.MAX_SESSION_TURNS = exports.MAX_CONVERSATION_SESSIONS = void 0;
 exports.parseAgentRunCheckpoint = parseAgentRunCheckpoint;
 exports.appendConversationTurn = appendConversationTurn;
 exports.boundConversationHistory = boundConversationHistory;
 exports.createEmptyConversationSessionStore = createEmptyConversationSessionStore;
 exports.createConversationSessionStore = createConversationSessionStore;
 exports.parseConversationSessionStore = parseConversationSessionStore;
-exports.migrateLegacyConversationSessionStore = migrateLegacyConversationSessionStore;
-exports.mergeConversationSessionStores = mergeConversationSessionStores;
 exports.addConversationSession = addConversationSession;
 exports.selectConversationSession = selectConversationSession;
 exports.renameConversationSession = renameConversationSession;
@@ -21,8 +19,6 @@ exports.sessionBelongsToWorkspace = sessionBelongsToWorkspace;
 exports.sessionTitleFromQuestion = sessionTitleFromQuestion;
 const fileTools_1 = require("./fileTools");
 const agentTools_1 = require("./agentTools");
-exports.CONVERSATION_SESSIONS_STORAGE_KEY = 'devMate.conversationSessions.v2';
-exports.LEGACY_CONVERSATION_SESSIONS_STORAGE_KEY = 'devMate.conversationSessions.v1';
 exports.MAX_CONVERSATION_SESSIONS = 20;
 exports.MAX_SESSION_TURNS = 30;
 exports.MAX_SESSION_CHARACTERS = 120_000;
@@ -219,30 +215,6 @@ function parseConversationSessionStore(value) {
         return undefined;
     }
     return parseSessions(value.sessions, value.activeSessionId);
-}
-function migrateLegacyConversationSessionStore(value, workspace) {
-    if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.sessions)) {
-        return undefined;
-    }
-    const migrated = value.sessions.map((candidate) => isRecord(candidate)
-        ? {
-            ...candidate,
-            workspaceId: workspace.id,
-            workspaceName: workspace.name
-        }
-        : candidate);
-    return parseSessions(migrated, value.activeSessionId);
-}
-function mergeConversationSessionStores(primary, imported) {
-    const importedIds = new Set(imported.sessions.map((session) => session.id));
-    return {
-        version: 2,
-        activeSessionId: imported.activeSessionId || primary.activeSessionId,
-        sessions: boundStoreSessions([
-            ...imported.sessions,
-            ...primary.sessions.filter((session) => !importedIds.has(session.id))
-        ].sort((left, right) => right.updatedAt - left.updatedAt))
-    };
 }
 function addConversationSession(store, id, now, workspace) {
     const session = emptySession(id, now, workspace);

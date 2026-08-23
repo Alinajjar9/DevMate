@@ -184,9 +184,9 @@ The current question and explicit selections, active files, and attachments are 
 
 The private SQLite store now includes versioned foundations for chat sessions, raw turns, structured summaries, and pinned memories. Chat records use the same private database file as the project index but have an independent lifecycle, so rebuilding or deleting a code index does not delete conversation history. Deleting a chat does cascade only its turns, summary, and pinned memories.
 
-The repository preserves pending and completed raw turns, validates the future compaction-summary structure, and bounds all stored values. This milestone does not switch the extension's live session storage from VS Code state, migrate existing chats, generate summaries, or include stored memory in model requests yet.
+SQLite is the live persistent source for the current workspace's sessions. The extension loads recent sessions after the managed backend is authenticated, writes pending and completed turns directly through a focused session repository, and keeps unsaved changes in memory if local storage is temporarily unavailable. Pre-release VS Code chat state is intentionally not migrated or maintained as a second copy.
 
-The managed backend advertises the optional `chat-memory-v1` capability and exposes authenticated versioned operations to atomically save bounded session batches, load one complete raw transcript, list recent sessions for one workspace, and delete one session. The TypeScript client sends chat data only to a verified loopback backend and strictly validates every response against the request. These operations are available for the migration layer but are not called by the live chat UI yet.
+The managed backend advertises the optional `chat-memory-v1` capability and exposes authenticated versioned operations to atomically save bounded session batches, load one complete raw transcript, list recent sessions for one workspace, and delete one session. The TypeScript client sends chat data only to a verified loopback backend and strictly validates every response against the request. Summary and pinned-memory tables remain isolated foundations for the upcoming compaction feature and are not included in model requests yet.
 
 ## Agent tools
 
@@ -430,7 +430,7 @@ The workspace must be trusted and VS Code Terminal Shell Integration must be ava
 
 - Only the first folder in a multi-root workspace is used.
 - Hybrid retrieval currently uses fixed equal weights and fixed bounded query-signal boosts; it does not yet expose diagnostic retrieval modes or language-server symbol-graph ranking.
-- Token counts use a conservative character estimate and fixed prompt reserve rather than each provider's exact tokenizer; chat migration, automatic summary generation, prompt inclusion, and manual memory controls are not implemented yet.
+- Token counts use a conservative character estimate and fixed prompt reserve rather than each provider's exact tokenizer; automatic summary generation, summary prompt inclusion, and manual memory controls are not implemented yet.
 - Code navigation depends on installed VS Code language providers.
 - Completed change snapshots are kept in memory, so an old native diff may be unavailable after reloading VS Code.
 - Standalone backend builds are platform-specific and currently prepared for Windows x64.
@@ -442,7 +442,7 @@ The workspace must be trusted and VS Code Terminal Shell Integration must be ava
 - Provider keys are stored in VS Code SecretStorage.
 - Provider keys and workspace context are forwarded only after the managed loopback backend proves possession of its per-process token.
 - The backend token is kept in extension-host memory, passed through the child-process environment, and never sent to the model provider.
-- The SQLite knowledge database is kept below VS Code's private global extension storage rather than inside a workspace.
+- The SQLite knowledge and chat database is kept below VS Code's private global extension storage rather than inside a workspace.
 - Provider redirects are disabled to avoid forwarding credentials to another host.
 - Remote model-provider endpoints require HTTPS; plain HTTP is limited to loopback hosts.
 - Provider hostnames are resolved before each request, every answer must be public (or exact loopback for a local provider), and the connection is pinned to a checked address while retaining the original TLS identity.

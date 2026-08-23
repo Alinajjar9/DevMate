@@ -332,7 +332,7 @@ test('project-bound sessions open from a dedicated landing screen', () => {
   assert.match(source, /sessionSelectorEl\.disabled = state\.askPending/);
   assert.match(source, /newSessionButtonEl\.disabled = state\.askPending/);
   assert.match(source, /sessionBelongsToWorkspace\(session, workspace\)/);
-  assert.match(source, /extensionContext\.globalState\.get/);
+  assert.match(source, /sessionRepository\.loadWorkspace/);
 });
 
 test('new user messages persist independently from failed assistant requests', () => {

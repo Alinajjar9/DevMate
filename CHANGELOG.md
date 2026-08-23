@@ -2,6 +2,26 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Store chats directly in SQLite
+
+### Changed
+
+- Made the private SQLite chat store the only persistent source for the current workspace's conversations.
+- Added a focused session repository that strictly converts between UI sessions and the authenticated `chat-memory-v1` API.
+- Loads chats after the managed backend is verified and saves created, renamed, pending, and completed sessions directly to SQLite.
+- Serializes writes so a slower older save cannot overwrite newer turns, while retaining failed writes in memory for the next backend reconnect.
+- Deletes evicted and user-deleted sessions directly from SQLite and keeps the active UI selection in memory.
+- Removed the VS Code session keys, legacy v1 conversion, migration markers, verified-copy reconciliation, dual-write mirror, and their obsolete tests.
+- Existing pre-release chats in VS Code state are intentionally ignored rather than migrated because there are no released user histories to preserve.
+
+### Verification
+
+- Focused repository, provider, session, and webview coverage — 55 tests passed.
+- `npm run verify` — 292 extension tests and 155 backend tests passed; 63 cross-language contracts and 31 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-23 — Keep new chat changes mirrored locally
 
 ### Changed

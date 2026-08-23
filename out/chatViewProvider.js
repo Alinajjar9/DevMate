@@ -46,6 +46,7 @@ const embeddingProfileController_1 = require("./embeddingProfileController");
 const webview_1 = require("./webview");
 const fileTools_1 = require("./fileTools");
 const sessions_2 = require("./sessions");
+const sessionRepository_1 = require("./sessionRepository");
 const commandTools_1 = require("./commandTools");
 const fileTools_2 = require("./fileTools");
 const llmProfiles_1 = require("./llmProfiles");
@@ -61,7 +62,7 @@ class DevMateChatViewProvider {
     extensionContext;
     backendManager;
     backendOutput;
-    onConversationSessionPersisted;
+    sessionRepository;
     static viewId = 'devmate.dedicatedAssistantView';
     static containerId = 'devmate-dedicated-chat';
     static diffScheme = 'devmate-diff';
@@ -82,12 +83,18 @@ class DevMateChatViewProvider {
     completedFileDiffs = new Map();
     activeRequestDiffs = new Map();
     sessionStore;
+    sessionsLoaded = false;
+    sessionRevision = 0;
+    dirtySessionIds = new Set();
+    deletedSessionIds = new Set();
+    sessionSynchronization;
+    sessionWriteQueue = Promise.resolve();
     agentCheckpoint;
-    constructor(extensionContext, backendManager, backendOutput, projectRetriever = new projectRetriever_1.LexicalProjectRetriever(), onEmbeddingProfileChanged = () => undefined, onConversationSessionPersisted = () => undefined) {
+    constructor(extensionContext, backendManager, backendOutput, projectRetriever = new projectRetriever_1.LexicalProjectRetriever(), onEmbeddingProfileChanged = () => undefined, sessionRepository = new sessionRepository_1.SqliteSessionRepository()) {
         this.extensionContext = extensionContext;
         this.backendManager = backendManager;
         this.backendOutput = backendOutput;
-        this.onConversationSessionPersisted = onConversationSessionPersisted;
+        this.sessionRepository = sessionRepository;
         this.extensionUri = extensionContext.extensionUri;
         this.workspaceContext = new workspaceContext_1.WorkspaceContext(extensionContext.storageUri, (text) => this.postStatus(text), projectRetriever);
         this.workspaceMutations = new workspaceMutations_1.WorkspaceMutations({
@@ -104,26 +111,7 @@ class DevMateChatViewProvider {
             postAgentToolActivity: (id, title, detail, status, result, canOpenTerminal) => this.postAgentToolActivity(id, title, detail, status, result, canOpenTerminal)
         });
         this.agentCheckpoint = (0, sessions_1.parseAgentRunCheckpoint)(extensionContext.workspaceState.get(sessions_1.AGENT_CHECKPOINT_STORAGE_KEY));
-        const parsedStoredSessions = (0, sessions_2.parseConversationSessionStore)(extensionContext.globalState.get(sessions_2.CONVERSATION_SESSIONS_STORAGE_KEY));
-        const storedSessions = parsedStoredSessions ?? (0, sessions_2.createEmptyConversationSessionStore)();
-        const workspace = this.getConversationWorkspace();
-        const legacySessions = workspace
-            ? (0, sessions_2.migrateLegacyConversationSessionStore)(extensionContext.workspaceState.get(sessions_2.LEGACY_CONVERSATION_SESSIONS_STORAGE_KEY), workspace)
-            : undefined;
-        this.sessionStore = legacySessions
-            ? (0, sessions_2.mergeConversationSessionStores)(storedSessions, legacySessions)
-            : storedSessions;
-        if (legacySessions) {
-            void this.persistSessionStore().then((saved) => {
-                if (saved) {
-                    return extensionContext.workspaceState.update(sessions_2.LEGACY_CONVERSATION_SESSIONS_STORAGE_KEY, undefined);
-                }
-                return undefined;
-            });
-        }
-        else if (!parsedStoredSessions) {
-            void this.persistSessionStore();
-        }
+        this.sessionStore = (0, sessions_2.createEmptyConversationSessionStore)();
         this.agentRunController = new agentRunController_1.AgentRunController(this.toolExecutor, {
             saveCheckpoint: (checkpoint) => this.saveAgentCheckpoint(checkpoint),
             recoverBackend: () => this.backendManager.start(),
@@ -167,20 +155,47 @@ class DevMateChatViewProvider {
     notifyBackendStatusChanged(_status) {
         this.postBackendStatus();
     }
-    conversationSessionSnapshot() {
-        return {
-            version: this.sessionStore.version,
-            activeSessionId: this.sessionStore.activeSessionId,
-            sessions: this.sessionStore.sessions.map((session) => ({
-                ...session,
-                turns: session.turns.map((turn) => ({
-                    ...turn,
-                    ...(turn.fileChanges
-                        ? { fileChanges: turn.fileChanges.map((change) => ({ ...change })) }
-                        : {})
-                }))
-            }))
-        };
+    synchronizeConversationSessions() {
+        if (this.sessionSynchronization) {
+            return this.sessionSynchronization;
+        }
+        const operation = this.runSessionSynchronization()
+            .catch((error) => {
+            this.backendOutput.append('[DevMate] Chat storage: '
+                + `${error instanceof Error ? error.message : 'session synchronization failed.'}\n`);
+        })
+            .finally(() => {
+            if (this.sessionSynchronization === operation) {
+                this.sessionSynchronization = undefined;
+            }
+        });
+        this.sessionSynchronization = operation;
+        return operation;
+    }
+    async runSessionSynchronization() {
+        const workspace = this.getConversationWorkspace();
+        if (!workspace) {
+            this.sessionsLoaded = true;
+            return;
+        }
+        if (!this.sessionsLoaded) {
+            const revision = this.sessionRevision;
+            const result = await this.sessionRepository.loadWorkspace(workspace.id);
+            if (result.kind !== 'completed') {
+                if (result.kind !== 'cancelled') {
+                    this.backendOutput.append(`[DevMate] Chat storage: ${result.message}\n`);
+                }
+                return;
+            }
+            this.sessionsLoaded = true;
+            if (revision === this.sessionRevision
+                && this.dirtySessionIds.size === 0
+                && this.deletedSessionIds.size === 0) {
+                this.sessionStore = result.value;
+            }
+            this.postSessionState(true);
+        }
+        await this.flushPendingSessionChanges();
     }
     async show() {
         await vscode.commands.executeCommand(`workbench.view.extension.${DevMateChatViewProvider.containerId}`);
@@ -433,8 +448,15 @@ class DevMateChatViewProvider {
             this.postSessionWarning('Open a project folder before starting a DevMate session.');
             return;
         }
+        const previousSessionIds = new Set(this.sessionStore.sessions.map((session) => session.id));
         this.sessionStore = (0, sessions_2.addConversationSession)(this.sessionStore, (0, crypto_1.randomUUID)(), Date.now(), workspace);
-        await this.persistSessionStore();
+        this.sessionRevision += 1;
+        await this.persistSession(this.sessionStore.activeSessionId);
+        for (const sessionId of previousSessionIds) {
+            if (!this.sessionStore.sessions.some((session) => session.id === sessionId)) {
+                await this.deletePersistedSession(sessionId);
+            }
+        }
         this.postSessionState(true, true);
     }
     async openWorkspaceFile(requestedPath, requestedLine) {
@@ -547,7 +569,6 @@ class DevMateChatViewProvider {
         }
         const nextStore = (0, sessions_2.selectConversationSession)(this.sessionStore, sessionId);
         this.sessionStore = nextStore;
-        await this.persistSessionStore();
         this.postSessionState(true, true);
     }
     async renameSession(sessionId) {
@@ -569,7 +590,8 @@ class DevMateChatViewProvider {
             return;
         }
         this.sessionStore = (0, sessions_2.renameConversationSession)(this.sessionStore, sessionId, title);
-        await this.persistSessionStore();
+        this.sessionRevision += 1;
+        await this.persistSession(sessionId);
         this.postSessionState(false);
     }
     async deleteSession(sessionId) {
@@ -585,7 +607,8 @@ class DevMateChatViewProvider {
             return;
         }
         this.sessionStore = (0, sessions_2.deleteConversationSession)(this.sessionStore, sessionId);
-        await this.persistSessionStore(sessionId);
+        this.sessionRevision += 1;
+        await this.deletePersistedSession(sessionId);
         if (this.agentCheckpoint?.sessionId === sessionId) {
             await this.clearAgentCheckpoint();
         }
@@ -598,22 +621,82 @@ class DevMateChatViewProvider {
         this.postStatus('Wait for the active request to finish before changing sessions.', 'warning');
         return false;
     }
-    async persistSessionStore(deletedSessionId) {
-        try {
-            await this.extensionContext.globalState.update(sessions_2.CONVERSATION_SESSIONS_STORAGE_KEY, this.sessionStore);
-        }
-        catch {
-            this.postStatus('The session is available now, but VS Code could not save it for the next restart.', 'warning');
+    async persistSession(sessionId) {
+        const session = this.sessionStore.sessions.find((candidate) => candidate.id === sessionId);
+        if (!session) {
             return false;
         }
-        try {
-            this.onConversationSessionPersisted(this.conversationSessionSnapshot(), deletedSessionId);
+        const signature = JSON.stringify(session);
+        this.dirtySessionIds.add(sessionId);
+        this.deletedSessionIds.delete(sessionId);
+        const result = await this.enqueueSessionWrite(() => this.sessionRepository.saveSessions([session]));
+        if (result.kind === 'completed') {
+            const current = this.sessionStore.sessions.find((candidate) => candidate.id === sessionId);
+            if (current && JSON.stringify(current) === signature) {
+                this.dirtySessionIds.delete(sessionId);
+            }
+            return true;
         }
-        catch (error) {
-            this.backendOutput.append('[DevMate] Chat mirror: '
-                + `${error instanceof Error ? error.message : 'could not queue the local chat copy.'}\n`);
+        if (result.kind !== 'cancelled') {
+            this.reportSessionStorageIssue(result.message);
         }
-        return true;
+        return false;
+    }
+    async deletePersistedSession(sessionId) {
+        this.dirtySessionIds.delete(sessionId);
+        this.deletedSessionIds.add(sessionId);
+        const result = await this.enqueueSessionWrite(() => this.sessionRepository.deleteSession(sessionId));
+        if (result.kind === 'completed') {
+            if (!this.sessionStore.sessions.some((session) => session.id === sessionId)) {
+                this.deletedSessionIds.delete(sessionId);
+            }
+            return true;
+        }
+        if (result.kind !== 'cancelled') {
+            this.reportSessionStorageIssue(result.message);
+        }
+        return false;
+    }
+    async flushPendingSessionChanges() {
+        const sessions = [...this.dirtySessionIds]
+            .map((id) => this.sessionStore.sessions.find((session) => session.id === id))
+            .filter((session) => session !== undefined);
+        if (sessions.length > 0) {
+            const signatures = new Map(sessions.map((session) => [session.id, JSON.stringify(session)]));
+            const result = await this.enqueueSessionWrite(() => this.sessionRepository.saveSessions(sessions));
+            if (result.kind === 'completed') {
+                for (const [sessionId, signature] of signatures) {
+                    const current = this.sessionStore.sessions.find((session) => session.id === sessionId);
+                    if (current && JSON.stringify(current) === signature) {
+                        this.dirtySessionIds.delete(sessionId);
+                    }
+                }
+            }
+            else if (result.kind !== 'cancelled') {
+                this.backendOutput.append(`[DevMate] Chat storage: ${result.message}\n`);
+            }
+        }
+        for (const sessionId of [...this.deletedSessionIds]) {
+            const result = await this.enqueueSessionWrite(() => this.sessionRepository.deleteSession(sessionId));
+            if (result.kind === 'completed') {
+                if (!this.sessionStore.sessions.some((session) => session.id === sessionId)) {
+                    this.deletedSessionIds.delete(sessionId);
+                }
+            }
+            else if (result.kind !== 'cancelled') {
+                this.backendOutput.append(`[DevMate] Chat storage: ${result.message}\n`);
+                break;
+            }
+        }
+    }
+    reportSessionStorageIssue(message) {
+        this.backendOutput.append(`[DevMate] Chat storage: ${message}\n`);
+        this.postStatus('This chat is available for now, but local storage could not save it.', 'warning');
+    }
+    enqueueSessionWrite(operation) {
+        const result = this.sessionWriteQueue.then(operation, operation);
+        this.sessionWriteQueue = result.then(() => undefined, () => undefined);
+        return result;
     }
     postSessionState(includeMessages, openChat = false) {
         const activeSession = (0, sessions_2.activeConversationSession)(this.sessionStore);
@@ -1493,7 +1576,8 @@ class DevMateChatViewProvider {
         }
         if (!resumedCheckpoint && message.isNewTurn !== false) {
             this.sessionStore = (0, sessions_2.appendConversationSessionUserMessage)(this.sessionStore, question, Date.now());
-            await this.persistSessionStore();
+            this.sessionRevision += 1;
+            await this.persistSession(activeSession.id);
             this.postSessionState(false);
         }
         const activeProfile = this.getActiveLlmProfile();
@@ -1619,7 +1703,8 @@ class DevMateChatViewProvider {
             changeNotice
         ].filter(Boolean).join('\n\n');
         this.sessionStore = (0, sessions_2.appendConversationSessionTurn)(this.sessionStore, question, response, Date.now(), fileChangeSummary);
-        await this.persistSessionStore();
+        this.sessionRevision += 1;
+        await this.persistSession(activeSession.id);
         await this.clearAgentCheckpoint();
         this.postMessage({
             command: 'assistantResponse',

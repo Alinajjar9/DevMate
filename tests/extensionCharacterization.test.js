@@ -99,15 +99,9 @@ function providerWithoutConstructor() {
   return Object.create(DevMateChatViewProvider.prototype);
 }
 
-function extensionContext({ globalStore, legacyStore, checkpoint } = {}) {
+function extensionContext({ checkpoint } = {}) {
   const globalValues = new Map();
   const workspaceValues = new Map();
-  if (globalStore !== undefined) {
-    globalValues.set('devMate.conversationSessions.v2', globalStore);
-  }
-  if (legacyStore !== undefined) {
-    workspaceValues.set('devMate.conversationSessions.v1', legacyStore);
-  }
   if (checkpoint !== undefined) {
     workspaceValues.set('devMate.agentCheckpoint.v1', checkpoint);
   }
@@ -139,11 +133,6 @@ function extensionContext({ globalStore, legacyStore, checkpoint } = {}) {
   };
 }
 
-async function flushPromises() {
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
-}
-
 async function withoutDelays(callback) {
   const originalSetTimeout = global.setTimeout;
   global.setTimeout = (handler, _delay, ...argumentsList) => (
@@ -156,81 +145,103 @@ async function withoutDelays(callback) {
   }
 }
 
-test('loads global sessions, migrates legacy workspace sessions, and saves the merged store', async () => {
-  const existing = createConversationSessionStore(
-    'existing-session',
-    1,
-    { id: 'file:///other-project', name: 'Other project' }
-  );
-  const legacy = {
-    version: 1,
-    activeSessionId: 'legacy-session',
-    sessions: [{
-      id: 'legacy-session',
-      title: 'Legacy work',
-      createdAt: 2,
-      updatedAt: 3,
-      turns: [{ user: 'Old question', assistant: 'Old answer' }]
-    }]
+test('loads the current workspace sessions directly from the repository', async () => {
+  const stored = createConversationSessionStore('stored-session', 100, workspace);
+  const repository = {
+    loadWorkspace: async (workspaceIdentity) => {
+      assert.equal(workspaceIdentity, workspace.id);
+      return { kind: 'completed', value: stored };
+    },
+    saveSessions: async () => ({ kind: 'completed', value: undefined }),
+    deleteSession: async () => ({ kind: 'completed', value: undefined })
   };
-  const context = extensionContext({ globalStore: existing, legacyStore: legacy });
   const provider = new DevMateChatViewProvider(
-    context,
+    extensionContext(),
     {},
-    { show() {} }
+    { show() {}, append() {} },
+    undefined,
+    undefined,
+    repository
   );
 
   try {
-    await flushPromises();
-    const saved = context.globalValues.get('devMate.conversationSessions.v2');
-    assert.equal(saved.version, 2);
-    assert.equal(saved.sessions.length, 2);
-    assert.equal(saved.activeSessionId, 'legacy-session');
-    assert.equal(saved.sessions.find((session) => session.id === 'legacy-session').workspaceId, workspace.id);
-    assert.equal(context.workspaceValues.has('devMate.conversationSessions.v1'), false);
+    await provider.synchronizeConversationSessions();
+
+    assert.equal(provider.sessionsLoaded, true);
+    assert.equal(provider.sessionStore.activeSessionId, 'stored-session');
+    assert.deepEqual(provider.sessionStore, stored);
   } finally {
     provider.dispose();
   }
 });
 
-test('queues the SQLite mirror only after VS Code session persistence succeeds', async (context) => {
-  for (const shouldFail of [false, true]) {
-    await context.test(shouldFail ? 'VS Code save failure' : 'successful VS Code save', async () => {
-      const provider = providerWithoutConstructor();
-      const mirrored = [];
-      const statuses = [];
-      provider.sessionStore = createConversationSessionStore(
-        'session-one',
-        100,
-        workspace
-      );
-      provider.extensionContext = {
-        globalState: {
-          update: async () => {
-            if (shouldFail) {
-              throw new Error('State is unavailable.');
-            }
-          }
-        }
-      };
-      provider.onConversationSessionPersisted = (store, deletedSessionId) => {
-        mirrored.push({ store, deletedSessionId });
-      };
-      provider.postStatus = (message, level) => statuses.push({ message, level });
-      provider.backendOutput = { append() {} };
+test('keeps failed repository writes dirty without touching VS Code global state', async () => {
+  const provider = providerWithoutConstructor();
+  const statuses = [];
+  provider.sessionStore = createConversationSessionStore('session-one', 100, workspace);
+  provider.dirtySessionIds = new Set();
+  provider.deletedSessionIds = new Set();
+  provider.sessionWriteQueue = Promise.resolve();
+  provider.sessionRepository = {
+    saveSessions: async () => ({ kind: 'failed', message: 'Database unavailable.' })
+  };
+  provider.extensionContext = {
+    globalState: {
+      update: async () => assert.fail('session persistence must not use VS Code global state')
+    }
+  };
+  provider.backendOutput = { append() {} };
+  provider.postStatus = (message, level) => statuses.push({ message, level });
 
-      const saved = await provider.persistSessionStore('deleted-session');
+  const saved = await provider.persistSession('session-one');
 
-      assert.equal(saved, !shouldFail);
-      assert.equal(mirrored.length, shouldFail ? 0 : 1);
-      if (!shouldFail) {
-        assert.equal(mirrored[0].deletedSessionId, 'deleted-session');
-        assert.notEqual(mirrored[0].store, provider.sessionStore);
-      } else {
-        assert.match(statuses[0].message, /could not save it/);
+  assert.equal(saved, false);
+  assert.deepEqual([...provider.dirtySessionIds], ['session-one']);
+  assert.match(statuses[0].message, /available for now/);
+});
+
+test('serializes direct repository writes so newer turns cannot be overwritten', async () => {
+  const provider = providerWithoutConstructor();
+  const writes = [];
+  let releaseFirstWrite;
+  const firstWrite = new Promise((resolve) => {
+    releaseFirstWrite = resolve;
+  });
+  provider.sessionStore = createConversationSessionStore('session-one', 100, workspace);
+  provider.dirtySessionIds = new Set();
+  provider.deletedSessionIds = new Set();
+  provider.sessionWriteQueue = Promise.resolve();
+  provider.sessionRepository = {
+    saveSessions: async (sessions) => {
+      writes.push(structuredClone(sessions));
+      if (writes.length === 1) {
+        await firstWrite;
       }
-    });
-  }
+      return { kind: 'completed', value: undefined };
+    }
+  };
+  provider.backendOutput = { append() {} };
+  provider.postStatus = () => undefined;
+
+  const olderSave = provider.persistSession('session-one');
+  await new Promise((resolve) => setImmediate(resolve));
+  provider.sessionStore = {
+    ...provider.sessionStore,
+    sessions: provider.sessionStore.sessions.map((session) => ({
+      ...session,
+      title: 'Newer session state',
+      updatedAt: 200
+    }))
+  };
+  const newerSave = provider.persistSession('session-one');
+  releaseFirstWrite();
+  await Promise.all([olderSave, newerSave]);
+
+  assert.deepEqual(writes.map((sessions) => sessions[0].title), [
+    'New session',
+    'Newer session state'
+  ]);
+  assert.equal(provider.dirtySessionIds.size, 0);
 });
 
 test('collects active-file and selection context with explicit attachments first-class', async () => {
@@ -499,7 +510,7 @@ test('prepares a resumed agent run and persists its completed outcome', async ()
   };
   provider.extensionContext = { secrets: { get: async () => undefined } };
   provider.getConversationWorkspace = () => workspace;
-  provider.persistSessionStore = async () => {
+  provider.persistSession = async () => {
     persistedSessions += 1;
     return true;
   };
@@ -645,7 +656,7 @@ test('keeps a fresh pending user turn when the agent run fails', async () => {
   };
   provider.extensionContext = { secrets: { get: async () => undefined } };
   provider.getConversationWorkspace = () => workspace;
-  provider.persistSessionStore = async () => {
+  provider.persistSession = async () => {
     persistedSessions += 1;
     return true;
   };

@@ -40,22 +40,20 @@ const vscode = __importStar(require("vscode"));
 const client_1 = require("./api/client");
 const types_1 = require("./api/types");
 const backendManager_1 = require("./backendManager");
-const chatSessionMigration_1 = require("./chatSessionMigration");
-const chatSessionMirror_1 = require("./chatSessionMirror");
 const chatViewProvider_1 = require("./chatViewProvider");
 const embeddingIndexScheduler_1 = require("./embeddingIndexScheduler");
 const embeddingProfiles_1 = require("./embeddingProfiles");
 const indexSynchronization_1 = require("./indexSynchronization");
 const projectRetriever_1 = require("./projectRetriever");
+const sessionRepository_1 = require("./sessionRepository");
 const workspaceIndexSource_1 = require("./workspaceIndexSource");
 const workspaceIndexWatcher_1 = require("./workspaceIndexWatcher");
 function activate(context) {
     const backendOutput = vscode.window.createOutputChannel('DevMate Backend');
     const knowledgeStorePath = vscode.Uri.joinPath(context.globalStorageUri, 'knowledge', types_1.DEVMATE_KNOWLEDGE_STORE_FILE_NAME).fsPath;
     let chatViewProvider;
-    let chatSessionMigration;
-    let chatSessionMirror;
     let backendCapabilities = [];
+    const sessionRepository = new sessionRepository_1.SqliteSessionRepository();
     const workspaceIndexSource = new workspaceIndexSource_1.VsCodeWorkspaceIndexSource();
     const knowledgeIndexSynchronizer = new indexSynchronization_1.KnowledgeIndexSynchronizer(workspaceIndexSource, indexSynchronization_1.defaultKnowledgeIndexApi, (message) => backendOutput.append(`[DevMate] Knowledge index: ${message}\n`));
     const embeddingProfileReader = {
@@ -106,32 +104,16 @@ function activate(context) {
                     capabilities: backendCapabilities
                 });
                 workspaceIndexCoordinator.setBackendAccess(access);
-                const migration = chatSessionMigration?.synchronize(access, backendCapabilities);
-                if (migration) {
-                    void migration.then((result) => {
-                        if (result.kind === 'failed') {
-                            backendOutput.append(`[DevMate] Chat migration: ${result.message}\n`);
-                        }
-                        if (backendManager.status.state === 'online'
-                            && backendManager.requestToken === backendToken) {
-                            chatSessionMirror?.setBackendAccess({
-                                ...access,
-                                capabilities: backendCapabilities
-                            });
-                        }
-                    });
-                }
-                else {
-                    chatSessionMirror?.setBackendAccess({
-                        ...access,
-                        capabilities: backendCapabilities
-                    });
-                }
+                sessionRepository.setBackendAccess({
+                    ...access,
+                    capabilities: backendCapabilities
+                });
+                void chatViewProvider?.synchronizeConversationSessions();
             }
             else {
                 embeddingIndexScheduler.setBackendAccess(undefined);
                 workspaceIndexCoordinator.setBackendAccess(undefined);
-                chatSessionMirror?.setBackendAccess(undefined);
+                sessionRepository.setBackendAccess(undefined);
             }
         },
         onOutput: (value) => backendOutput.append(value)
@@ -150,13 +132,7 @@ function activate(context) {
         getEmbeddingProfile: () => (0, embeddingProfiles_1.readPreferredEmbeddingProfile)(embeddingProfileReader),
         readCurrentFile: (relativePath, signal) => workspaceIndexSource.readCurrentFile(relativePath, signal)
     });
-    chatViewProvider = new chatViewProvider_1.DevMateChatViewProvider(context, backendManager, backendOutput, projectRetriever, () => embeddingIndexScheduler.refreshActiveProfile(), (store, deletedSessionId) => chatSessionMirror?.mirror(store, deletedSessionId));
-    chatSessionMirror = new chatSessionMirror_1.ChatSessionMirror(chatSessionMirror_1.defaultChatSessionMirrorApi, (message) => backendOutput.append(`${message}\n`));
-    const chatSessionSource = chatViewProvider;
-    chatSessionMigration = new chatSessionMigration_1.ChatSessionMigration({ read: () => chatSessionSource.conversationSessionSnapshot() }, {
-        read: () => context.globalState.get(chatSessionMigration_1.CHAT_SESSION_MIGRATION_STORAGE_KEY),
-        write: (marker) => context.globalState.update(chatSessionMigration_1.CHAT_SESSION_MIGRATION_STORAGE_KEY, marker)
-    }, chatSessionMigration_1.defaultChatSessionMigrationApi, (message) => backendOutput.append(`${message}\n`));
+    chatViewProvider = new chatViewProvider_1.DevMateChatViewProvider(context, backendManager, backendOutput, projectRetriever, () => embeddingIndexScheduler.refreshActiveProfile(), sessionRepository);
     const viewRegistration = vscode.window.registerWebviewViewProvider(chatViewProvider_1.DevMateChatViewProvider.viewId, chatViewProvider, {
         webviewOptions: {
             retainContextWhenHidden: true
@@ -186,7 +162,7 @@ function activate(context) {
     statusBarItem.tooltip = 'Open DevMate';
     statusBarItem.command = 'devMate.openChat';
     statusBarItem.show();
-    context.subscriptions.push(chatViewProvider, embeddingIndexScheduler, embeddingInvalidationSubscription, workspaceIndexCoordinator, chatSessionMigration, chatSessionMirror, knowledgeIndexSynchronizer, backendManager, backendOutput, viewRegistration, diffContentRegistration, workspaceTrustRegistration, backendConfigurationRegistration, openChatCommand, statusBarItem);
+    context.subscriptions.push(chatViewProvider, embeddingIndexScheduler, embeddingInvalidationSubscription, workspaceIndexCoordinator, knowledgeIndexSynchronizer, backendManager, backendOutput, viewRegistration, diffContentRegistration, workspaceTrustRegistration, backendConfigurationRegistration, openChatCommand, statusBarItem);
     void backendManager.start();
 }
 function deactivate() {

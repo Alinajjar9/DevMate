@@ -12,8 +12,6 @@ const {
   MAX_CONVERSATION_SESSIONS,
   MAX_SESSION_STORE_CHARACTERS,
   MAX_SESSION_TURNS,
-  mergeConversationSessionStores,
-  migrateLegacyConversationSessionStore,
   parseConversationSessionStore,
   renameConversationSession,
   selectConversationSession,
@@ -136,7 +134,7 @@ test('bounds total persisted turn content across project sessions', () => {
   assert.ok(characterCount <= MAX_SESSION_STORE_CHARACTERS);
 });
 
-test('parses bounded global sessions and rejects invalid project metadata', () => {
+test('parses bounded in-memory sessions and rejects invalid project metadata', () => {
   const sessions = Array.from({ length: MAX_CONVERSATION_SESSIONS + 5 }, (_, index) => ({
     id: `session-${index}`,
     title: `Session ${index}`,
@@ -164,26 +162,4 @@ test('parses bounded global sessions and rejects invalid project metadata', () =
   assert.equal(parsed.activeSessionId, parsed.sessions[0].id);
   assert.equal(parsed.sessions.some((session) => session.id === '../unsafe'), false);
   assert.equal(parseConversationSessionStore({ version: 1, sessions: [] }), undefined);
-});
-
-test('migrates workspace-local version-one sessions into the global catalog', () => {
-  const legacy = migrateLegacyConversationSessionStore({
-    version: 1,
-    activeSessionId: 'legacy-session',
-    sessions: [{
-      id: 'legacy-session',
-      title: 'New conversation',
-      createdAt: 1,
-      updatedAt: 2,
-      turns: [{ user: 'Old question', assistant: 'Old answer' }]
-    }]
-  }, workspaceA);
-  const existing = createConversationSessionStore('other-session', 3, workspaceB);
-  const merged = mergeConversationSessionStores(existing, legacy);
-
-  assert.equal(merged.sessions.length, 2);
-  assert.equal(merged.activeSessionId, 'legacy-session');
-  assert.equal(activeConversationSession(merged).title, 'New session');
-  assert.equal(activeConversationSession(merged).workspaceId, workspaceA.id);
-  assert.equal(activeConversationSession(merged).turns[0].user, 'Old question');
 });

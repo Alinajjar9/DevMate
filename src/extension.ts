@@ -3,15 +3,6 @@ import * as vscode from 'vscode';
 import { health } from './api/client';
 import { DEVMATE_KNOWLEDGE_STORE_FILE_NAME } from './api/types';
 import { LocalBackendManager } from './backendManager';
-import {
-  CHAT_SESSION_MIGRATION_STORAGE_KEY,
-  ChatSessionMigration,
-  defaultChatSessionMigrationApi
-} from './chatSessionMigration';
-import {
-  ChatSessionMirror,
-  defaultChatSessionMirrorApi
-} from './chatSessionMirror';
 import { DevMateChatViewProvider, getBackendUrl } from './chatViewProvider';
 import { EmbeddingIndexScheduler } from './embeddingIndexScheduler';
 import {
@@ -25,6 +16,7 @@ import {
   defaultKnowledgeIndexApi
 } from './indexSynchronization';
 import { SqliteProjectRetriever } from './projectRetriever';
+import { SqliteSessionRepository } from './sessionRepository';
 import { VsCodeWorkspaceIndexSource } from './workspaceIndexSource';
 import {
   VsCodeWorkspaceIndexChangeSource,
@@ -39,9 +31,8 @@ export function activate(context: vscode.ExtensionContext): void {
     DEVMATE_KNOWLEDGE_STORE_FILE_NAME
   ).fsPath;
   let chatViewProvider: DevMateChatViewProvider | undefined;
-  let chatSessionMigration: ChatSessionMigration | undefined;
-  let chatSessionMirror: ChatSessionMirror | undefined;
   let backendCapabilities: readonly string[] = [];
+  const sessionRepository = new SqliteSessionRepository();
   const workspaceIndexSource = new VsCodeWorkspaceIndexSource();
   const knowledgeIndexSynchronizer = new KnowledgeIndexSynchronizer(
     workspaceIndexSource,
@@ -113,30 +104,15 @@ export function activate(context: vscode.ExtensionContext): void {
           capabilities: backendCapabilities
         });
         workspaceIndexCoordinator.setBackendAccess(access);
-        const migration = chatSessionMigration?.synchronize(access, backendCapabilities);
-        if (migration) {
-          void migration.then((result) => {
-            if (result.kind === 'failed') {
-              backendOutput.append(`[DevMate] Chat migration: ${result.message}\n`);
-            }
-            if (backendManager.status.state === 'online'
-              && backendManager.requestToken === backendToken) {
-              chatSessionMirror?.setBackendAccess({
-                ...access,
-                capabilities: backendCapabilities
-              });
-            }
-          });
-        } else {
-          chatSessionMirror?.setBackendAccess({
-            ...access,
-            capabilities: backendCapabilities
-          });
-        }
+        sessionRepository.setBackendAccess({
+          ...access,
+          capabilities: backendCapabilities
+        });
+        void chatViewProvider?.synchronizeConversationSessions();
       } else {
         embeddingIndexScheduler.setBackendAccess(undefined);
         workspaceIndexCoordinator.setBackendAccess(undefined);
-        chatSessionMirror?.setBackendAccess(undefined);
+        sessionRepository.setBackendAccess(undefined);
       }
     },
     onOutput: (value) => backendOutput.append(value)
@@ -162,24 +138,7 @@ export function activate(context: vscode.ExtensionContext): void {
     backendOutput,
     projectRetriever,
     () => embeddingIndexScheduler.refreshActiveProfile(),
-    (store, deletedSessionId) => chatSessionMirror?.mirror(store, deletedSessionId)
-  );
-  chatSessionMirror = new ChatSessionMirror(
-    defaultChatSessionMirrorApi,
-    (message) => backendOutput.append(`${message}\n`)
-  );
-  const chatSessionSource = chatViewProvider;
-  chatSessionMigration = new ChatSessionMigration(
-    { read: () => chatSessionSource.conversationSessionSnapshot() },
-    {
-      read: () => context.globalState.get<unknown>(CHAT_SESSION_MIGRATION_STORAGE_KEY),
-      write: (marker) => context.globalState.update(
-        CHAT_SESSION_MIGRATION_STORAGE_KEY,
-        marker
-      )
-    },
-    defaultChatSessionMigrationApi,
-    (message) => backendOutput.append(`${message}\n`)
+    sessionRepository
   );
   const viewRegistration = vscode.window.registerWebviewViewProvider(
     DevMateChatViewProvider.viewId,
@@ -230,8 +189,6 @@ export function activate(context: vscode.ExtensionContext): void {
     embeddingIndexScheduler,
     embeddingInvalidationSubscription,
     workspaceIndexCoordinator,
-    chatSessionMigration,
-    chatSessionMirror,
     knowledgeIndexSynchronizer,
     backendManager,
     backendOutput,
