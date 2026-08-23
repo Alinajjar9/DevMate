@@ -121,7 +121,8 @@ export function activate(context: vscode.ExtensionContext): void {
     context,
     backendManager,
     backendOutput,
-    projectRetriever
+    projectRetriever,
+    () => embeddingIndexScheduler.refreshActiveProfile()
   );
   const viewRegistration = vscode.window.registerWebviewViewProvider(
     DevMateChatViewProvider.viewId,

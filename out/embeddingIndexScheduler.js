@@ -75,6 +75,11 @@ class EmbeddingIndexScheduler {
         this.activeController?.abort();
         this.schedulePending();
     }
+    refreshActiveProfile() {
+        if (this.workspaceKey) {
+            this.scheduleWorkspace(this.workspaceKey);
+        }
+    }
     invalidateWorkspace() {
         this.workspaceKey = undefined;
         this.pending = false;

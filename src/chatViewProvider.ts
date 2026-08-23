@@ -24,6 +24,13 @@ import {
 import type { AgentRunCheckpoint } from './sessions';
 import { backendStatusLabel } from './backendManager';
 import type { LocalBackendManager, ManagedBackendStatus } from './backendManager';
+import {
+  EmbeddingProfileController,
+  embeddingProviderLabel
+} from './embeddingProfileController';
+import type {
+  EmbeddingProfileFormSubmission
+} from './embeddingProfileController';
 import { getChatWebviewHtml } from './webview';
 import type { AssistantMode } from './api/types';
 import {
@@ -195,6 +202,12 @@ type WebviewMessage =
   | { command: 'editLlmProfile'; profileId: string }
   | { command: 'deleteLlmProfile'; profileId: string }
   | { command: 'saveLlmProfile'; profile: LlmProfileFormSubmission }
+  | { command: 'chooseEmbeddingProfile' }
+  | { command: 'selectEmbeddingProfile'; profileId: string }
+  | { command: 'addEmbeddingProfile' }
+  | { command: 'editEmbeddingProfile'; profileId: string }
+  | { command: 'deleteEmbeddingProfile'; profileId: string }
+  | { command: 'saveEmbeddingProfile'; profile: EmbeddingProfileFormSubmission }
   | { command: 'saveSettings'; settings: DevMateSettingsSubmission }
   | { command: 'saveAgentToolSettings'; settings: AgentToolSettingsSubmission }
   | { command: 'reviewPermissionDiff'; requestId: string; path: string }
@@ -240,6 +253,7 @@ export class DevMateChatViewProvider implements
   private readonly workspaceMutations: WorkspaceMutations;
   private readonly toolExecutor: ToolExecutor;
   private readonly agentRunController: AgentRunController;
+  private readonly embeddingProfiles: EmbeddingProfileController;
   private pendingPermission?: PendingPermissionRequest;
   private pendingCommandPermission?: PendingCommandPermission;
   private activeRequest?: AbortController;
@@ -253,7 +267,8 @@ export class DevMateChatViewProvider implements
     private readonly extensionContext: vscode.ExtensionContext,
     private readonly backendManager: LocalBackendManager,
     private readonly backendOutput: vscode.OutputChannel,
-    projectRetriever: ProjectRetriever = new LexicalProjectRetriever()
+    projectRetriever: ProjectRetriever = new LexicalProjectRetriever(),
+    onEmbeddingProfileChanged: () => void = () => undefined
   ) {
     this.extensionUri = extensionContext.extensionUri;
     this.workspaceContext = new WorkspaceContext(
@@ -327,6 +342,13 @@ export class DevMateChatViewProvider implements
       recoverBackend: () => this.backendManager.start(),
       emit: (event) => this.handleAgentRunEvent(event)
     });
+    this.embeddingProfiles = new EmbeddingProfileController({
+      readState: (key) => this.extensionContext.globalState.get<unknown>(key),
+      writeState: (key, value) => this.extensionContext.globalState.update(key, value),
+      readSecret: (key) => this.extensionContext.secrets.get(key),
+      writeSecret: (key, value) => this.extensionContext.secrets.store(key, value),
+      deleteSecret: (key) => this.extensionContext.secrets.delete(key)
+    }, onEmbeddingProfileChanged);
     this.lifetimeDisposables.push(
       vscode.window.onDidStartTerminalShellExecution((event) => {
         this.toolExecutor.captureWorkspaceTerminalExecution(event);
@@ -515,6 +537,24 @@ export class DevMateChatViewProvider implements
       case 'saveLlmProfile':
         await this.saveLlmProfile(message.profile);
         return;
+      case 'chooseEmbeddingProfile':
+        this.chooseEmbeddingProfile();
+        return;
+      case 'selectEmbeddingProfile':
+        await this.selectEmbeddingProfile(message.profileId);
+        return;
+      case 'addEmbeddingProfile':
+        await this.showEmbeddingProfileForm();
+        return;
+      case 'editEmbeddingProfile':
+        await this.showEmbeddingProfileForm(message.profileId);
+        return;
+      case 'deleteEmbeddingProfile':
+        await this.deleteEmbeddingProfile(message.profileId);
+        return;
+      case 'saveEmbeddingProfile':
+        await this.saveEmbeddingProfile(message.profile);
+        return;
       case 'saveSettings':
         await this.saveSettings(message.settings);
         return;
@@ -588,6 +628,7 @@ export class DevMateChatViewProvider implements
         await this.migrateBuiltInNemotronProfile();
         await this.postLlmProfileState();
         await this.promptForBuiltInNemotronKey();
+        this.postEmbeddingProfileState();
         this.postPermissionPolicyState();
         this.postSettingsState();
         this.postBackendStatus();
@@ -1483,6 +1524,84 @@ export class DevMateChatViewProvider implements
           }
         : undefined
     });
+  }
+
+  private postEmbeddingProfileState(): void {
+    const { profiles, activeProfile } = this.embeddingProfiles.state();
+    this.postMessage({
+      command: 'embeddingProfilesUpdated',
+      profileCount: profiles.length,
+      activeProfile: activeProfile
+        ? {
+            ...activeProfile,
+            providerLabel: embeddingProviderLabel(activeProfile.provider)
+          }
+        : undefined
+    });
+  }
+
+  private chooseEmbeddingProfile(): void {
+    this.postMessage({
+      command: 'showEmbeddingProfilePicker',
+      profiles: this.embeddingProfiles.pickerItems()
+    });
+  }
+
+  private async selectEmbeddingProfile(profileId: string): Promise<void> {
+    const result = await this.embeddingProfiles.select(profileId);
+    if (!result.ok) {
+      this.postStatus(result.message, 'warning');
+      return;
+    }
+    this.postEmbeddingProfileState();
+    this.postStatus(`${result.value.model} selected for code embeddings.`);
+  }
+
+  private async showEmbeddingProfileForm(profileId?: string): Promise<void> {
+    const result = await this.embeddingProfiles.form(profileId);
+    if (!result.ok) {
+      this.postStatus(result.message, 'warning');
+      return;
+    }
+    this.postMessage({
+      command: 'showEmbeddingProfileForm',
+      profile: result.value.profile,
+      hasApiKey: result.value.hasApiKey
+    });
+  }
+
+  private async saveEmbeddingProfile(
+    submission: EmbeddingProfileFormSubmission
+  ): Promise<void> {
+    const result = await this.embeddingProfiles.save(submission);
+    if (!result.ok) {
+      this.postMessage({
+        command: 'embeddingProfileFormError',
+        message: result.message
+      });
+      return;
+    }
+    this.postEmbeddingProfileState();
+    this.postMessage({ command: 'closeEmbeddingProfileForm' });
+    this.postStatus(
+      submission.id
+        ? `${result.value.model} embedding profile updated.`
+        : `${result.value.model} selected for code embeddings.`
+    );
+  }
+
+  private async deleteEmbeddingProfile(profileId: string): Promise<void> {
+    const result = await this.embeddingProfiles.delete(profileId);
+    if (!result.ok) {
+      this.postMessage({
+        command: 'embeddingProfileFormError',
+        message: result.message
+      });
+      return;
+    }
+    this.postEmbeddingProfileState();
+    this.postMessage({ command: 'closeEmbeddingProfileForm' });
+    this.postStatus(`${result.value.model} embedding profile deleted.`);
   }
 
   private getPermissionPolicy(): FilePermissionPolicy {

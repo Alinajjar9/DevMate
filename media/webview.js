@@ -11,6 +11,8 @@
       attachmentsExpanded: false,
       activeProfile: undefined,
       profileCount: 0,
+      activeEmbeddingProfile: undefined,
+      embeddingProfileCount: 0,
       permissionPolicy: {
         createFiles: 'ask',
         updateFiles: 'ask'
@@ -101,6 +103,26 @@
     const llmProfileFormErrorEl = document.getElementById('llmProfileFormError');
     const deleteLlmProfileEl = document.getElementById('deleteLlmProfile');
     const saveLlmProfileEl = document.getElementById('saveLlmProfile');
+    const embeddingProfileSettingsLabelEl = document.getElementById('embeddingProfileSettingsLabel');
+    const embeddingProfileSettingsDetailEl = document.getElementById('embeddingProfileSettingsDetail');
+    const manageEmbeddingProfilesEl = document.getElementById('manageEmbeddingProfiles');
+    const embeddingProfilePickerDialogEl = document.getElementById('embeddingProfilePickerDialog');
+    const embeddingProfilePickerListEl = document.getElementById('embeddingProfilePickerList');
+    const embeddingProfileDialogEl = document.getElementById('embeddingProfileDialog');
+    const embeddingProfileFormEl = document.getElementById('embeddingProfileForm');
+    const embeddingProfileFormTitleEl = document.getElementById('embeddingProfileFormTitle');
+    const embeddingProfileIdEl = document.getElementById('embeddingProfileId');
+    const embeddingProfileProviderEl = document.getElementById('embeddingProfileProvider');
+    const embeddingProfileModelEl = document.getElementById('embeddingProfileModel');
+    const embeddingProfileBaseUrlEl = document.getElementById('embeddingProfileBaseUrl');
+    const embeddingProfileBaseUrlHelpEl = document.getElementById('embeddingProfileBaseUrlHelp');
+    const embeddingProfileApiKeyEl = document.getElementById('embeddingProfileApiKey');
+    const embeddingProfileApiKeyHelpEl = document.getElementById('embeddingProfileApiKeyHelp');
+    const embeddingRemoteConsentFieldEl = document.getElementById('embeddingRemoteConsentField');
+    const embeddingProfileRemoteAllowedEl = document.getElementById('embeddingProfileRemoteAllowed');
+    const embeddingProfileFormErrorEl = document.getElementById('embeddingProfileFormError');
+    const deleteEmbeddingProfileEl = document.getElementById('deleteEmbeddingProfile');
+    const saveEmbeddingProfileEl = document.getElementById('saveEmbeddingProfile');
     const settingsButtonEl = document.getElementById('settingsButton');
     const backendStatusEl = document.getElementById('backendStatus');
     const permissionDialogEl = document.getElementById('permissionDialog');
@@ -130,6 +152,7 @@
     const restartBackendEl = document.getElementById('restartBackend');
     const openBackendLogsEl = document.getElementById('openBackendLogs');
     const ollamaDefaultBaseUrl = 'http://127.0.0.1:11434';
+    const openAiEmbeddingDefaultBaseUrl = 'https://api.openai.com/v1';
 
     document.querySelectorAll('.mode-button').forEach((button) => {
       button.addEventListener('click', () => {
@@ -248,6 +271,7 @@
       settingsTemperatureEl.value = String(state.settings.temperature);
       renderTimeoutApproximation();
       renderRememberedCommands();
+      renderEmbeddingProfileSettings();
       if (!permissionDialogEl.open) {
         permissionDialogEl.showModal();
       }
@@ -255,6 +279,10 @@
     };
 
     settingsButtonEl.addEventListener('click', openSettingsDialog);
+    manageEmbeddingProfilesEl.addEventListener('click', () => {
+      permissionDialogEl.close();
+      vscode.postMessage({ command: 'chooseEmbeddingProfile' });
+    });
     document.getElementById('openAgentToolSettings').addEventListener('click', () => {
       const settings = state.settings.agentTools;
       settingsReadFileMaxLinesEl.value = String(settings.readFileMaxLines);
@@ -430,6 +458,101 @@
       });
     });
 
+    document.getElementById('cancelEmbeddingProfilePicker').addEventListener('click', () => {
+      closeEmbeddingProfilePicker();
+      openSettingsDialog();
+    });
+
+    document.getElementById('addEmbeddingProfile').addEventListener('click', () => {
+      closeEmbeddingProfilePicker();
+      vscode.postMessage({ command: 'addEmbeddingProfile' });
+    });
+
+    embeddingProfileProviderEl.addEventListener('change', () => {
+      renderEmbeddingProfileProvider(true);
+    });
+    embeddingProfileBaseUrlEl.addEventListener('input', () => {
+      renderEmbeddingProfileProvider(false);
+    });
+
+    document.getElementById('cancelEmbeddingProfile').addEventListener('click', () => {
+      closeEmbeddingProfileForm();
+      openSettingsDialog();
+    });
+
+    deleteEmbeddingProfileEl.addEventListener('click', () => {
+      const profileId = embeddingProfileIdEl.value;
+      if (!profileId || deleteEmbeddingProfileEl.hidden || deleteEmbeddingProfileEl.disabled) {
+        return;
+      }
+      if (deleteEmbeddingProfileEl.dataset.confirm !== 'true') {
+        deleteEmbeddingProfileEl.dataset.confirm = 'true';
+        deleteEmbeddingProfileEl.textContent = 'Confirm delete';
+        return;
+      }
+      setEmbeddingProfileFormSaving(true);
+      vscode.postMessage({ command: 'deleteEmbeddingProfile', profileId });
+    });
+
+    embeddingProfileDialogEl.addEventListener('close', () => {
+      embeddingProfileApiKeyEl.value = '';
+      embeddingProfileDialogEl.dataset.hasApiKey = 'false';
+      setEmbeddingProfileFormError('');
+      setEmbeddingProfileFormSaving(false);
+    });
+
+    embeddingProfileFormEl.addEventListener('submit', (event) => {
+      event.preventDefault();
+      setEmbeddingProfileFormError('');
+      const provider = embeddingProfileProviderEl.value;
+      const model = embeddingProfileModelEl.value.trim();
+      const baseUrl = embeddingProfileBaseUrlEl.value.trim();
+      const apiKey = embeddingProfileApiKeyEl.value.trim();
+      if (!model) {
+        setEmbeddingProfileFormError('Enter an embedding model ID.');
+        embeddingProfileModelEl.focus();
+        return;
+      }
+      let parsedUrl;
+      try {
+        parsedUrl = new URL(baseUrl);
+        if (!['http:', 'https:'].includes(parsedUrl.protocol)
+          || parsedUrl.username
+          || parsedUrl.password
+          || parsedUrl.search
+          || parsedUrl.hash) {
+          throw new Error('Invalid embedding URL');
+        }
+      } catch {
+        setEmbeddingProfileFormError(
+          'Enter a valid HTTP or HTTPS base URL without credentials, query parameters, or fragments.'
+        );
+        embeddingProfileBaseUrlEl.focus();
+        return;
+      }
+      const remote = !isLoopbackEmbeddingUrl(parsedUrl);
+      if (remote && !embeddingProfileRemoteAllowedEl.checked) {
+        setEmbeddingProfileFormError(
+          'Confirm that this remote provider may receive bounded project source-code chunks.'
+        );
+        embeddingProfileRemoteAllowedEl.focus();
+        return;
+      }
+
+      setEmbeddingProfileFormSaving(true);
+      vscode.postMessage({
+        command: 'saveEmbeddingProfile',
+        profile: {
+          id: embeddingProfileIdEl.value || undefined,
+          provider,
+          model,
+          baseUrl,
+          remoteAllowed: remote && embeddingProfileRemoteAllowedEl.checked,
+          apiKey: apiKey || undefined
+        }
+      });
+    });
+
     attachmentToggleEl.addEventListener('click', () => {
       state.attachmentsExpanded = !state.attachmentsExpanded;
       renderAttachments();
@@ -544,6 +667,32 @@
 
       if (message.command === 'closeLlmProfileForm') {
         closeLlmProfileForm();
+      }
+
+      if (message.command === 'embeddingProfilesUpdated') {
+        state.activeEmbeddingProfile = message.activeProfile;
+        state.embeddingProfileCount = message.profileCount;
+        renderEmbeddingProfileSettings();
+      }
+
+      if (message.command === 'showEmbeddingProfilePicker') {
+        showEmbeddingProfilePicker(message.profiles);
+      }
+
+      if (message.command === 'showEmbeddingProfileForm') {
+        showEmbeddingProfileForm(message.profile, message.hasApiKey);
+      }
+
+      if (message.command === 'embeddingProfileFormError') {
+        setEmbeddingProfileFormSaving(false);
+        deleteEmbeddingProfileEl.dataset.confirm = 'false';
+        deleteEmbeddingProfileEl.textContent = 'Delete';
+        setEmbeddingProfileFormError(message.message);
+      }
+
+      if (message.command === 'closeEmbeddingProfileForm') {
+        closeEmbeddingProfileForm();
+        openSettingsDialog();
       }
 
       if (message.command === 'permissionPolicyUpdated') {
@@ -2130,6 +2279,204 @@
             ? 'Save changes'
             : 'Add model';
       }
+    }
+
+    function renderEmbeddingProfileSettings() {
+      const profile = state.activeEmbeddingProfile;
+      if (!profile) {
+        embeddingProfileSettingsLabelEl.textContent = 'No embedding profile';
+        embeddingProfileSettingsDetailEl.textContent =
+          'Add a local Ollama or OpenAI-compatible embedding model.';
+        manageEmbeddingProfilesEl.title = 'Configure code embedding profiles';
+        return;
+      }
+      embeddingProfileSettingsLabelEl.textContent = profile.model;
+      embeddingProfileSettingsDetailEl.textContent = [
+        profile.providerLabel,
+        profile.remoteAllowed ? 'Remote source transfer allowed' : 'Local endpoint',
+        state.embeddingProfileCount > 1
+          ? state.embeddingProfileCount + ' saved profiles'
+          : undefined
+      ].filter(Boolean).join(' · ');
+      manageEmbeddingProfilesEl.title = profile.baseUrl;
+    }
+
+    function showEmbeddingProfilePicker(profiles) {
+      embeddingProfilePickerListEl.replaceChildren();
+      const availableProfiles = Array.isArray(profiles) ? profiles : [];
+      if (availableProfiles.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'field-help';
+        empty.textContent = 'No embedding profiles are configured yet.';
+        embeddingProfilePickerListEl.appendChild(empty);
+      }
+      availableProfiles.forEach((profile) => {
+        const option = document.createElement('div');
+        option.className = 'model-picker-option';
+        option.dataset.selected = String(profile.selected === true);
+
+        const select = document.createElement('button');
+        select.type = 'button';
+        select.className = 'model-picker-select';
+        select.setAttribute('role', 'option');
+        select.setAttribute('aria-selected', String(profile.selected === true));
+
+        const icon = document.createElement('span');
+        icon.className = 'model-picker-icon';
+        icon.textContent = profile.provider === 'ollama' ? 'O' : 'AI';
+        const copy = document.createElement('span');
+        copy.className = 'model-picker-copy';
+        const name = document.createElement('span');
+        name.className = 'model-picker-name';
+        name.textContent = profile.model;
+        const meta = document.createElement('span');
+        meta.className = 'model-picker-meta';
+        meta.textContent = [
+          profile.providerLabel,
+          profile.remoteAllowed ? 'Remote allowed' : 'Local only'
+        ].join(' · ');
+        const url = document.createElement('span');
+        url.className = 'model-picker-url';
+        url.textContent = profile.baseUrl;
+        url.title = profile.baseUrl;
+        copy.append(name, meta, url);
+        select.append(icon, copy);
+        if (profile.selected) {
+          const selected = document.createElement('span');
+          selected.className = 'model-picker-selected';
+          selected.textContent = 'Selected';
+          select.appendChild(selected);
+        }
+        select.addEventListener('click', () => {
+          closeEmbeddingProfilePicker();
+          openSettingsDialog();
+          vscode.postMessage({ command: 'selectEmbeddingProfile', profileId: profile.id });
+        });
+
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.className = 'model-picker-manage';
+        edit.textContent = 'Edit';
+        edit.title = 'Edit ' + profile.model;
+        edit.addEventListener('click', () => {
+          closeEmbeddingProfilePicker();
+          vscode.postMessage({ command: 'editEmbeddingProfile', profileId: profile.id });
+        });
+        option.append(select, edit);
+        embeddingProfilePickerListEl.appendChild(option);
+      });
+      if (!embeddingProfilePickerDialogEl.open) {
+        embeddingProfilePickerDialogEl.showModal();
+      }
+      embeddingProfilePickerListEl.querySelector('[aria-selected="true"]')?.focus();
+    }
+
+    function closeEmbeddingProfilePicker() {
+      if (embeddingProfilePickerDialogEl.open) {
+        embeddingProfilePickerDialogEl.close();
+      }
+    }
+
+    function showEmbeddingProfileForm(profile, hasApiKey) {
+      closeEmbeddingProfilePicker();
+      embeddingProfileFormEl.reset();
+      embeddingProfileIdEl.value = profile?.id || '';
+      embeddingProfileProviderEl.value = profile?.provider || 'ollama';
+      embeddingProfileModelEl.value = profile?.model || '';
+      embeddingProfileBaseUrlEl.value = profile?.baseUrl || ollamaDefaultBaseUrl;
+      embeddingProfileApiKeyEl.value = '';
+      embeddingProfileRemoteAllowedEl.checked = profile?.remoteAllowed === true;
+      embeddingProfileDialogEl.dataset.hasApiKey = String(Boolean(hasApiKey));
+      embeddingProfileDialogEl.dataset.currentProvider = embeddingProfileProviderEl.value;
+      embeddingProfileFormTitleEl.textContent = profile
+        ? 'Edit embedding profile'
+        : 'Add embedding profile';
+      deleteEmbeddingProfileEl.hidden = !profile;
+      deleteEmbeddingProfileEl.disabled = false;
+      deleteEmbeddingProfileEl.dataset.confirm = 'false';
+      deleteEmbeddingProfileEl.textContent = 'Delete';
+      setEmbeddingProfileFormError('');
+      setEmbeddingProfileFormSaving(false);
+      renderEmbeddingProfileProvider(false);
+      if (!embeddingProfileDialogEl.open) {
+        embeddingProfileDialogEl.showModal();
+      }
+      embeddingProfileModelEl.focus();
+    }
+
+    function closeEmbeddingProfileForm() {
+      embeddingProfileApiKeyEl.value = '';
+      embeddingProfileRemoteAllowedEl.checked = false;
+      deleteEmbeddingProfileEl.dataset.confirm = 'false';
+      deleteEmbeddingProfileEl.textContent = 'Delete';
+      deleteEmbeddingProfileEl.disabled = false;
+      if (embeddingProfileDialogEl.open) {
+        embeddingProfileDialogEl.close();
+      }
+    }
+
+    function renderEmbeddingProfileProvider(providerChanged) {
+      const provider = embeddingProfileProviderEl.value;
+      const previousProvider = embeddingProfileDialogEl.dataset.currentProvider;
+      const isOllama = provider === 'ollama';
+      const currentBaseUrl = embeddingProfileBaseUrlEl.value.trim();
+      if (providerChanged && isOllama
+        && (!currentBaseUrl || currentBaseUrl === openAiEmbeddingDefaultBaseUrl)) {
+        embeddingProfileBaseUrlEl.value = ollamaDefaultBaseUrl;
+      }
+      if (providerChanged && !isOllama
+        && (!currentBaseUrl || currentBaseUrl === ollamaDefaultBaseUrl)) {
+        embeddingProfileBaseUrlEl.value = openAiEmbeddingDefaultBaseUrl;
+      }
+      embeddingProfileDialogEl.dataset.currentProvider = provider;
+      embeddingProfileModelEl.placeholder = isOllama
+        ? 'nomic-embed-text'
+        : 'text-embedding-3-small';
+      const remote = isRemoteEmbeddingUrl(embeddingProfileBaseUrlEl.value.trim());
+      embeddingRemoteConsentFieldEl.hidden = !remote;
+      if (!remote) {
+        embeddingProfileRemoteAllowedEl.checked = false;
+      }
+      embeddingProfileBaseUrlHelpEl.textContent = remote
+        ? 'This remote endpoint requires explicit source-code transfer permission below.'
+        : 'Loopback endpoints keep project source on this computer.';
+      embeddingProfileApiKeyHelpEl.textContent =
+        embeddingProfileDialogEl.dataset.hasApiKey === 'true'
+          ? 'A key is already stored. Leave this blank to keep it, or enter a replacement.'
+          : 'If provided, the key is saved only in VS Code SecretStorage.';
+      if (previousProvider !== provider) {
+        setEmbeddingProfileFormError('');
+      }
+    }
+
+    function isRemoteEmbeddingUrl(value) {
+      try {
+        return !isLoopbackEmbeddingUrl(new URL(value));
+      } catch {
+        return false;
+      }
+    }
+
+    function isLoopbackEmbeddingUrl(url) {
+      const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+      return hostname === 'localhost'
+        || hostname === '::1'
+        || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+    }
+
+    function setEmbeddingProfileFormError(message) {
+      embeddingProfileFormErrorEl.textContent = message;
+      embeddingProfileFormErrorEl.hidden = !message;
+    }
+
+    function setEmbeddingProfileFormSaving(saving) {
+      saveEmbeddingProfileEl.disabled = saving;
+      deleteEmbeddingProfileEl.disabled = saving;
+      saveEmbeddingProfileEl.textContent = saving
+        ? 'Saving...'
+        : embeddingProfileIdEl.value
+          ? 'Save changes'
+          : 'Add profile';
     }
 
     function renderAttachments() {

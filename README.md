@@ -165,7 +165,9 @@ The SQLite embedding repository can activate one bounded configuration per works
 
 A backend embedding-index service now joins the provider and repository in bounded, resumable batches. It discovers dimensions from the first real source batch, stores each successful batch immediately, continues with only missing chunks, and rebuilds incompatible vectors when dimensions change.
 
-The authenticated `/index/v1/embeddings/synchronize` route exposes that service through strict bounded request and response models. Provider credentials use the provider-key header rather than the JSON body, and the backend advertises the optional `embedding-index-v1` capability. After a fully ready lexical synchronization, the extension can now use a configured validated embedding profile to generate missing vectors in delayed, cancellable one-batch requests. It reads only the selected profile's SecretStorage value and stops on provider failure instead of retrying indefinitely. No embedding profile UI or query-time semantic ranking is connected yet, so project retrieval remains lexical.
+The authenticated `/index/v1/embeddings/synchronize` route exposes that service through strict bounded request and response models. Provider credentials use the provider-key header rather than the JSON body, and the backend advertises the optional `embedding-index-v1` capability. After a fully ready lexical synchronization, the extension can use a configured validated embedding profile to generate missing vectors in delayed, cancellable one-batch requests. It reads only the selected profile's SecretStorage value and stops on provider failure instead of retrying indefinitely.
+
+Embedding profiles are managed separately under **DevMate settings → Semantic code index**. Local Ollama is the default when adding a profile. Non-loopback endpoints require HTTPS and an explicit confirmation that the provider may receive bounded project source-code chunks. Saving or selecting a profile refreshes background vector generation for the last ready workspace index. Query-time semantic ranking is not connected yet, so project retrieval remains lexical.
 
 On the checked-in evaluation corpus, SQLite lexical retrieval produces 7 of 11 top-one hits, 7 of 11 top-three hits, and 0.6364 recall at five. Synonym-heavy conceptual searches remain the main weakness and are the target of the later semantic and hybrid retriever.
 
@@ -346,6 +348,7 @@ The Python backend source remains in the package as a fallback for development o
 | `src/api/knowledgeIndexProtocol.ts` | Runtime validation for versioned knowledge-index responses |
 | `src/backendManager.ts` | Local backend startup, monitoring, and restart logic |
 | `src/embeddingProfiles.ts` | Local-first embedding profile validation, selection, consent, and SecretStorage keys |
+| `src/embeddingProfileController.ts` | Validated embedding-profile persistence and UI-facing operations |
 | `src/providerUrlPolicy.ts` | Shared chat and embedding provider URL security policy |
 | `src/projectIndex.ts` | Local index representation, chunking, and lexical scoring |
 | `src/projectRetriever.ts` | SQLite-first lexical retrieval, exact-source validation, and lazy JSON fallback |

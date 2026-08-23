@@ -2,6 +2,26 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Manage code embedding profiles in settings
+
+### Changed
+
+- Added separate settings controls for creating, editing, selecting, and deleting Ollama and OpenAI-compatible embedding profiles without mixing them with chat-model profiles.
+- Added an isolated profile controller for validated persistence, preferred-profile selection, SecretStorage access, deletion cleanup, and best-effort rollback after storage failures.
+- Kept provider credentials out of profile state and displayed only whether the selected profile already has a stored key.
+- Required an explicit source-code transfer checkbox for non-loopback embedding endpoints while keeping local Ollama as the new-profile default.
+- Refreshed background embedding generation when the active profile, its configuration, or its credential changes, without repeating lexical synchronization.
+- Added bounded host-side validation for every form field and embedding credential instead of trusting browser validation.
+- Kept query embeddings, cosine ranking, hybrid retrieval, and chat-context planning unchanged.
+
+### Verification
+
+- Focused profile-controller, scheduler, and webview coverage — 38 tests passed.
+- `npm run verify` — 247 extension tests and 136 backend tests passed; 47 cross-language contracts and 27 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-23 — Schedule code embedding generation in the extension
 
 ### Changed

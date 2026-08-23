@@ -276,6 +276,90 @@ function getChatWebviewHtml(webview, extensionUri) {
     </form>
   </dialog>
 
+  <dialog id="embeddingProfilePickerDialog" class="profile-dialog model-picker-dialog" aria-labelledby="embeddingProfilePickerTitle">
+    <section class="profile-form">
+      <header class="profile-form-header">
+        <h2 id="embeddingProfilePickerTitle">Code embedding profiles</h2>
+        <p>Select the model used to build DevMate's semantic code index.</p>
+      </header>
+      <div class="profile-form-body">
+        <div id="embeddingProfilePickerList" class="model-picker-list" role="listbox" aria-label="Available embedding profiles"></div>
+      </div>
+      <footer class="profile-form-actions">
+        <button id="cancelEmbeddingProfilePicker" class="action-button secondary" type="button">Close</button>
+        <button id="addEmbeddingProfile" class="action-button primary" type="button">Add profile</button>
+      </footer>
+    </section>
+  </dialog>
+
+  <dialog id="embeddingProfileDialog" class="profile-dialog" aria-labelledby="embeddingProfileFormTitle">
+    <form id="embeddingProfileForm" class="profile-form" novalidate>
+      <header class="profile-form-header">
+        <h2 id="embeddingProfileFormTitle">Add embedding profile</h2>
+        <p>Embedding providers receive bounded source-code chunks while building the semantic index.</p>
+      </header>
+      <div class="profile-form-body">
+        <input id="embeddingProfileId" type="hidden">
+        <div class="profile-form-row">
+          <div class="profile-field">
+            <label for="embeddingProfileProvider">Provider</label>
+            <select id="embeddingProfileProvider">
+              <option value="ollama">Ollama</option>
+              <option value="openai-compatible">OpenAI-compatible</option>
+            </select>
+          </div>
+          <div class="profile-field">
+            <label for="embeddingProfileModel">Embedding model ID</label>
+            <input
+              id="embeddingProfileModel"
+              type="text"
+              maxlength="120"
+              autocomplete="off"
+              placeholder="nomic-embed-text"
+              required
+            >
+          </div>
+        </div>
+        <div class="profile-field">
+          <label for="embeddingProfileBaseUrl">Base URL</label>
+          <input
+            id="embeddingProfileBaseUrl"
+            type="url"
+            maxlength="2048"
+            autocomplete="off"
+            placeholder="http://127.0.0.1:11434"
+            required
+          >
+          <p id="embeddingProfileBaseUrlHelp" class="field-help">Local Ollama keeps project source on this computer.</p>
+        </div>
+        <div class="profile-field">
+          <label for="embeddingProfileApiKey">API key <span class="field-optional">optional</span></label>
+          <input
+            id="embeddingProfileApiKey"
+            type="password"
+            maxlength="8192"
+            autocomplete="new-password"
+            placeholder="Leave blank if the endpoint needs no key"
+          >
+          <p id="embeddingProfileApiKeyHelp" class="field-help">If provided, the key is saved only in VS Code SecretStorage.</p>
+        </div>
+        <label id="embeddingRemoteConsentField" class="embedding-remote-consent" for="embeddingProfileRemoteAllowed" hidden>
+          <input id="embeddingProfileRemoteAllowed" type="checkbox">
+          <span>
+            <strong>Allow this remote provider to receive project source code</strong>
+            <small>DevMate sends bounded code chunks to create embeddings. This permission is required for non-loopback endpoints.</small>
+          </span>
+        </label>
+        <div id="embeddingProfileFormError" class="profile-form-error" role="alert" hidden></div>
+      </div>
+      <footer class="profile-form-actions">
+        <button id="deleteEmbeddingProfile" class="action-button profile-form-delete" type="button" hidden>Delete</button>
+        <button id="cancelEmbeddingProfile" class="action-button secondary" type="button">Cancel</button>
+        <button id="saveEmbeddingProfile" class="action-button primary" type="submit">Add profile</button>
+      </footer>
+    </form>
+  </dialog>
+
   <dialog id="permissionDialog" class="profile-dialog" aria-labelledby="permissionDialogTitle">
     <form id="permissionForm" class="profile-form">
       <header class="profile-form-header">
@@ -319,6 +403,17 @@ function getChatWebviewHtml(webview, extensionUri) {
             </span>
             <span class="settings-subdialog-chevron" aria-hidden="true">›</span>
           </button>
+        </section>
+        <section class="settings-section" aria-labelledby="embeddingSettingsTitle">
+          <h3 id="embeddingSettingsTitle" class="settings-section-title">Semantic code index</h3>
+          <button id="manageEmbeddingProfiles" class="settings-subdialog-button" type="button">
+            <span class="settings-subdialog-copy">
+              <strong id="embeddingProfileSettingsLabel">No embedding profile</strong>
+              <span id="embeddingProfileSettingsDetail">Add a local Ollama or OpenAI-compatible embedding model.</span>
+            </span>
+            <span class="settings-subdialog-chevron" aria-hidden="true">›</span>
+          </button>
+          <p class="field-help">Profiles control vector generation only. Chat models and lexical fallback remain separate.</p>
         </section>
         <section class="settings-section" aria-labelledby="backendSettingsTitle">
           <h3 id="backendSettingsTitle" class="settings-section-title">Local backend</h3>

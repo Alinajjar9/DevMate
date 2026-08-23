@@ -14,7 +14,8 @@ function readExtensionHostSource() {
     readSource('src', 'chatViewProvider.ts'),
     readSource('src', 'toolExecutor.ts'),
     readSource('src', 'workspaceContext.ts'),
-    readSource('src', 'workspaceMutations.ts')
+    readSource('src', 'workspaceMutations.ts'),
+    readSource('src', 'embeddingProfileController.ts')
   ].join('\n');
 }
 
@@ -229,6 +230,20 @@ test('settings expose a separate bounded agent-tool limits dialog', () => {
   assert.match(source, /id="settingsReadFileMaxLines"[^>]*max="1000"/);
   assert.match(source, /command: 'saveAgentToolSettings'/);
   assert.match(source, /agentTools: this\.getAgentToolSettings\(\)/);
+});
+
+test('settings manage separate embedding profiles with explicit remote consent', () => {
+  const source = readDevMateSource();
+  assert.match(source, /id="manageEmbeddingProfiles"/);
+  assert.match(source, /id="embeddingProfilePickerDialog"/);
+  assert.match(source, /id="embeddingProfileDialog"/);
+  assert.match(source, /id="embeddingProfileRemoteAllowed"/);
+  assert.match(source, /Allow this remote provider to receive project source code/);
+  assert.match(source, /command: 'saveEmbeddingProfile'/);
+  assert.match(source, /remoteAllowed: remote && embeddingProfileRemoteAllowedEl\.checked/);
+  assert.match(source, /embeddingSecretKeyForProfile/);
+  assert.match(source, /this\.extensionContext\.secrets\.store/);
+  assert.match(source, /refreshActiveProfile/);
 });
 
 test('working UI exposes tool usage and resumable agent checkpoints', () => {

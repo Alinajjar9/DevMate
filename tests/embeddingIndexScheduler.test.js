@@ -201,6 +201,34 @@ test('backend credential changes cancel work until the ready workspace is schedu
   scheduler.dispose();
 });
 
+test('profile refresh reuses the last ready workspace and replaces active work', async () => {
+  const firstResult = deferred();
+  const calls = [];
+  const scheduler = new EmbeddingIndexScheduler(
+    profileStore([localProfile()]),
+    embeddingApi(async (_access, request, _providerApiKey, signal) => {
+      calls.push({ request, signal });
+      return calls.length === 1 ? firstResult.promise : completedResponse(1);
+    })
+  );
+
+  scheduler.setBackendAccess(ACCESS);
+  scheduler.scheduleWorkspace('workspace:test');
+  await settlePromises();
+  scheduler.refreshActiveProfile();
+
+  assert.equal(calls[0].signal.aborted, true);
+  firstResult.resolve({
+    status: 'error',
+    errorKind: 'cancelled',
+    message: 'Request cancelled.'
+  });
+  await settlePromises();
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].request.workspaceKey, 'workspace:test');
+  scheduler.dispose();
+});
+
 test('skips unsupported backends and missing profiles without reading credentials', async () => {
   const reports = [];
   let secretReads = 0;

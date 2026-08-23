@@ -1396,10 +1396,16 @@
       display: none;
     }
 
-    .profile-field label {
-      font-size: 12px;
-      font-weight: 600;
-    }
+.profile-field label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.field-optional {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+}
 
     .profile-field input,
     .profile-field select {
@@ -1427,9 +1433,45 @@
       font-size: 11px;
     }
 
-    .profile-form-error[hidden] {
-      display: none;
-    }
+.profile-form-error[hidden] {
+  display: none;
+}
+
+.embedding-remote-consent {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+  padding: 10px;
+  border: 1px solid var(--vscode-editorWarning-foreground);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--vscode-editorWarning-foreground) 8%, transparent);
+  cursor: pointer;
+}
+
+.embedding-remote-consent[hidden] {
+  display: none;
+}
+
+.embedding-remote-consent input {
+  margin: 2px 0 0;
+}
+
+.embedding-remote-consent span {
+  display: grid;
+  gap: 3px;
+}
+
+.embedding-remote-consent strong {
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.embedding-remote-consent small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
 
     .profile-form-actions {
       display: flex;

@@ -119,6 +119,12 @@ export class EmbeddingIndexScheduler {
     this.schedulePending();
   }
 
+  refreshActiveProfile(): void {
+    if (this.workspaceKey) {
+      this.scheduleWorkspace(this.workspaceKey);
+    }
+  }
+
   invalidateWorkspace(): void {
     this.workspaceKey = undefined;
     this.pending = false;
