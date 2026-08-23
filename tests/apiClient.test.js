@@ -6,14 +6,18 @@ const {
   applyKnowledgeIndexChanges,
   ask,
   askStream,
+  deleteChatMemorySession,
   DEFAULT_ASK_TIMEOUT_MS,
   DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS,
   DEFAULT_SEMANTIC_SEARCH_TIMEOUT_MS,
   health,
   isLoopbackBackendUrl,
+  listChatMemorySessions,
+  loadChatMemorySession,
   openKnowledgeIndex,
   searchKnowledgeIndex,
   searchKnowledgeIndexSemantically,
+  saveChatMemorySessions,
   synchronizeKnowledgeIndexEmbeddings,
   updateKnowledgeIndexMetadata
 } = require('../out/api/client');
@@ -211,6 +215,150 @@ test('sends authenticated versioned knowledge-index requests and strictly decode
     knowledgeIndexEmbeddingRequest(),
     knowledgeIndexSemanticSearchRequest()
   ]);
+});
+
+test('sends authenticated versioned chat-memory requests and strictly decodes them', async () => {
+  const received = [];
+  await withServer(async (request, response) => {
+    received.push({
+      path: request.url,
+      token: request.headers['x-devmate-backend-token'],
+      body: await readRequestJson(request)
+    });
+    if (request.url === '/memory/v1/sessions/save') {
+      sendJson(response, 200, {
+        status: 'ok',
+        data: { savedSessionIds: ['session-one'] }
+      });
+      return;
+    }
+    if (request.url === '/memory/v1/sessions/load') {
+      sendJson(response, 200, {
+        status: 'ok',
+        data: { session: chatMemorySnapshot() }
+      });
+      return;
+    }
+    if (request.url === '/memory/v1/sessions/list') {
+      sendJson(response, 200, {
+        status: 'ok',
+        data: { sessions: [chatMemorySnapshot().session] }
+      });
+      return;
+    }
+    sendJson(response, 200, { status: 'ok', data: { deleted: true } });
+  }, async (backendUrl) => {
+    const saved = await saveChatMemorySessions(
+      backendUrl,
+      chatMemorySaveRequest(),
+      TEST_BACKEND_TOKEN
+    );
+    const loaded = await loadChatMemorySession(
+      backendUrl,
+      { sessionId: 'session-one' },
+      TEST_BACKEND_TOKEN
+    );
+    const listed = await listChatMemorySessions(
+      backendUrl,
+      chatMemoryListRequest(),
+      TEST_BACKEND_TOKEN
+    );
+    const deleted = await deleteChatMemorySession(
+      backendUrl,
+      { sessionId: 'session-one' },
+      TEST_BACKEND_TOKEN
+    );
+
+    assert.deepEqual(saved.data, { savedSessionIds: ['session-one'] });
+    assert.deepEqual(loaded.data, { session: chatMemorySnapshot() });
+    assert.deepEqual(listed.data, { sessions: [chatMemorySnapshot().session] });
+    assert.deepEqual(deleted.data, { deleted: true });
+  });
+
+  assert.deepEqual(received.map((request) => request.path), [
+    '/memory/v1/sessions/save',
+    '/memory/v1/sessions/load',
+    '/memory/v1/sessions/list',
+    '/memory/v1/sessions/delete'
+  ]);
+  assert.ok(received.every((request) => request.token === TEST_BACKEND_TOKEN));
+  assert.deepEqual(received.map((request) => request.body), [
+    chatMemorySaveRequest(),
+    { sessionId: 'session-one' },
+    chatMemoryListRequest(),
+    { sessionId: 'session-one' }
+  ]);
+});
+
+test('rejects malformed or request-mismatched chat-memory responses', async (context) => {
+  const cases = [
+    {
+      call: (backendUrl) => saveChatMemorySessions(
+        backendUrl,
+        chatMemorySaveRequest(),
+        TEST_BACKEND_TOKEN
+      ),
+      data: { savedSessionIds: ['different-session'] }
+    },
+    {
+      call: (backendUrl) => loadChatMemorySession(
+        backendUrl,
+        { sessionId: 'session-one' },
+        TEST_BACKEND_TOKEN
+      ),
+      data: {
+        session: {
+          ...chatMemorySnapshot(),
+          turns: [{ ...chatMemorySnapshot().turns[0], ordinal: 1 }]
+        }
+      }
+    },
+    {
+      call: (backendUrl) => listChatMemorySessions(
+        backendUrl,
+        chatMemoryListRequest(),
+        TEST_BACKEND_TOKEN
+      ),
+      data: {
+        sessions: [{
+          ...chatMemorySnapshot().session,
+          workspaceIdentity: 'file:///another-workspace'
+        }]
+      }
+    },
+    {
+      call: (backendUrl) => deleteChatMemorySession(
+        backendUrl,
+        { sessionId: 'session-one' },
+        TEST_BACKEND_TOKEN
+      ),
+      data: { deleted: true, unexpected: true }
+    }
+  ];
+
+  for (const item of cases) {
+    await context.test(JSON.stringify(item.data), async () => {
+      await withServer((_request, response) => {
+        sendJson(response, 200, { status: 'ok', data: item.data });
+      }, async (backendUrl) => {
+        const result = await item.call(backendUrl);
+        assert.equal(result.status, 'error');
+        assert.equal(result.errorKind, 'invalid-response');
+      });
+    });
+  }
+});
+
+test('refuses to send chat history to a non-loopback backend', async () => {
+  const result = await saveChatMemorySessions(
+    'https://backend.example.com',
+    chatMemorySaveRequest(),
+    TEST_BACKEND_TOKEN
+  );
+
+  assert.equal(result.status, 'error');
+  assert.equal(result.errorKind, 'configuration');
+  assert.match(result.message, /backend running on this computer/);
 });
 
 test('rejects malformed knowledge-index responses field by field', async (context) => {
@@ -794,6 +942,37 @@ function knowledgeIndexOpenRequest() {
     workspaceKey: 'workspace-one',
     rootPath: 'C:\\repo',
     chunkingVersion: 1
+  };
+}
+
+function chatMemorySaveRequest() {
+  return { sessions: [chatMemorySnapshot()] };
+}
+
+function chatMemoryListRequest() {
+  return { workspaceIdentity: 'file:///workspace-one', limit: 20 };
+}
+
+function chatMemorySnapshot() {
+  return {
+    session: {
+      sessionId: 'session-one',
+      workspaceIdentity: 'file:///workspace-one',
+      workspaceName: 'Workspace One',
+      title: 'Chat session',
+      createdAtMs: 100,
+      updatedAtMs: 200
+    },
+    turns: [{
+      ordinal: 0,
+      user: 'Update the greeting',
+      assistant: 'The greeting was updated.',
+      fileChanges: [{
+        kind: 'updated',
+        path: 'src/app.ts',
+        diffId: 'diff-one'
+      }]
+    }]
   };
 }
 

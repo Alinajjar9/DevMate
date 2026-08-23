@@ -14,7 +14,8 @@ export const DEVMATE_BACKEND_CAPABILITIES = [
   'strict-response-contracts',
   'knowledge-index-v1',
   'embedding-index-v1',
-  'semantic-search-v1'
+  'semantic-search-v1',
+  'chat-memory-v1'
 ] as const;
 export const DEVMATE_REQUIRED_BACKEND_CAPABILITIES = [
   'chat',
@@ -38,6 +39,8 @@ export const DEVMATE_BACKEND_ERROR_CODES = [
   'knowledge_store_unavailable',
   'knowledge_workspace_not_found',
   'knowledge_index_failure',
+  'chat_session_not_found',
+  'chat_memory_failure',
   'internal_error'
 ] as const;
 export const DEVMATE_BACKEND_TOKEN_HEADER = 'X-DevMate-Backend-Token';
@@ -48,6 +51,7 @@ export const DEVMATE_KNOWLEDGE_STORE_FILE_NAME = 'devmate-knowledge.sqlite3';
 export const MIN_BACKEND_TOKEN_CHARACTERS = 32;
 export const MAX_BACKEND_TOKEN_CHARACTERS = 512;
 export const DEVMATE_KNOWLEDGE_INDEX_API_VERSION = 1;
+export const DEVMATE_CHAT_MEMORY_API_VERSION = 1;
 export const MAX_WORKSPACE_KEY_CHARACTERS = 256;
 export const MAX_WORKSPACE_ROOT_CHARACTERS = 4_096;
 export const MAX_RELATIVE_PATH_CHARACTERS = 1_024;
@@ -71,6 +75,18 @@ export const MAX_EMBEDDING_BASE_URL_CHARACTERS = 2_048;
 export const MAX_EMBEDDING_API_KEY_CHARACTERS = 8_192;
 export const MAX_EMBEDDING_INDEX_BATCHES_PER_RUN = 16;
 export const MAX_INDEX_INTEGER = 9_007_199_254_740_991;
+export const MAX_CHAT_SESSION_ID_CHARACTERS = 120;
+export const MAX_CHAT_WORKSPACE_IDENTITY_CHARACTERS = 2_048;
+export const MAX_CHAT_WORKSPACE_NAME_CHARACTERS = 120;
+export const MAX_CHAT_SESSION_TITLE_CHARACTERS = 80;
+export const MAX_CHAT_TURN_CHARACTERS = 6_000;
+export const MAX_CHAT_FILE_CHANGES = 20;
+export const MAX_CHAT_FILE_CHANGE_PATH_CHARACTERS = 2_048;
+export const MAX_CHAT_DIFF_ID_CHARACTERS = 120;
+export const MAX_CHAT_TURNS_PER_SNAPSHOT = 1_000;
+export const MAX_CHAT_SESSIONS_PER_REQUEST = 20;
+export const MAX_CHAT_SESSIONS_RETURNED = 100;
+export const MAX_CHAT_INTEGER = 9_007_199_254_740_991;
 export type ApiErrorKind =
   | 'cancelled'
   | 'configuration'
@@ -230,6 +246,70 @@ export type KnowledgeIndexSemanticSearchRequest = {
 export type KnowledgeIndexSemanticSearchResponse = {
   configuration: KnowledgeIndexEmbeddingConfiguration | null;
   results: KnowledgeIndexSearchItem[];
+};
+
+export type ChatMemoryFileChangeKind =
+  | 'created'
+  | 'updated'
+  | 'deleted'
+  | 'renamed'
+  | 'moved';
+
+export type ChatMemoryFileChange = {
+  kind: ChatMemoryFileChangeKind;
+  path: string;
+  previousPath?: string;
+  diffId?: string;
+};
+
+export type ChatMemoryTurn = {
+  ordinal: number;
+  user: string;
+  assistant: string;
+  fileChanges: ChatMemoryFileChange[];
+};
+
+export type ChatMemorySession = {
+  sessionId: string;
+  workspaceIdentity: string;
+  workspaceName: string;
+  title: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+};
+
+export type ChatMemorySnapshot = {
+  session: ChatMemorySession;
+  turns: ChatMemoryTurn[];
+};
+
+export type ChatMemorySaveRequest = {
+  sessions: ChatMemorySnapshot[];
+};
+
+export type ChatMemorySaveResponse = {
+  savedSessionIds: string[];
+};
+
+export type ChatMemorySessionRequest = {
+  sessionId: string;
+};
+
+export type ChatMemoryLoadResponse = {
+  session: ChatMemorySnapshot;
+};
+
+export type ChatMemoryListRequest = {
+  workspaceIdentity: string;
+  limit: number;
+};
+
+export type ChatMemoryListResponse = {
+  sessions: ChatMemorySession[];
+};
+
+export type ChatMemoryDeleteResponse = {
+  deleted: boolean;
 };
 
 export type LlmSettings = {

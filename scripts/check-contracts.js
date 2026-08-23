@@ -55,6 +55,7 @@ const embeddingProfiles = read('src/embeddingProfiles.ts');
 const backendEmbeddingProviders = read('backend/app/embedding_providers.py');
 const backendKnowledgeStore = read('backend/app/knowledge_store.py');
 const backendKnowledgeContracts = read('backend/app/knowledge_contracts.py');
+const backendChatMemoryContracts = read('backend/app/chat_memory_contracts.py');
 
 const literalContracts = [
   {
@@ -96,6 +97,11 @@ const literalContracts = [
     label: 'KnowledgeIndexState',
     typeScript: quotedValues(capture(apiTypes, /export type KnowledgeIndexState\s*=\s*([^;]+);/, 'TypeScript knowledge index states')),
     python: quotedValues(capture(backendKnowledgeContracts, /IndexState\s*=\s*Literal\[([^\]]+)\]/, 'Python knowledge index states'))
+  },
+  {
+    label: 'ChatMemoryFileChangeKind',
+    typeScript: quotedValues(capture(apiTypes, /export type ChatMemoryFileChangeKind\s*=\s*([^;]+);/, 'TypeScript chat-memory file-change kinds')),
+    python: quotedValues(capture(backendChatMemoryContracts, /FileChangeKind\s*=\s*Literal\[([^\]]+)\]/, 'Python chat-memory file-change kinds'))
   }
 ];
 
@@ -154,6 +160,30 @@ for (const name of knowledgeNumericContracts) {
   }
 }
 
+const chatMemoryNumericContracts = [
+  'DEVMATE_CHAT_MEMORY_API_VERSION',
+  'MAX_CHAT_SESSION_ID_CHARACTERS',
+  'MAX_CHAT_WORKSPACE_IDENTITY_CHARACTERS',
+  'MAX_CHAT_WORKSPACE_NAME_CHARACTERS',
+  'MAX_CHAT_SESSION_TITLE_CHARACTERS',
+  'MAX_CHAT_TURN_CHARACTERS',
+  'MAX_CHAT_FILE_CHANGES',
+  'MAX_CHAT_FILE_CHANGE_PATH_CHARACTERS',
+  'MAX_CHAT_DIFF_ID_CHARACTERS',
+  'MAX_CHAT_TURNS_PER_SNAPSHOT',
+  'MAX_CHAT_SESSIONS_PER_REQUEST',
+  'MAX_CHAT_SESSIONS_RETURNED',
+  'MAX_CHAT_INTEGER'
+];
+
+for (const name of chatMemoryNumericContracts) {
+  const typeScriptValue = numericConstant(apiTypes, name, 'typescript');
+  const pythonValue = numericConstant(backendChatMemoryContracts, name, 'python');
+  if (typeScriptValue !== pythonValue) {
+    throw new Error(`${name} differs between TypeScript (${typeScriptValue}) and Python (${pythonValue}).`);
+  }
+}
+
 const embeddingNumericContracts = [
   'MAX_EMBEDDING_PROFILE_ID_CHARACTERS',
   'MAX_EMBEDDING_MODEL_CHARACTERS',
@@ -199,4 +229,4 @@ for (const name of knowledgeStoreStringContracts) {
   }
 }
 
-console.log(`Verified ${literalContracts.length + numericContracts.length + knowledgeNumericContracts.length + embeddingNumericContracts.length + stringContracts.length + knowledgeStoreStringContracts.length} TypeScript/Python API contracts.`);
+console.log(`Verified ${literalContracts.length + numericContracts.length + knowledgeNumericContracts.length + chatMemoryNumericContracts.length + embeddingNumericContracts.length + stringContracts.length + knowledgeStoreStringContracts.length} TypeScript/Python API contracts.`);

@@ -54,6 +54,17 @@ def get_knowledge_repository(request: Request) -> KnowledgeRepository:
     return repository
 
 
+def get_chat_memory_repository(request: Request) -> ChatMemoryRepository:
+    repository = backend_dependencies(request).chat_memory_repository
+    if repository is None:
+        raise BackendApiError(
+            503,
+            "knowledge_store_unavailable",
+            "The local DevMate chat-memory store is unavailable.",
+        )
+    return repository
+
+
 def get_embedding_index_service(request: Request) -> EmbeddingIndexService:
     service = backend_dependencies(request).embedding_index_service
     if service is None:

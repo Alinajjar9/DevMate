@@ -9,6 +9,7 @@ import {
   DEVMATE_BACKEND_PROTOCOL_VERSION,
   DEVMATE_BACKEND_SERVICE,
   DEVMATE_BACKEND_TOKEN_HEADER,
+  DEVMATE_CHAT_MEMORY_API_VERSION,
   DEVMATE_KNOWLEDGE_INDEX_API_VERSION,
   DEVMATE_REQUIRED_BACKEND_CAPABILITIES,
   MAX_EMBEDDING_API_KEY_CHARACTERS,
@@ -20,6 +21,13 @@ import type {
   AskRequest,
   AskResponse,
   BackendErrorCode,
+  ChatMemoryDeleteResponse,
+  ChatMemoryListRequest,
+  ChatMemoryListResponse,
+  ChatMemoryLoadResponse,
+  ChatMemorySaveRequest,
+  ChatMemorySaveResponse,
+  ChatMemorySessionRequest,
   FileChange,
   HealthResponse,
   KnowledgeIndexApplyRequest,
@@ -44,9 +52,16 @@ import {
   parseKnowledgeIndexSemanticSearchResponse,
   parseKnowledgeIndexWriteResponse
 } from './knowledgeIndexProtocol';
+import {
+  parseChatMemoryDeleteResponse,
+  parseChatMemoryListResponse,
+  parseChatMemoryLoadResponse,
+  parseChatMemorySaveResponse
+} from './chatMemoryProtocol';
 
 const HEALTH_TIMEOUT_MS = 2_000;
 const KNOWLEDGE_INDEX_TIMEOUT_MS = 30_000;
+const CHAT_MEMORY_TIMEOUT_MS = 30_000;
 export const DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS = 150_000;
 export const DEFAULT_SEMANTIC_SEARCH_TIMEOUT_MS = 60_000;
 export const DEFAULT_ASK_TIMEOUT_MS = 930_000;
@@ -65,6 +80,7 @@ const MAX_ASK_PATH_CHARACTERS = 2_048;
 const backendErrorCodes = new Set<string>(DEVMATE_BACKEND_ERROR_CODES);
 const agentToolNames = new Set<string>(AGENT_TOOL_NAMES);
 const knowledgeIndexPath = `/index/v${DEVMATE_KNOWLEDGE_INDEX_API_VERSION}`;
+const chatMemoryPath = `/memory/v${DEVMATE_CHAT_MEMORY_API_VERSION}`;
 
 export type AskStreamEvent =
   | { type: 'delta'; text: string }
@@ -115,6 +131,92 @@ export async function health(
     };
   }
   return { status: 'ok', data: response };
+}
+
+export function saveChatMemorySessions(
+  backendUrl: string,
+  request: ChatMemorySaveRequest,
+  backendToken: string,
+  signal?: AbortSignal
+): Promise<ApiResult<ChatMemorySaveResponse>> {
+  const expectedIds = request.sessions.map((snapshot) => snapshot.session.sessionId);
+  return chatMemoryRequest(
+    backendUrl,
+    `${chatMemoryPath}/sessions/save`,
+    request,
+    backendToken,
+    (value) => {
+      const response = parseChatMemorySaveResponse(value);
+      return response
+        && response.savedSessionIds.length === expectedIds.length
+        && response.savedSessionIds.every((id, index) => id === expectedIds[index])
+        ? response
+        : undefined;
+    },
+    signal
+  );
+}
+
+export function loadChatMemorySession(
+  backendUrl: string,
+  request: ChatMemorySessionRequest,
+  backendToken: string,
+  signal?: AbortSignal
+): Promise<ApiResult<ChatMemoryLoadResponse>> {
+  return chatMemoryRequest(
+    backendUrl,
+    `${chatMemoryPath}/sessions/load`,
+    request,
+    backendToken,
+    (value) => {
+      const response = parseChatMemoryLoadResponse(value);
+      return response?.session.session.sessionId === request.sessionId
+        ? response
+        : undefined;
+    },
+    signal
+  );
+}
+
+export function listChatMemorySessions(
+  backendUrl: string,
+  request: ChatMemoryListRequest,
+  backendToken: string,
+  signal?: AbortSignal
+): Promise<ApiResult<ChatMemoryListResponse>> {
+  return chatMemoryRequest(
+    backendUrl,
+    `${chatMemoryPath}/sessions/list`,
+    request,
+    backendToken,
+    (value) => {
+      const response = parseChatMemoryListResponse(value);
+      return response
+        && response.sessions.length <= request.limit
+        && response.sessions.every(
+          (session) => session.workspaceIdentity === request.workspaceIdentity
+        )
+        ? response
+        : undefined;
+    },
+    signal
+  );
+}
+
+export function deleteChatMemorySession(
+  backendUrl: string,
+  request: ChatMemorySessionRequest,
+  backendToken: string,
+  signal?: AbortSignal
+): Promise<ApiResult<ChatMemoryDeleteResponse>> {
+  return chatMemoryRequest(
+    backendUrl,
+    `${chatMemoryPath}/sessions/delete`,
+    request,
+    backendToken,
+    parseChatMemoryDeleteResponse,
+    signal
+  );
 }
 
 export function openKnowledgeIndex(
@@ -257,6 +359,43 @@ type KnowledgeIndexRequestOptions = {
   providerApiKey?: string;
   timeoutMilliseconds?: number;
 };
+
+function chatMemoryRequest<T>(
+  backendUrl: string,
+  requestPath: string,
+  request: object,
+  backendToken: string,
+  decodeData: (value: unknown) => T | undefined,
+  signal?: AbortSignal
+): Promise<ApiResult<T>> {
+  if (!isValidBackendToken(backendToken)) {
+    return Promise.resolve(backendAuthenticationUnavailable());
+  }
+  if (!isLoopbackBackendUrl(backendUrl)) {
+    return Promise.resolve({
+      status: 'error',
+      message: 'DevMate only sends chat history to a backend running on this computer.',
+      errorKind: 'configuration'
+    });
+  }
+  return nodeHttpJsonRequest(
+    backendUrl,
+    requestPath,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'Accept-Encoding': 'identity',
+        [DEVMATE_BACKEND_TOKEN_HEADER]: backendToken
+      },
+      body: JSON.stringify(request)
+    },
+    decodeData,
+    CHAT_MEMORY_TIMEOUT_MS,
+    signal
+  );
+}
 
 function knowledgeIndexRequest<T>(
   backendUrl: string,

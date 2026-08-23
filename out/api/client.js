@@ -2,6 +2,10 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.DEFAULT_ASK_TIMEOUT_MS = exports.DEFAULT_SEMANTIC_SEARCH_TIMEOUT_MS = exports.DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS = void 0;
 exports.health = health;
+exports.saveChatMemorySessions = saveChatMemorySessions;
+exports.loadChatMemorySession = loadChatMemorySession;
+exports.listChatMemorySessions = listChatMemorySessions;
+exports.deleteChatMemorySession = deleteChatMemorySession;
 exports.openKnowledgeIndex = openKnowledgeIndex;
 exports.applyKnowledgeIndexChanges = applyKnowledgeIndexChanges;
 exports.updateKnowledgeIndexMetadata = updateKnowledgeIndexMetadata;
@@ -17,8 +21,10 @@ const string_decoder_1 = require("string_decoder");
 const agentTools_1 = require("../agentTools");
 const types_1 = require("./types");
 const knowledgeIndexProtocol_1 = require("./knowledgeIndexProtocol");
+const chatMemoryProtocol_1 = require("./chatMemoryProtocol");
 const HEALTH_TIMEOUT_MS = 2_000;
 const KNOWLEDGE_INDEX_TIMEOUT_MS = 30_000;
+const CHAT_MEMORY_TIMEOUT_MS = 30_000;
 exports.DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS = 150_000;
 exports.DEFAULT_SEMANTIC_SEARCH_TIMEOUT_MS = 60_000;
 exports.DEFAULT_ASK_TIMEOUT_MS = 930_000;
@@ -37,6 +43,7 @@ const MAX_ASK_PATH_CHARACTERS = 2_048;
 const backendErrorCodes = new Set(types_1.DEVMATE_BACKEND_ERROR_CODES);
 const agentToolNames = new Set(agentTools_1.AGENT_TOOL_NAMES);
 const knowledgeIndexPath = `/index/v${types_1.DEVMATE_KNOWLEDGE_INDEX_API_VERSION}`;
+const chatMemoryPath = `/memory/v${types_1.DEVMATE_CHAT_MEMORY_API_VERSION}`;
 async function health(backendUrl, backendToken) {
     if (!isValidBackendToken(backendToken)) {
         return backendAuthenticationUnavailable();
@@ -62,6 +69,38 @@ async function health(backendUrl, backendToken) {
         };
     }
     return { status: 'ok', data: response };
+}
+function saveChatMemorySessions(backendUrl, request, backendToken, signal) {
+    const expectedIds = request.sessions.map((snapshot) => snapshot.session.sessionId);
+    return chatMemoryRequest(backendUrl, `${chatMemoryPath}/sessions/save`, request, backendToken, (value) => {
+        const response = (0, chatMemoryProtocol_1.parseChatMemorySaveResponse)(value);
+        return response
+            && response.savedSessionIds.length === expectedIds.length
+            && response.savedSessionIds.every((id, index) => id === expectedIds[index])
+            ? response
+            : undefined;
+    }, signal);
+}
+function loadChatMemorySession(backendUrl, request, backendToken, signal) {
+    return chatMemoryRequest(backendUrl, `${chatMemoryPath}/sessions/load`, request, backendToken, (value) => {
+        const response = (0, chatMemoryProtocol_1.parseChatMemoryLoadResponse)(value);
+        return response?.session.session.sessionId === request.sessionId
+            ? response
+            : undefined;
+    }, signal);
+}
+function listChatMemorySessions(backendUrl, request, backendToken, signal) {
+    return chatMemoryRequest(backendUrl, `${chatMemoryPath}/sessions/list`, request, backendToken, (value) => {
+        const response = (0, chatMemoryProtocol_1.parseChatMemoryListResponse)(value);
+        return response
+            && response.sessions.length <= request.limit
+            && response.sessions.every((session) => session.workspaceIdentity === request.workspaceIdentity)
+            ? response
+            : undefined;
+    }, signal);
+}
+function deleteChatMemorySession(backendUrl, request, backendToken, signal) {
+    return chatMemoryRequest(backendUrl, `${chatMemoryPath}/sessions/delete`, request, backendToken, chatMemoryProtocol_1.parseChatMemoryDeleteResponse, signal);
 }
 function openKnowledgeIndex(backendUrl, request, backendToken, signal) {
     return knowledgeIndexRequest(backendUrl, `${knowledgeIndexPath}/workspaces/open`, request, backendToken, knowledgeIndexProtocol_1.parseKnowledgeIndexOpenResponse, signal);
@@ -112,6 +151,28 @@ function searchKnowledgeIndexSemantically(backendUrl, request, secrets, timeoutM
         providerApiKey: secrets.providerApiKey,
         timeoutMilliseconds
     });
+}
+function chatMemoryRequest(backendUrl, requestPath, request, backendToken, decodeData, signal) {
+    if (!isValidBackendToken(backendToken)) {
+        return Promise.resolve(backendAuthenticationUnavailable());
+    }
+    if (!isLoopbackBackendUrl(backendUrl)) {
+        return Promise.resolve({
+            status: 'error',
+            message: 'DevMate only sends chat history to a backend running on this computer.',
+            errorKind: 'configuration'
+        });
+    }
+    return nodeHttpJsonRequest(backendUrl, requestPath, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            'Accept-Encoding': 'identity',
+            [types_1.DEVMATE_BACKEND_TOKEN_HEADER]: backendToken
+        },
+        body: JSON.stringify(request)
+    }, decodeData, CHAT_MEMORY_TIMEOUT_MS, signal);
 }
 function knowledgeIndexRequest(backendUrl, requestPath, request, backendToken, decodeData, signal, options = {}) {
     if (!isValidBackendToken(backendToken)) {

@@ -6,23 +6,25 @@ import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from .chat_memory_contracts import (
+    CHAT_SUMMARY_VERSION,
+    MAX_CHAT_FILE_CHANGES_JSON_CHARACTERS,
+    MAX_CHAT_SESSIONS_PER_REQUEST,
+    MAX_CHAT_SESSIONS_RETURNED,
+    MAX_CHAT_SESSION_ID_CHARACTERS,
+    MAX_CHAT_SESSION_TITLE_CHARACTERS,
+    MAX_CHAT_SUMMARY_CHARACTERS,
+    MAX_CHAT_SUMMARY_ITEM_CHARACTERS,
+    MAX_CHAT_SUMMARY_ITEMS,
+    MAX_CHAT_TURNS_PER_SNAPSHOT,
+    MAX_CHAT_TURN_CHARACTERS,
+    MAX_CHAT_WORKSPACE_IDENTITY_CHARACTERS,
+    MAX_CHAT_WORKSPACE_NAME_CHARACTERS,
+    MAX_PINNED_MEMORIES,
+    MAX_PINNED_MEMORY_CHARACTERS,
+)
 from .knowledge_store import KnowledgeStore
 
-
-MAX_CHAT_SESSION_ID_CHARACTERS = 120
-MAX_CHAT_WORKSPACE_IDENTITY_CHARACTERS = 2_048
-MAX_CHAT_WORKSPACE_NAME_CHARACTERS = 120
-MAX_CHAT_SESSION_TITLE_CHARACTERS = 80
-MAX_CHAT_TURN_CHARACTERS = 6_000
-MAX_CHAT_FILE_CHANGES_JSON_CHARACTERS = 16_000
-MAX_CHAT_TURNS_PER_SNAPSHOT = 1_000
-MAX_CHAT_SESSIONS_RETURNED = 100
-MAX_CHAT_SUMMARY_CHARACTERS = 32_000
-MAX_CHAT_SUMMARY_ITEMS = 50
-MAX_CHAT_SUMMARY_ITEM_CHARACTERS = 1_000
-MAX_PINNED_MEMORIES = 50
-MAX_PINNED_MEMORY_CHARACTERS = 4_000
-CHAT_SUMMARY_VERSION = 1
 
 _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$")
 _SUMMARY_FIELDS = (
@@ -112,64 +114,30 @@ class ChatMemoryRepository:
         self._store = store
 
     def save_session(self, snapshot: ChatSessionSnapshot) -> ChatSessionSnapshot:
-        validated = _validated_snapshot(snapshot)
-        session = validated.session
+        return self.save_sessions((snapshot,))[0]
+
+    def save_sessions(
+        self,
+        snapshots: Sequence[ChatSessionSnapshot],
+    ) -> tuple[ChatSessionSnapshot, ...]:
+        if (
+            not isinstance(snapshots, Sequence)
+            or isinstance(snapshots, (str, bytes))
+            or not 1 <= len(snapshots) <= MAX_CHAT_SESSIONS_PER_REQUEST
+        ):
+            raise ChatMemoryValidationError("The chat-session batch is invalid.")
+        validated = tuple(_validated_snapshot(snapshot) for snapshot in snapshots)
+        session_ids = [snapshot.session.session_id for snapshot in validated]
+        if len(set(session_ids)) != len(session_ids):
+            raise ChatMemoryValidationError(
+                "Chat-session identifiers must be unique within a batch."
+            )
         try:
             with self._store.transaction() as connection:
-                connection.execute(
-                    """
-                    INSERT INTO chat_sessions(
-                        session_id,
-                        workspace_identity,
-                        workspace_name,
-                        title,
-                        created_at_ms,
-                        updated_at_ms
-                    ) VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(session_id) DO UPDATE SET
-                        workspace_identity = excluded.workspace_identity,
-                        workspace_name = excluded.workspace_name,
-                        title = excluded.title,
-                        created_at_ms = excluded.created_at_ms,
-                        updated_at_ms = excluded.updated_at_ms
-                    """,
-                    (
-                        session.session_id,
-                        session.workspace_identity,
-                        session.workspace_name,
-                        session.title,
-                        session.created_at_ms,
-                        session.updated_at_ms,
-                    ),
-                )
-                connection.execute(
-                    "DELETE FROM chat_turns WHERE session_id = ?",
-                    (session.session_id,),
-                )
-                connection.executemany(
-                    """
-                    INSERT INTO chat_turns(
-                        session_id,
-                        ordinal,
-                        user_text,
-                        assistant_text,
-                        file_changes_json
-                    ) VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (
-                        (
-                            session.session_id,
-                            turn.ordinal,
-                            turn.user,
-                            turn.assistant,
-                            turn.file_changes_json,
-                        )
-                        for turn in validated.turns
-                    ),
-                )
-                self._remove_invalid_summary(connection, session.session_id)
+                for snapshot in validated:
+                    self._save_snapshot(connection, snapshot)
         except sqlite3.Error as error:
-            raise ChatMemoryRepositoryError("The chat session could not be saved.") from error
+            raise ChatMemoryRepositoryError("The chat sessions could not be saved.") from error
         return validated
 
     def load_session(self, session_id: str) -> ChatSessionSnapshot | None:
@@ -623,6 +591,62 @@ class ChatMemoryRepository:
         except sqlite3.Error as error:
             raise ChatMemoryRepositoryError("The chat session could not be deleted.") from error
         return deleted > 0
+
+    @staticmethod
+    def _save_snapshot(connection, snapshot: ChatSessionSnapshot) -> None:
+        session = snapshot.session
+        connection.execute(
+            """
+            INSERT INTO chat_sessions(
+                session_id,
+                workspace_identity,
+                workspace_name,
+                title,
+                created_at_ms,
+                updated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                workspace_identity = excluded.workspace_identity,
+                workspace_name = excluded.workspace_name,
+                title = excluded.title,
+                created_at_ms = excluded.created_at_ms,
+                updated_at_ms = excluded.updated_at_ms
+            """,
+            (
+                session.session_id,
+                session.workspace_identity,
+                session.workspace_name,
+                session.title,
+                session.created_at_ms,
+                session.updated_at_ms,
+            ),
+        )
+        connection.execute(
+            "DELETE FROM chat_turns WHERE session_id = ?",
+            (session.session_id,),
+        )
+        connection.executemany(
+            """
+            INSERT INTO chat_turns(
+                session_id,
+                ordinal,
+                user_text,
+                assistant_text,
+                file_changes_json
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    session.session_id,
+                    turn.ordinal,
+                    turn.user,
+                    turn.assistant,
+                    turn.file_changes_json,
+                )
+                for turn in snapshot.turns
+            ),
+        )
+        ChatMemoryRepository._remove_invalid_summary(connection, session.session_id)
 
     @staticmethod
     def _required_session(connection, session_id: str):

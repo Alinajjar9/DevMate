@@ -3,6 +3,22 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .chat_memory_contracts import (
+    FILE_CHANGE_KINDS,
+    MAX_CHAT_DIFF_ID_CHARACTERS,
+    MAX_CHAT_FILE_CHANGE_PATH_CHARACTERS,
+    MAX_CHAT_FILE_CHANGES,
+    MAX_CHAT_INTEGER,
+    MAX_CHAT_SESSIONS_PER_REQUEST,
+    MAX_CHAT_SESSIONS_RETURNED,
+    MAX_CHAT_SESSION_ID_CHARACTERS,
+    MAX_CHAT_SESSION_TITLE_CHARACTERS,
+    MAX_CHAT_TURNS_PER_SNAPSHOT,
+    MAX_CHAT_TURN_CHARACTERS,
+    MAX_CHAT_WORKSPACE_IDENTITY_CHARACTERS,
+    MAX_CHAT_WORKSPACE_NAME_CHARACTERS,
+    FileChangeKind,
+)
 from .embedding_providers import (
     MAX_EMBEDDING_BASE_URL_CHARACTERS,
     MAX_EMBEDDING_BATCH_SIZE,
@@ -52,6 +68,7 @@ BackendCapability = Literal[
     "knowledge-index-v1",
     "embedding-index-v1",
     "semantic-search-v1",
+    "chat-memory-v1",
 ]
 DEVMATE_BACKEND_CAPABILITIES: tuple[BackendCapability, ...] = (
     "chat",
@@ -61,6 +78,7 @@ DEVMATE_BACKEND_CAPABILITIES: tuple[BackendCapability, ...] = (
     "knowledge-index-v1",
     "embedding-index-v1",
     "semantic-search-v1",
+    "chat-memory-v1",
 )
 BackendErrorCode = Literal[
     "backend_authentication_failed",
@@ -77,6 +95,8 @@ BackendErrorCode = Literal[
     "knowledge_store_unavailable",
     "knowledge_workspace_not_found",
     "knowledge_index_failure",
+    "chat_session_not_found",
+    "chat_memory_failure",
     "internal_error",
 ]
 ProviderErrorCode = Literal[
@@ -524,6 +544,189 @@ class KnowledgeIndexSemanticSearchResult(KnowledgeIndexModel):
     data: KnowledgeIndexSemanticSearchData
 
 
+class ChatMemoryModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ChatMemoryFileChangeData(ChatMemoryModel):
+    kind: FileChangeKind
+    path: str = Field(min_length=1)
+    previousPath: str | None = None
+    diffId: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=MAX_CHAT_DIFF_ID_CHARACTERS,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+
+    @model_validator(mode="after")
+    def validate_file_change(self) -> "ChatMemoryFileChangeData":
+        if self.kind not in FILE_CHANGE_KINDS:
+            raise ValueError("file-change kind is invalid")
+        _validate_chat_identifier_text(
+            self.path,
+            "file-change path",
+            MAX_CHAT_FILE_CHANGE_PATH_CHARACTERS,
+        )
+        if self.kind in ("renamed", "moved"):
+            if self.previousPath is None:
+                raise ValueError("relocated file changes require a previous path")
+            _validate_chat_identifier_text(
+                self.previousPath,
+                "previous file-change path",
+                MAX_CHAT_FILE_CHANGE_PATH_CHARACTERS,
+            )
+        elif self.previousPath is not None:
+            raise ValueError("only relocated file changes may include a previous path")
+        return self
+
+
+class ChatMemoryTurnData(ChatMemoryModel):
+    ordinal: int = Field(ge=0, le=MAX_CHAT_INTEGER)
+    user: str = Field(min_length=1)
+    assistant: str
+    fileChanges: list[ChatMemoryFileChangeData] = Field(
+        default_factory=list,
+        max_length=MAX_CHAT_FILE_CHANGES,
+    )
+
+    @model_validator(mode="after")
+    def validate_turn_text(self) -> "ChatMemoryTurnData":
+        _validate_chat_content(
+            self.user,
+            "user message",
+            MAX_CHAT_TURN_CHARACTERS,
+            allow_empty=False,
+        )
+        _validate_chat_content(
+            self.assistant,
+            "assistant message",
+            MAX_CHAT_TURN_CHARACTERS,
+            allow_empty=True,
+        )
+        return self
+
+
+class ChatMemorySessionData(ChatMemoryModel):
+    sessionId: str = Field(
+        min_length=1,
+        max_length=MAX_CHAT_SESSION_ID_CHARACTERS,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$",
+    )
+    workspaceIdentity: str = Field(min_length=1)
+    workspaceName: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    createdAtMs: int = Field(ge=0, le=MAX_CHAT_INTEGER)
+    updatedAtMs: int = Field(ge=0, le=MAX_CHAT_INTEGER)
+
+    @model_validator(mode="after")
+    def validate_session_metadata(self) -> "ChatMemorySessionData":
+        _validate_chat_identifier_text(
+            self.workspaceIdentity,
+            "workspace identity",
+            MAX_CHAT_WORKSPACE_IDENTITY_CHARACTERS,
+        )
+        _validate_chat_identifier_text(
+            self.workspaceName,
+            "workspace name",
+            MAX_CHAT_WORKSPACE_NAME_CHARACTERS,
+        )
+        _validate_chat_identifier_text(
+            self.title,
+            "session title",
+            MAX_CHAT_SESSION_TITLE_CHARACTERS,
+        )
+        if self.updatedAtMs < self.createdAtMs:
+            raise ValueError("session update time cannot precede its creation time")
+        return self
+
+
+class ChatMemorySnapshotData(ChatMemoryModel):
+    session: ChatMemorySessionData
+    turns: list[ChatMemoryTurnData] = Field(max_length=MAX_CHAT_TURNS_PER_SNAPSHOT)
+
+    @model_validator(mode="after")
+    def validate_turn_order(self) -> "ChatMemorySnapshotData":
+        if [turn.ordinal for turn in self.turns] != list(range(len(self.turns))):
+            raise ValueError("chat turn ordinals must be contiguous and ordered")
+        return self
+
+
+class ChatMemorySaveRequest(ChatMemoryModel):
+    sessions: list[ChatMemorySnapshotData] = Field(
+        min_length=1,
+        max_length=MAX_CHAT_SESSIONS_PER_REQUEST,
+    )
+
+    @model_validator(mode="after")
+    def validate_unique_sessions(self) -> "ChatMemorySaveRequest":
+        session_ids = [snapshot.session.sessionId for snapshot in self.sessions]
+        if len(set(session_ids)) != len(session_ids):
+            raise ValueError("chat-session identifiers must be unique")
+        return self
+
+
+class ChatMemorySaveData(ChatMemoryModel):
+    savedSessionIds: list[str] = Field(
+        min_length=1,
+        max_length=MAX_CHAT_SESSIONS_PER_REQUEST,
+    )
+
+
+class ChatMemorySaveResult(ChatMemoryModel):
+    status: Literal["ok"]
+    data: ChatMemorySaveData
+
+
+class ChatMemorySessionRequest(ChatMemoryModel):
+    sessionId: str = Field(
+        min_length=1,
+        max_length=MAX_CHAT_SESSION_ID_CHARACTERS,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$",
+    )
+
+
+class ChatMemoryLoadData(ChatMemoryModel):
+    session: ChatMemorySnapshotData
+
+
+class ChatMemoryLoadResult(ChatMemoryModel):
+    status: Literal["ok"]
+    data: ChatMemoryLoadData
+
+
+class ChatMemoryListRequest(ChatMemoryModel):
+    workspaceIdentity: str = Field(min_length=1)
+    limit: int = Field(default=20, ge=1, le=MAX_CHAT_SESSIONS_RETURNED)
+
+    @model_validator(mode="after")
+    def validate_workspace_identity(self) -> "ChatMemoryListRequest":
+        _validate_chat_identifier_text(
+            self.workspaceIdentity,
+            "workspace identity",
+            MAX_CHAT_WORKSPACE_IDENTITY_CHARACTERS,
+        )
+        return self
+
+
+class ChatMemoryListData(ChatMemoryModel):
+    sessions: list[ChatMemorySessionData] = Field(max_length=MAX_CHAT_SESSIONS_RETURNED)
+
+
+class ChatMemoryListResult(ChatMemoryModel):
+    status: Literal["ok"]
+    data: ChatMemoryListData
+
+
+class ChatMemoryDeleteData(ChatMemoryModel):
+    deleted: bool
+
+
+class ChatMemoryDeleteResult(ChatMemoryModel):
+    status: Literal["ok"]
+    data: ChatMemoryDeleteData
+
+
 class FileChange(BaseModel):
     path: str
     content: str
@@ -566,3 +769,27 @@ class BackendErrorResult(BaseModel):
     errorCode: BackendErrorCode
     message: str
     issues: list[ValidationIssue] = Field(default_factory=list)
+
+
+def _validate_chat_identifier_text(value: str, label: str, maximum: int) -> None:
+    if (
+        value != value.strip()
+        or _utf16_character_count(value) > maximum
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValueError(f"{label} is invalid")
+
+
+def _validate_chat_content(
+    value: str,
+    label: str,
+    maximum: int,
+    *,
+    allow_empty: bool,
+) -> None:
+    if (
+        (not allow_empty and not value.strip())
+        or _utf16_character_count(value) > maximum
+        or "\0" in value
+    ):
+        raise ValueError(f"{label} is invalid")

@@ -101,6 +101,7 @@ class DevMateApiTests(unittest.TestCase):
                         "knowledge-index-v1",
                         "embedding-index-v1",
                         "semantic-search-v1",
+                        "chat-memory-v1",
                     ],
                     "backend": "online",
                     "version": "1.0.0",

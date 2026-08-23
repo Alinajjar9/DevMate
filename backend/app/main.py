@@ -20,7 +20,9 @@ from .api_models import (
     ValidationIssue,
 )
 from .api_routes import api_router
+from .chat_memory_contracts import DEVMATE_CHAT_MEMORY_API_VERSION
 from .chat_memory_repository import ChatMemoryRepository
+from .chat_memory_routes import chat_memory_router
 from .chat_service import ChatService
 from .dependencies import (
     BackendDependencies,
@@ -46,6 +48,7 @@ logger = logging.getLogger(__name__)
 _authenticated_backend_paths = frozenset(("/health", "/ask", "/ask/stream"))
 _authenticated_backend_prefixes = (
     f"/index/v{DEVMATE_KNOWLEDGE_INDEX_API_VERSION}/",
+    f"/memory/v{DEVMATE_CHAT_MEMORY_API_VERSION}/",
 )
 
 
@@ -252,6 +255,7 @@ def create_app(
     application.add_exception_handler(RequestValidationError, request_validation_error)
     application.include_router(api_router)
     application.include_router(knowledge_router)
+    application.include_router(chat_memory_router)
     return application
 
 

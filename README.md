@@ -186,6 +186,8 @@ The private SQLite store now includes versioned foundations for chat sessions, r
 
 The repository preserves pending and completed raw turns, validates the future compaction-summary structure, and bounds all stored values. This milestone does not switch the extension's live session storage from VS Code state, migrate existing chats, generate summaries, or include stored memory in model requests yet.
 
+The managed backend advertises the optional `chat-memory-v1` capability and exposes authenticated versioned operations to atomically save bounded session batches, load one complete raw transcript, list recent sessions for one workspace, and delete one session. The TypeScript client sends chat data only to a verified loopback backend and strictly validates every response against the request. These operations are available for the migration layer but are not called by the live chat UI yet.
+
 ## Agent tools
 
 Read-only tools are available in every mode:

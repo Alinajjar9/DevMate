@@ -2,6 +2,26 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Add a secure chat-memory API
+
+### Changed
+
+- Added versioned cross-language contracts for chat-session metadata, ordered raw turns, file-change summaries, atomic save batches, workspace lists, loads, and deletion.
+- Added authenticated `/memory/v1` backend routes with stable validation, unavailable-store, missing-session, and internal-memory error codes.
+- Made multi-session saves one SQLite transaction so a failed migration batch cannot leave a partial imported session set.
+- Advertised the optional `chat-memory-v1` backend capability without requiring or activating the feature in the existing chat UI.
+- Added loopback-only TypeScript client methods that require the managed backend token and strictly reject malformed, unknown-field, wrong-session, and wrong-workspace responses.
+- Kept existing VS Code session persistence, chat loading, prompt construction, summaries, and compaction behavior unchanged.
+
+### Verification
+
+- Focused backend chat-memory API coverage — 5 tests passed.
+- Focused API client coverage — 65 tests passed.
+- `npm run verify` — 285 extension tests and 155 backend tests passed; 63 cross-language contracts and 30 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-23 — Add the local chat-memory foundation
 
 ### Changed
