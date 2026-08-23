@@ -188,6 +188,128 @@ class EmbeddingRepository:
             ) from error
         return max(cursor.rowcount, 0)
 
+    def active_configuration(
+        self,
+        workspace_key: str,
+        *,
+        profile_id: str,
+        provider: EmbeddingProviderName,
+        model: str,
+        vector_version: int,
+    ) -> EmbeddingConfiguration | None:
+        validated_key = _workspace_key(workspace_key)
+        selector = _validated_configuration(EmbeddingConfiguration(
+            profile_id=profile_id,
+            provider=provider,
+            model=model,
+            dimensions=1,
+            vector_version=vector_version,
+        ))
+        try:
+            connection = self._store.connection
+            workspace_id = self._workspace_id(connection, validated_key)
+            row = connection.execute(
+                """
+                SELECT
+                    embedding_profile_id,
+                    embedding_model,
+                    embedding_dimensions,
+                    vector_version
+                FROM index_metadata
+                WHERE workspace_id = ?
+                """,
+                (workspace_id,),
+            ).fetchone()
+            if row is None or (
+                row["embedding_profile_id"] != selector.profile_id
+                or row["embedding_model"] != selector.model
+                or row["vector_version"] != selector.vector_version
+                or row["embedding_dimensions"] is None
+            ):
+                return None
+
+            configuration = _validated_configuration(EmbeddingConfiguration(
+                profile_id=selector.profile_id,
+                provider=selector.provider,
+                model=selector.model,
+                dimensions=row["embedding_dimensions"],
+                vector_version=selector.vector_version,
+            ))
+            stale_row = connection.execute(
+                """
+                SELECT embeddings.id
+                FROM embeddings
+                JOIN chunks ON chunks.id = embeddings.chunk_id
+                JOIN files ON files.id = chunks.file_id
+                WHERE files.workspace_id = ?
+                    AND NOT (
+                        embeddings.profile_id = ?
+                        AND embeddings.provider = ?
+                        AND embeddings.model = ?
+                        AND embeddings.dimensions = ?
+                        AND embeddings.vector_version = ?
+                    )
+                LIMIT 1
+                """,
+                (
+                    workspace_id,
+                    configuration.profile_id,
+                    configuration.provider,
+                    configuration.model,
+                    configuration.dimensions,
+                    configuration.vector_version,
+                ),
+            ).fetchone()
+        except sqlite3.Error as error:
+            raise KnowledgeRepositoryError(
+                "The active embedding configuration could not be loaded."
+            ) from error
+        return None if stale_row is not None else configuration
+
+    def source_chunks(
+        self,
+        workspace_key: str,
+        *,
+        limit: int,
+    ) -> tuple[EmbeddingChunkRecord, ...]:
+        validated_key = _workspace_key(workspace_key)
+        validated_limit = _bounded_limit(
+            limit,
+            MAX_EMBEDDING_BATCH_SIZE,
+            "embedding source chunk",
+        )
+        try:
+            connection = self._store.connection
+            workspace_id = self._workspace_id(connection, validated_key)
+            rows = connection.execute(
+                """
+                SELECT
+                    chunks.id AS chunk_id,
+                    files.relative_path,
+                    files.language_id,
+                    chunks.stable_id,
+                    chunks.ordinal,
+                    chunks.start_line,
+                    chunks.end_line,
+                    chunks.content,
+                    chunks.content_hash
+                FROM chunks
+                JOIN files ON files.id = chunks.file_id
+                WHERE files.workspace_id = ?
+                ORDER BY
+                    files.relative_path COLLATE NOCASE,
+                    files.relative_path,
+                    chunks.ordinal
+                LIMIT ?
+                """,
+                (workspace_id, validated_limit),
+            ).fetchall()
+        except sqlite3.Error as error:
+            raise KnowledgeRepositoryError(
+                "Embedding source chunks could not be loaded."
+            ) from error
+        return tuple(_chunk_record(row) for row in rows)
+
     def chunks_missing_embeddings(
         self,
         workspace_key: str,

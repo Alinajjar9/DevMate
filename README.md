@@ -161,7 +161,9 @@ The SQLite index is stored in VS Code's private global extension storage, not in
 
 This version does not use embeddings for retrieval yet. The embedding foundation defines separate local-first profiles for Ollama and OpenAI-compatible providers, requires explicit consent before sending source code to a remote embedding endpoint, and keeps profile credentials out of normal extension storage. The backend has bounded clients for native Ollama `/api/embed` and OpenAI-compatible `/embeddings` requests. They reuse the existing safe provider-network boundary, strictly validate batches, and normalize accepted vectors.
 
-The SQLite embedding repository can activate one bounded configuration per workspace, discover missing chunks, atomically store normalized float32 vectors against exact chunk hashes, page through stored vectors, and invalidate stale configurations. File replacement and deletion automatically remove associated vectors through existing foreign-key cascades. No backend route or indexing job invokes the clients or repository yet, so DevMate still generates and stores no vectors during normal use.
+The SQLite embedding repository can activate one bounded configuration per workspace, discover missing chunks, atomically store normalized float32 vectors against exact chunk hashes, page through stored vectors, and invalidate stale configurations. File replacement and deletion automatically remove associated vectors through existing foreign-key cascades.
+
+A backend embedding-index service now joins the provider and repository in bounded, resumable batches. It discovers dimensions from the first real source batch, stores each successful batch immediately, continues with only missing chunks, and rebuilds incompatible vectors when dimensions change. It is not connected to an HTTP route or extension-host scheduler yet, so DevMate still generates no vectors during normal use and project retrieval remains lexical.
 
 On the checked-in evaluation corpus, SQLite lexical retrieval produces 7 of 11 top-one hits, 7 of 11 top-three hits, and 0.6364 recall at five. Synonym-heavy conceptual searches remain the main weakness and are the target of the later semantic and hybrid retriever.
 
@@ -352,6 +354,7 @@ The Python backend source remains in the package as a fallback for development o
 | `backend/app/dependencies.py` | Per-application backend dependency container and route accessors |
 | `backend/app/errors.py` | Shared backend application errors |
 | `backend/app/embedding_clients.py` | Safe bounded Ollama and OpenAI-compatible embedding HTTP clients |
+| `backend/app/embedding_index_service.py` | Bounded resumable generation of missing workspace vectors |
 | `backend/app/embedding_providers.py` | Batched embedding-provider request, result, and protocol boundary |
 | `backend/app/embedding_repository.py` | Workspace-isolated normalized vector persistence and invalidation |
 | `backend/app/knowledge_contracts.py` | Shared version, states, and size limits for the knowledge-index protocol |

@@ -2,6 +2,26 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Generate code embeddings in resumable batches
+
+### Changed
+
+- Added a backend indexing service that connects the bounded embedding-provider protocol to the workspace-isolated SQLite embedding repository without exposing an HTTP route yet.
+- Discovered vector dimensions from the first real source batch, then activated the exact profile, provider, model, dimension, and vector version before storing results.
+- Processed only chunks missing vectors and committed every successful batch separately so provider errors, cancellation, or process restarts resume without repeating completed work.
+- Limited each invocation by batch count, chunk count, and total source characters so later background scheduling can remain responsive.
+- Rebuilt incompatible workspace vectors when a provider returns changed dimensions and retained exact content-hash validation across the provider-call race window.
+- Added coverage for bounded continuation, provider failure, cancellation, stale source, dimension changes, malformed batches, empty workspaces, completed indexes, and request-size limits.
+- Kept API routes, extension-host scheduling, semantic query ranking, and user-visible retrieval behavior unchanged in this step.
+
+### Verification
+
+- Focused embedding service, repository, provider-client, and provider-contract coverage — 26 backend tests passed.
+- `npm run verify` — 221 extension tests and 132 backend tests passed; 40 cross-language contracts and 25 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-23 — Add the SQLite embedding repository
 
 ### Changed
