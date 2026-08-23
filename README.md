@@ -165,7 +165,7 @@ The SQLite embedding repository can activate one bounded configuration per works
 
 A backend embedding-index service now joins the provider and repository in bounded, resumable batches. It discovers dimensions from the first real source batch, stores each successful batch immediately, continues with only missing chunks, and rebuilds incompatible vectors when dimensions change.
 
-The authenticated `/index/v1/embeddings/synchronize` route exposes that service through strict bounded request and response models. Provider credentials use the provider-key header rather than the JSON body, and the backend advertises the optional `embedding-index-v1` capability. The TypeScript extension does not call this route yet, so DevMate still generates no vectors during normal use and project retrieval remains lexical.
+The authenticated `/index/v1/embeddings/synchronize` route exposes that service through strict bounded request and response models. Provider credentials use the provider-key header rather than the JSON body, and the backend advertises the optional `embedding-index-v1` capability. The TypeScript extension now has a strict loopback-only, cancellable client for this route, but no scheduler invokes it yet. DevMate therefore still generates no vectors during normal use and project retrieval remains lexical.
 
 On the checked-in evaluation corpus, SQLite lexical retrieval produces 7 of 11 top-one hits, 7 of 11 top-three hits, and 0.6364 recall at five. Synonym-heavy conceptual searches remain the main weakness and are the target of the later semantic and hybrid retriever.
 

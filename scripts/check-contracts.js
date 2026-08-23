@@ -152,6 +152,24 @@ for (const name of knowledgeNumericContracts) {
   }
 }
 
+const embeddingNumericContracts = [
+  'MAX_EMBEDDING_PROFILE_ID_CHARACTERS',
+  'MAX_EMBEDDING_MODEL_CHARACTERS',
+  'MAX_EMBEDDING_DIMENSIONS',
+  'MAX_EMBEDDING_BATCH_SIZE',
+  'MAX_EMBEDDING_BASE_URL_CHARACTERS',
+  'MAX_EMBEDDING_API_KEY_CHARACTERS',
+  'MAX_EMBEDDING_INDEX_BATCHES_PER_RUN'
+];
+
+for (const name of embeddingNumericContracts) {
+  const typeScriptValue = numericConstant(apiTypes, name, 'typescript');
+  const pythonValue = numericConstant(backendEmbeddingProviders, name, 'python');
+  if (typeScriptValue !== pythonValue) {
+    throw new Error(`${name} differs between TypeScript (${typeScriptValue}) and Python (${pythonValue}).`);
+  }
+}
+
 const stringContracts = [
   'DEVMATE_BACKEND_SERVICE',
   'DEVMATE_BACKEND_TOKEN_HEADER',
@@ -179,4 +197,4 @@ for (const name of knowledgeStoreStringContracts) {
   }
 }
 
-console.log(`Verified ${literalContracts.length + numericContracts.length + knowledgeNumericContracts.length + stringContracts.length + knowledgeStoreStringContracts.length} TypeScript/Python API contracts.`);
+console.log(`Verified ${literalContracts.length + numericContracts.length + knowledgeNumericContracts.length + embeddingNumericContracts.length + stringContracts.length + knowledgeStoreStringContracts.length} TypeScript/Python API contracts.`);

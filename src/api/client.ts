@@ -11,6 +11,7 @@ import {
   DEVMATE_BACKEND_TOKEN_HEADER,
   DEVMATE_KNOWLEDGE_INDEX_API_VERSION,
   DEVMATE_REQUIRED_BACKEND_CAPABILITIES,
+  MAX_EMBEDDING_API_KEY_CHARACTERS,
   MAX_BACKEND_TOKEN_CHARACTERS,
   MIN_BACKEND_TOKEN_CHARACTERS
 } from './types';
@@ -22,6 +23,8 @@ import type {
   FileChange,
   HealthResponse,
   KnowledgeIndexApplyRequest,
+  KnowledgeIndexEmbeddingRequest,
+  KnowledgeIndexEmbeddingResponse,
   KnowledgeIndexMetadata,
   KnowledgeIndexMetadataUpdateRequest,
   KnowledgeIndexOpenRequest,
@@ -33,6 +36,7 @@ import type {
 } from './types';
 import {
   parseKnowledgeIndexMetadata,
+  parseKnowledgeIndexEmbeddingResponse,
   parseKnowledgeIndexOpenResponse,
   parseKnowledgeIndexSearchResponse,
   parseKnowledgeIndexWriteResponse
@@ -40,6 +44,7 @@ import {
 
 const HEALTH_TIMEOUT_MS = 2_000;
 const KNOWLEDGE_INDEX_TIMEOUT_MS = 30_000;
+export const DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS = 150_000;
 export const DEFAULT_ASK_TIMEOUT_MS = 930_000;
 const PROVIDER_KEY_HEADER = 'X-DevMate-Provider-Key';
 const MAX_BACKEND_RESPONSE_BYTES = 4_000_000;
@@ -172,13 +177,55 @@ export function searchKnowledgeIndex(
   );
 }
 
+export function synchronizeKnowledgeIndexEmbeddings(
+  backendUrl: string,
+  request: KnowledgeIndexEmbeddingRequest,
+  secrets: BackendRequestSecrets,
+  timeoutMilliseconds = DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS,
+  signal?: AbortSignal
+): Promise<ApiResult<KnowledgeIndexEmbeddingResponse>> {
+  return knowledgeIndexRequest(
+    backendUrl,
+    `${knowledgeIndexPath}/embeddings/synchronize`,
+    request,
+    secrets.backendToken,
+    (value) => {
+      const response = parseKnowledgeIndexEmbeddingResponse(value);
+      if (!response) {
+        return undefined;
+      }
+      const configuration = response.configuration;
+      if (configuration !== null && (
+        configuration.profileId !== request.profileId
+        || configuration.provider !== request.provider
+        || configuration.model !== request.model
+        || configuration.vectorVersion !== request.vectorVersion
+      )) {
+        return undefined;
+      }
+      return response;
+    },
+    signal,
+    {
+      providerApiKey: secrets.providerApiKey,
+      timeoutMilliseconds
+    }
+  );
+}
+
+type KnowledgeIndexRequestOptions = {
+  providerApiKey?: string;
+  timeoutMilliseconds?: number;
+};
+
 function knowledgeIndexRequest<T>(
   backendUrl: string,
   requestPath: string,
   request: object,
   backendToken: string,
   decodeData: (value: unknown) => T | undefined,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options: KnowledgeIndexRequestOptions = {}
 ): Promise<ApiResult<T>> {
   if (!isValidBackendToken(backendToken)) {
     return Promise.resolve(backendAuthenticationUnavailable());
@@ -187,6 +234,26 @@ function knowledgeIndexRequest<T>(
     return Promise.resolve({
       status: 'error',
       message: 'DevMate only stores workspace source in a backend running on this computer.',
+      errorKind: 'configuration'
+    });
+  }
+  const providerApiKey = options.providerApiKey;
+  if (providerApiKey !== undefined && (
+    providerApiKey.length === 0
+    || providerApiKey.length > MAX_EMBEDDING_API_KEY_CHARACTERS
+    || /[\r\n]/.test(providerApiKey)
+  )) {
+    return Promise.resolve({
+      status: 'error',
+      message: 'The embedding provider API key is invalid.',
+      errorKind: 'configuration'
+    });
+  }
+  const timeoutMilliseconds = options.timeoutMilliseconds ?? KNOWLEDGE_INDEX_TIMEOUT_MS;
+  if (!Number.isFinite(timeoutMilliseconds) || timeoutMilliseconds <= 0) {
+    return Promise.resolve({
+      status: 'error',
+      message: 'The knowledge-index request timeout is invalid.',
       errorKind: 'configuration'
     });
   }
@@ -199,12 +266,13 @@ function knowledgeIndexRequest<T>(
         'Content-Type': 'application/json',
         Accept: 'application/json',
         'Accept-Encoding': 'identity',
-        [DEVMATE_BACKEND_TOKEN_HEADER]: backendToken
+        [DEVMATE_BACKEND_TOKEN_HEADER]: backendToken,
+        ...(providerApiKey ? { [PROVIDER_KEY_HEADER]: providerApiKey } : {})
       },
       body: JSON.stringify(request)
     },
     decodeData,
-    KNOWLEDGE_INDEX_TIMEOUT_MS,
+    timeoutMilliseconds,
     signal
   );
 }

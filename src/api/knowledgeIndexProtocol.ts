@@ -1,8 +1,14 @@
+import { EMBEDDING_PROVIDER_NAMES } from '../embeddingProfiles';
 import {
   MAX_CHUNK_CHARACTERS,
   MAX_CHUNK_STABLE_ID_CHARACTERS,
   MAX_CONTENT_HASH_CHARACTERS,
   MAX_FILE_CHANGES_PER_BATCH,
+  MAX_EMBEDDING_BATCH_SIZE,
+  MAX_EMBEDDING_DIMENSIONS,
+  MAX_EMBEDDING_INDEX_BATCHES_PER_RUN,
+  MAX_EMBEDDING_MODEL_CHARACTERS,
+  MAX_EMBEDDING_PROFILE_ID_CHARACTERS,
   MAX_INDEX_INTEGER,
   MAX_LANGUAGE_ID_CHARACTERS,
   MAX_LEXICAL_RESULTS,
@@ -12,6 +18,8 @@ import {
 } from './types';
 import type {
   KnowledgeIndexFileFingerprint,
+  KnowledgeIndexEmbeddingConfiguration,
+  KnowledgeIndexEmbeddingResponse,
   KnowledgeIndexMetadata,
   KnowledgeIndexOpenResponse,
   KnowledgeIndexSearchItem,
@@ -26,6 +34,8 @@ const knowledgeIndexStates = new Set<string>([
   'stale',
   'failed'
 ]);
+const embeddingProviderNames = new Set<string>(EMBEDDING_PROVIDER_NAMES);
+const embeddingProfileIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/;
 
 export function parseKnowledgeIndexOpenResponse(
   value: unknown
@@ -127,6 +137,80 @@ export function parseKnowledgeIndexSearchResponse(
     return undefined;
   }
   return { results };
+}
+
+export function parseKnowledgeIndexEmbeddingResponse(
+  value: unknown
+): KnowledgeIndexEmbeddingResponse | undefined {
+  if (!isRecord(value)
+    || !hasOnlyKeys(value, [
+      'configuration',
+      'embeddedChunks',
+      'processedBatches',
+      'complete'
+    ])
+    || !isBoundedInteger(
+      value.embeddedChunks,
+      0,
+      MAX_EMBEDDING_BATCH_SIZE * MAX_EMBEDDING_INDEX_BATCHES_PER_RUN
+    )
+    || !isBoundedInteger(
+      value.processedBatches,
+      0,
+      MAX_EMBEDDING_INDEX_BATCHES_PER_RUN
+    )
+    || typeof value.complete !== 'boolean'
+    || value.embeddedChunks > value.processedBatches * MAX_EMBEDDING_BATCH_SIZE
+    || (value.processedBatches > 0 && value.embeddedChunks < value.processedBatches)
+    || (value.processedBatches === 0 && !value.complete)) {
+    return undefined;
+  }
+  const configuration = value.configuration === null
+    ? null
+    : parseKnowledgeIndexEmbeddingConfiguration(value.configuration);
+  if (configuration === undefined
+    || (configuration === null && (
+      value.embeddedChunks !== 0
+      || value.processedBatches !== 0
+      || !value.complete
+    ))) {
+    return undefined;
+  }
+  return {
+    configuration,
+    embeddedChunks: value.embeddedChunks,
+    processedBatches: value.processedBatches,
+    complete: value.complete
+  };
+}
+
+function parseKnowledgeIndexEmbeddingConfiguration(
+  value: unknown
+): KnowledgeIndexEmbeddingConfiguration | undefined {
+  if (!isRecord(value)
+    || !hasOnlyKeys(value, [
+      'profileId',
+      'provider',
+      'model',
+      'dimensions',
+      'vectorVersion'
+    ])
+    || !isIndexText(value.profileId, MAX_EMBEDDING_PROFILE_ID_CHARACTERS)
+    || !embeddingProfileIdPattern.test(value.profileId)
+    || typeof value.provider !== 'string'
+    || !embeddingProviderNames.has(value.provider)
+    || !isIndexText(value.model, MAX_EMBEDDING_MODEL_CHARACTERS)
+    || !isBoundedInteger(value.dimensions, 1, MAX_EMBEDDING_DIMENSIONS)
+    || !isIndexInteger(value.vectorVersion, 1)) {
+    return undefined;
+  }
+  return {
+    profileId: value.profileId,
+    provider: value.provider as KnowledgeIndexEmbeddingConfiguration['provider'],
+    model: value.model,
+    dimensions: value.dimensions,
+    vectorVersion: value.vectorVersion
+  };
 }
 
 function parseKnowledgeIndexFileFingerprint(

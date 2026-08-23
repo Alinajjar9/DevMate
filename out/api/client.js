@@ -1,11 +1,12 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DEFAULT_ASK_TIMEOUT_MS = void 0;
+exports.DEFAULT_ASK_TIMEOUT_MS = exports.DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS = void 0;
 exports.health = health;
 exports.openKnowledgeIndex = openKnowledgeIndex;
 exports.applyKnowledgeIndexChanges = applyKnowledgeIndexChanges;
 exports.updateKnowledgeIndexMetadata = updateKnowledgeIndexMetadata;
 exports.searchKnowledgeIndex = searchKnowledgeIndex;
+exports.synchronizeKnowledgeIndexEmbeddings = synchronizeKnowledgeIndexEmbeddings;
 exports.ask = ask;
 exports.askStream = askStream;
 exports.isLoopbackBackendUrl = isLoopbackBackendUrl;
@@ -17,6 +18,7 @@ const types_1 = require("./types");
 const knowledgeIndexProtocol_1 = require("./knowledgeIndexProtocol");
 const HEALTH_TIMEOUT_MS = 2_000;
 const KNOWLEDGE_INDEX_TIMEOUT_MS = 30_000;
+exports.DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS = 150_000;
 exports.DEFAULT_ASK_TIMEOUT_MS = 930_000;
 const PROVIDER_KEY_HEADER = 'X-DevMate-Provider-Key';
 const MAX_BACKEND_RESPONSE_BYTES = 4_000_000;
@@ -71,7 +73,26 @@ function updateKnowledgeIndexMetadata(backendUrl, request, backendToken, signal)
 function searchKnowledgeIndex(backendUrl, request, backendToken, signal) {
     return knowledgeIndexRequest(backendUrl, `${knowledgeIndexPath}/search`, request, backendToken, knowledgeIndexProtocol_1.parseKnowledgeIndexSearchResponse, signal);
 }
-function knowledgeIndexRequest(backendUrl, requestPath, request, backendToken, decodeData, signal) {
+function synchronizeKnowledgeIndexEmbeddings(backendUrl, request, secrets, timeoutMilliseconds = exports.DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS, signal) {
+    return knowledgeIndexRequest(backendUrl, `${knowledgeIndexPath}/embeddings/synchronize`, request, secrets.backendToken, (value) => {
+        const response = (0, knowledgeIndexProtocol_1.parseKnowledgeIndexEmbeddingResponse)(value);
+        if (!response) {
+            return undefined;
+        }
+        const configuration = response.configuration;
+        if (configuration !== null && (configuration.profileId !== request.profileId
+            || configuration.provider !== request.provider
+            || configuration.model !== request.model
+            || configuration.vectorVersion !== request.vectorVersion)) {
+            return undefined;
+        }
+        return response;
+    }, signal, {
+        providerApiKey: secrets.providerApiKey,
+        timeoutMilliseconds
+    });
+}
+function knowledgeIndexRequest(backendUrl, requestPath, request, backendToken, decodeData, signal, options = {}) {
     if (!isValidBackendToken(backendToken)) {
         return Promise.resolve(backendAuthenticationUnavailable());
     }
@@ -82,16 +103,35 @@ function knowledgeIndexRequest(backendUrl, requestPath, request, backendToken, d
             errorKind: 'configuration'
         });
     }
+    const providerApiKey = options.providerApiKey;
+    if (providerApiKey !== undefined && (providerApiKey.length === 0
+        || providerApiKey.length > types_1.MAX_EMBEDDING_API_KEY_CHARACTERS
+        || /[\r\n]/.test(providerApiKey))) {
+        return Promise.resolve({
+            status: 'error',
+            message: 'The embedding provider API key is invalid.',
+            errorKind: 'configuration'
+        });
+    }
+    const timeoutMilliseconds = options.timeoutMilliseconds ?? KNOWLEDGE_INDEX_TIMEOUT_MS;
+    if (!Number.isFinite(timeoutMilliseconds) || timeoutMilliseconds <= 0) {
+        return Promise.resolve({
+            status: 'error',
+            message: 'The knowledge-index request timeout is invalid.',
+            errorKind: 'configuration'
+        });
+    }
     return nodeHttpJsonRequest(backendUrl, requestPath, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             Accept: 'application/json',
             'Accept-Encoding': 'identity',
-            [types_1.DEVMATE_BACKEND_TOKEN_HEADER]: backendToken
+            [types_1.DEVMATE_BACKEND_TOKEN_HEADER]: backendToken,
+            ...(providerApiKey ? { [PROVIDER_KEY_HEADER]: providerApiKey } : {})
         },
         body: JSON.stringify(request)
-    }, decodeData, KNOWLEDGE_INDEX_TIMEOUT_MS, signal);
+    }, decodeData, timeoutMilliseconds, signal);
 }
 async function ask(backendUrl, askRequest, secrets, timeoutMilliseconds = exports.DEFAULT_ASK_TIMEOUT_MS, signal) {
     if (!isValidBackendToken(secrets.backendToken)) {

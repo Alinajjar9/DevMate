@@ -2,6 +2,25 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Add the extension client for embedding indexing
+
+### Changed
+
+- Added shared TypeScript request and response types for bounded embedding-index synchronization.
+- Added strict runtime decoding for embedding progress and active vector configuration, including exact fields, numeric limits, cross-field consistency, and agreement with the requested profile, provider, model, and vector version.
+- Added a loopback-only authenticated client method with cancellation and a configurable 150-second default timeout.
+- Forwarded embedding provider credentials only through the bounded provider-key header and kept them out of request JSON.
+- Kept automatic scheduling, embedding-profile selection, vector generation during normal use, and semantic retrieval disconnected for the next step.
+- Added cross-language checks for seven embedding limits plus client coverage for successful transport, malformed responses, remote-backend refusal, invalid credentials, timeout, and cancellation.
+
+### Verification
+
+- Focused API-client coverage — 52 tests passed.
+- `npm run verify` — 233 extension tests and 136 backend tests passed; 47 cross-language contracts and 25 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-23 — Expose authenticated embedding indexing to the extension
 
 ### Changed

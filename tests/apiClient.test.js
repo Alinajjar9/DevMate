@@ -7,10 +7,12 @@ const {
   ask,
   askStream,
   DEFAULT_ASK_TIMEOUT_MS,
+  DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS,
   health,
   isLoopbackBackendUrl,
   openKnowledgeIndex,
   searchKnowledgeIndex,
+  synchronizeKnowledgeIndexEmbeddings,
   updateKnowledgeIndexMetadata
 } = require('../out/api/client');
 
@@ -18,6 +20,7 @@ const TEST_BACKEND_TOKEN = 'test-backend-token-that-is-long-enough';
 
 test('keeps the extension timeout above the fifteen-minute provider limit', () => {
   assert.equal(DEFAULT_ASK_TIMEOUT_MS, 930_000);
+  assert.equal(DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS, 150_000);
 });
 
 test('recognizes only loopback backend URLs for provider-key handoff', () => {
@@ -101,6 +104,7 @@ test('sends authenticated versioned knowledge-index requests and strictly decode
     received.push({
       path: request.url,
       token: request.headers['x-devmate-backend-token'],
+      providerKey: request.headers['x-devmate-provider-key'],
       body: await readRequestJson(request)
     });
     if (request.url === '/index/v1/workspaces/open') {
@@ -116,6 +120,13 @@ test('sends authenticated versioned knowledge-index requests and strictly decode
     }
     if (request.url === '/index/v1/metadata/update') {
       sendJson(response, 200, { status: 'ok', data: knowledgeIndexMetadata() });
+      return;
+    }
+    if (request.url === '/index/v1/embeddings/synchronize') {
+      sendJson(response, 200, {
+        status: 'ok',
+        data: knowledgeIndexEmbeddingData()
+      });
       return;
     }
     sendJson(response, 200, { status: 'ok', data: knowledgeIndexSearchData() });
@@ -140,11 +151,17 @@ test('sends authenticated versioned knowledge-index requests and strictly decode
       knowledgeIndexSearchRequest(),
       TEST_BACKEND_TOKEN
     );
+    const embedded = await synchronizeKnowledgeIndexEmbeddings(
+      backendUrl,
+      knowledgeIndexEmbeddingRequest(),
+      backendSecrets('embedding-provider-key')
+    );
 
     assert.deepEqual(opened.data, knowledgeIndexOpenData());
     assert.deepEqual(applied.data, { upsertedFiles: 1, deletedFiles: 0 });
     assert.deepEqual(metadata.data, knowledgeIndexMetadata());
     assert.deepEqual(searched.data, knowledgeIndexSearchData());
+    assert.deepEqual(embedded.data, knowledgeIndexEmbeddingData());
   });
 
   assert.deepEqual(
@@ -153,15 +170,21 @@ test('sends authenticated versioned knowledge-index requests and strictly decode
       '/index/v1/workspaces/open',
       '/index/v1/files/apply',
       '/index/v1/metadata/update',
-      '/index/v1/search'
+      '/index/v1/search',
+      '/index/v1/embeddings/synchronize'
     ]
   );
   assert.ok(received.every((request) => request.token === TEST_BACKEND_TOKEN));
+  assert.deepEqual(
+    received.map((request) => request.providerKey),
+    [undefined, undefined, undefined, undefined, 'embedding-provider-key']
+  );
   assert.deepEqual(received.map((request) => request.body), [
     knowledgeIndexOpenRequest(),
     knowledgeIndexApplyRequest(),
     knowledgeIndexMetadataRequest(),
-    knowledgeIndexSearchRequest()
+    knowledgeIndexSearchRequest(),
+    knowledgeIndexEmbeddingRequest()
   ]);
 });
 
@@ -220,6 +243,43 @@ test('rejects malformed knowledge-index responses field by field', async (contex
   }
 });
 
+test('rejects malformed or mismatched embedding-index responses', async (context) => {
+  const cases = [
+    { ...knowledgeIndexEmbeddingData(), unexpected: true },
+    {
+      ...knowledgeIndexEmbeddingData(),
+      configuration: { ...knowledgeIndexEmbeddingData().configuration, provider: 'unknown' }
+    },
+    {
+      ...knowledgeIndexEmbeddingData(),
+      configuration: { ...knowledgeIndexEmbeddingData().configuration, dimensions: 0 }
+    },
+    { ...knowledgeIndexEmbeddingData(), embeddedChunks: 65, processedBatches: 1 },
+    { configuration: null, embeddedChunks: 1, processedBatches: 1, complete: true },
+    { ...knowledgeIndexEmbeddingData(), embeddedChunks: 0, processedBatches: 0, complete: false },
+    {
+      ...knowledgeIndexEmbeddingData(),
+      configuration: { ...knowledgeIndexEmbeddingData().configuration, model: 'another-model' }
+    }
+  ];
+
+  for (const data of cases) {
+    await context.test(JSON.stringify(data), async () => {
+      await withServer((_request, response) => {
+        sendJson(response, 200, { status: 'ok', data });
+      }, async (backendUrl) => {
+        const result = await synchronizeKnowledgeIndexEmbeddings(
+          backendUrl,
+          knowledgeIndexEmbeddingRequest(),
+          backendSecrets('embedding-provider-key')
+        );
+        assert.equal(result.status, 'error');
+        assert.equal(result.errorKind, 'invalid-response');
+      });
+    });
+  }
+});
+
 test('refuses to send workspace source to a non-loopback index backend', async () => {
   const result = await applyKnowledgeIndexChanges(
     'https://backend.example.com',
@@ -230,6 +290,70 @@ test('refuses to send workspace source to a non-loopback index backend', async (
   assert.equal(result.status, 'error');
   assert.equal(result.errorKind, 'configuration');
   assert.match(result.message, /backend running on this computer/);
+});
+
+test('refuses to send an embedding request or provider key to a remote index backend', async () => {
+  const result = await synchronizeKnowledgeIndexEmbeddings(
+    'https://backend.example.com',
+    knowledgeIndexEmbeddingRequest(),
+    backendSecrets('embedding-provider-key')
+  );
+
+  assert.equal(result.status, 'error');
+  assert.equal(result.errorKind, 'configuration');
+  assert.match(result.message, /backend running on this computer/);
+});
+
+test('rejects an invalid embedding provider key before transport', async () => {
+  let receivedRequest = false;
+  await withServer((_request, response) => {
+    receivedRequest = true;
+    sendJson(response, 200, { status: 'ok', data: knowledgeIndexEmbeddingData() });
+  }, async (backendUrl) => {
+    const result = await synchronizeKnowledgeIndexEmbeddings(
+      backendUrl,
+      knowledgeIndexEmbeddingRequest(),
+      backendSecrets('x'.repeat(8_193))
+    );
+
+    assert.equal(result.status, 'error');
+    assert.equal(result.errorKind, 'configuration');
+    assert.equal(receivedRequest, false);
+  });
+});
+
+test('times out embedding synchronization with its configurable deadline', async () => {
+  await withServer(() => undefined, async (backendUrl) => {
+    const result = await synchronizeKnowledgeIndexEmbeddings(
+      backendUrl,
+      knowledgeIndexEmbeddingRequest(),
+      backendSecrets(),
+      30
+    );
+
+    assert.equal(result.status, 'error');
+    assert.equal(result.errorKind, 'timeout');
+    assert.match(result.message, /timed out after 0\.03 seconds/);
+  });
+});
+
+test('cancels active embedding synchronization', async () => {
+  const controller = new AbortController();
+  await withServer(() => undefined, async (backendUrl) => {
+    const pending = synchronizeKnowledgeIndexEmbeddings(
+      backendUrl,
+      knowledgeIndexEmbeddingRequest(),
+      backendSecrets(),
+      10_000,
+      controller.signal
+    );
+    controller.abort();
+
+    const result = await pending;
+    assert.equal(result.status, 'error');
+    assert.equal(result.errorKind, 'cancelled');
+    assert.equal(result.message, 'Request cancelled.');
+  });
 });
 
 test('refuses to send a provider key to a remote backend', async () => {
@@ -643,6 +767,35 @@ function knowledgeIndexMetadataRequest() {
 
 function knowledgeIndexSearchRequest() {
   return { workspaceKey: 'workspace-one', query: 'login token', limit: 5 };
+}
+
+function knowledgeIndexEmbeddingRequest() {
+  return {
+    workspaceKey: 'workspace-one',
+    profileId: 'local-embedding',
+    provider: 'ollama',
+    model: 'nomic-embed-text',
+    baseUrl: 'http://127.0.0.1:11434',
+    remoteAllowed: false,
+    vectorVersion: 1,
+    batchSize: 32,
+    maxBatches: 1
+  };
+}
+
+function knowledgeIndexEmbeddingData() {
+  return {
+    configuration: {
+      profileId: 'local-embedding',
+      provider: 'ollama',
+      model: 'nomic-embed-text',
+      dimensions: 768,
+      vectorVersion: 1
+    },
+    embeddedChunks: 1,
+    processedBatches: 1,
+    complete: true
+  };
 }
 
 function knowledgeIndexMetadata() {

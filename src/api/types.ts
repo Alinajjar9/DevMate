@@ -1,3 +1,5 @@
+import type { EmbeddingProviderName } from '../embeddingProfiles';
+
 export type AssistantMode = 'ideas' | 'code' | 'debug';
 export type ScopeType = 'project' | 'file' | 'selection';
 export type ContextSource = 'file' | 'selection' | 'attachment';
@@ -58,6 +60,13 @@ export const MAX_INDEX_BATCH_CONTENT_CHARACTERS = 4_000_000;
 export const MAX_LEXICAL_QUERY_CHARACTERS = 2_000;
 export const MAX_LEXICAL_QUERY_TERMS = 32;
 export const MAX_LEXICAL_RESULTS = 100;
+export const MAX_EMBEDDING_PROFILE_ID_CHARACTERS = 120;
+export const MAX_EMBEDDING_MODEL_CHARACTERS = 120;
+export const MAX_EMBEDDING_DIMENSIONS = 16_384;
+export const MAX_EMBEDDING_BATCH_SIZE = 64;
+export const MAX_EMBEDDING_BASE_URL_CHARACTERS = 2_048;
+export const MAX_EMBEDDING_API_KEY_CHARACTERS = 8_192;
+export const MAX_EMBEDDING_INDEX_BATCHES_PER_RUN = 16;
 export const MAX_INDEX_INTEGER = 9_007_199_254_740_991;
 export type ApiErrorKind =
   | 'cancelled'
@@ -174,6 +183,33 @@ export type KnowledgeIndexSearchItem = {
 
 export type KnowledgeIndexSearchResponse = {
   results: KnowledgeIndexSearchItem[];
+};
+
+export type KnowledgeIndexEmbeddingRequest = {
+  workspaceKey: string;
+  profileId: string;
+  provider: EmbeddingProviderName;
+  model: string;
+  baseUrl: string;
+  remoteAllowed: boolean;
+  vectorVersion: number;
+  batchSize: number;
+  maxBatches: number;
+};
+
+export type KnowledgeIndexEmbeddingConfiguration = {
+  profileId: string;
+  provider: EmbeddingProviderName;
+  model: string;
+  dimensions: number;
+  vectorVersion: number;
+};
+
+export type KnowledgeIndexEmbeddingResponse = {
+  configuration: KnowledgeIndexEmbeddingConfiguration | null;
+  embeddedChunks: number;
+  processedBatches: number;
+  complete: boolean;
 };
 
 export type LlmSettings = {
