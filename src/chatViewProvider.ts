@@ -401,6 +401,22 @@ export class DevMateChatViewProvider implements
     this.postBackendStatus();
   }
 
+  conversationSessionSnapshot(): ConversationSessionStore {
+    return {
+      version: this.sessionStore.version,
+      activeSessionId: this.sessionStore.activeSessionId,
+      sessions: this.sessionStore.sessions.map((session) => ({
+        ...session,
+        turns: session.turns.map((turn) => ({
+          ...turn,
+          ...(turn.fileChanges
+            ? { fileChanges: turn.fileChanges.map((change) => ({ ...change })) }
+            : {})
+        }))
+      }))
+    };
+  }
+
   async show(): Promise<void> {
     await vscode.commands.executeCommand(
       `workbench.view.extension.${DevMateChatViewProvider.containerId}`

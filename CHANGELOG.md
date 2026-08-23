@@ -2,6 +2,26 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Safely copy existing chats into local storage
+
+### Changed
+
+- Added a versioned migration coordinator that converts the already-validated VS Code session store into the strict chat-memory snapshot contract.
+- Copies all existing sessions in one authenticated SQLite batch and reads every saved snapshot back before recording migration completion.
+- Stores only a source fingerprint, session identifiers, and completion time in the migration marker; chat contents are not duplicated into VS Code migration metadata.
+- Rechecks a marked database copy on startup and safely refreshes it if the private database was removed or no longer matches.
+- Leaves failed and cancelled migrations unmarked and retryable without modifying the existing conversation-session storage.
+- Starts migration only after authenticated backend readiness and only when `chat-memory-v1` is advertised.
+- Kept the VS Code session store as the live source of truth and left chat loading, saving, deletion, prompt history, summaries, and compaction behavior unchanged.
+
+### Verification
+
+- Focused migration coverage — 10 tests passed.
+- `npm run verify` — 295 extension tests and 155 backend tests passed; 63 cross-language contracts and 31 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-23 — Add a secure chat-memory API
 
 ### Changed

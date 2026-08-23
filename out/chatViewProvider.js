@@ -165,6 +165,21 @@ class DevMateChatViewProvider {
     notifyBackendStatusChanged(_status) {
         this.postBackendStatus();
     }
+    conversationSessionSnapshot() {
+        return {
+            version: this.sessionStore.version,
+            activeSessionId: this.sessionStore.activeSessionId,
+            sessions: this.sessionStore.sessions.map((session) => ({
+                ...session,
+                turns: session.turns.map((turn) => ({
+                    ...turn,
+                    ...(turn.fileChanges
+                        ? { fileChanges: turn.fileChanges.map((change) => ({ ...change })) }
+                        : {})
+                }))
+            }))
+        };
+    }
     async show() {
         await vscode.commands.executeCommand(`workbench.view.extension.${DevMateChatViewProvider.containerId}`);
         await vscode.commands.executeCommand(`${DevMateChatViewProvider.viewId}.focus`);

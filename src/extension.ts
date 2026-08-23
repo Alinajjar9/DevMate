@@ -3,6 +3,11 @@ import * as vscode from 'vscode';
 import { health } from './api/client';
 import { DEVMATE_KNOWLEDGE_STORE_FILE_NAME } from './api/types';
 import { LocalBackendManager } from './backendManager';
+import {
+  CHAT_SESSION_MIGRATION_STORAGE_KEY,
+  ChatSessionMigration,
+  defaultChatSessionMigrationApi
+} from './chatSessionMigration';
 import { DevMateChatViewProvider, getBackendUrl } from './chatViewProvider';
 import { EmbeddingIndexScheduler } from './embeddingIndexScheduler';
 import {
@@ -30,6 +35,7 @@ export function activate(context: vscode.ExtensionContext): void {
     DEVMATE_KNOWLEDGE_STORE_FILE_NAME
   ).fsPath;
   let chatViewProvider: DevMateChatViewProvider | undefined;
+  let chatSessionMigration: ChatSessionMigration | undefined;
   let backendCapabilities: readonly string[] = [];
   const workspaceIndexSource = new VsCodeWorkspaceIndexSource();
   const knowledgeIndexSynchronizer = new KnowledgeIndexSynchronizer(
@@ -102,6 +108,11 @@ export function activate(context: vscode.ExtensionContext): void {
           capabilities: backendCapabilities
         });
         workspaceIndexCoordinator.setBackendAccess(access);
+        void chatSessionMigration?.synchronize(access, backendCapabilities).then((result) => {
+          if (result.kind === 'failed') {
+            backendOutput.append(`[DevMate] Chat migration: ${result.message}\n`);
+          }
+        });
       } else {
         embeddingIndexScheduler.setBackendAccess(undefined);
         workspaceIndexCoordinator.setBackendAccess(undefined);
@@ -130,6 +141,19 @@ export function activate(context: vscode.ExtensionContext): void {
     backendOutput,
     projectRetriever,
     () => embeddingIndexScheduler.refreshActiveProfile()
+  );
+  const chatSessionSource = chatViewProvider;
+  chatSessionMigration = new ChatSessionMigration(
+    { read: () => chatSessionSource.conversationSessionSnapshot() },
+    {
+      read: () => context.globalState.get<unknown>(CHAT_SESSION_MIGRATION_STORAGE_KEY),
+      write: (marker) => context.globalState.update(
+        CHAT_SESSION_MIGRATION_STORAGE_KEY,
+        marker
+      )
+    },
+    defaultChatSessionMigrationApi,
+    (message) => backendOutput.append(`${message}\n`)
   );
   const viewRegistration = vscode.window.registerWebviewViewProvider(
     DevMateChatViewProvider.viewId,
@@ -180,6 +204,7 @@ export function activate(context: vscode.ExtensionContext): void {
     embeddingIndexScheduler,
     embeddingInvalidationSubscription,
     workspaceIndexCoordinator,
+    chatSessionMigration,
     knowledgeIndexSynchronizer,
     backendManager,
     backendOutput,

@@ -40,6 +40,7 @@ const vscode = __importStar(require("vscode"));
 const client_1 = require("./api/client");
 const types_1 = require("./api/types");
 const backendManager_1 = require("./backendManager");
+const chatSessionMigration_1 = require("./chatSessionMigration");
 const chatViewProvider_1 = require("./chatViewProvider");
 const embeddingIndexScheduler_1 = require("./embeddingIndexScheduler");
 const embeddingProfiles_1 = require("./embeddingProfiles");
@@ -51,6 +52,7 @@ function activate(context) {
     const backendOutput = vscode.window.createOutputChannel('DevMate Backend');
     const knowledgeStorePath = vscode.Uri.joinPath(context.globalStorageUri, 'knowledge', types_1.DEVMATE_KNOWLEDGE_STORE_FILE_NAME).fsPath;
     let chatViewProvider;
+    let chatSessionMigration;
     let backendCapabilities = [];
     const workspaceIndexSource = new workspaceIndexSource_1.VsCodeWorkspaceIndexSource();
     const knowledgeIndexSynchronizer = new indexSynchronization_1.KnowledgeIndexSynchronizer(workspaceIndexSource, indexSynchronization_1.defaultKnowledgeIndexApi, (message) => backendOutput.append(`[DevMate] Knowledge index: ${message}\n`));
@@ -102,6 +104,11 @@ function activate(context) {
                     capabilities: backendCapabilities
                 });
                 workspaceIndexCoordinator.setBackendAccess(access);
+                void chatSessionMigration?.synchronize(access, backendCapabilities).then((result) => {
+                    if (result.kind === 'failed') {
+                        backendOutput.append(`[DevMate] Chat migration: ${result.message}\n`);
+                    }
+                });
             }
             else {
                 embeddingIndexScheduler.setBackendAccess(undefined);
@@ -125,6 +132,11 @@ function activate(context) {
         readCurrentFile: (relativePath, signal) => workspaceIndexSource.readCurrentFile(relativePath, signal)
     });
     chatViewProvider = new chatViewProvider_1.DevMateChatViewProvider(context, backendManager, backendOutput, projectRetriever, () => embeddingIndexScheduler.refreshActiveProfile());
+    const chatSessionSource = chatViewProvider;
+    chatSessionMigration = new chatSessionMigration_1.ChatSessionMigration({ read: () => chatSessionSource.conversationSessionSnapshot() }, {
+        read: () => context.globalState.get(chatSessionMigration_1.CHAT_SESSION_MIGRATION_STORAGE_KEY),
+        write: (marker) => context.globalState.update(chatSessionMigration_1.CHAT_SESSION_MIGRATION_STORAGE_KEY, marker)
+    }, chatSessionMigration_1.defaultChatSessionMigrationApi, (message) => backendOutput.append(`${message}\n`));
     const viewRegistration = vscode.window.registerWebviewViewProvider(chatViewProvider_1.DevMateChatViewProvider.viewId, chatViewProvider, {
         webviewOptions: {
             retainContextWhenHidden: true
@@ -154,7 +166,7 @@ function activate(context) {
     statusBarItem.tooltip = 'Open DevMate';
     statusBarItem.command = 'devMate.openChat';
     statusBarItem.show();
-    context.subscriptions.push(chatViewProvider, embeddingIndexScheduler, embeddingInvalidationSubscription, workspaceIndexCoordinator, knowledgeIndexSynchronizer, backendManager, backendOutput, viewRegistration, diffContentRegistration, workspaceTrustRegistration, backendConfigurationRegistration, openChatCommand, statusBarItem);
+    context.subscriptions.push(chatViewProvider, embeddingIndexScheduler, embeddingInvalidationSubscription, workspaceIndexCoordinator, chatSessionMigration, knowledgeIndexSynchronizer, backendManager, backendOutput, viewRegistration, diffContentRegistration, workspaceTrustRegistration, backendConfigurationRegistration, openChatCommand, statusBarItem);
     void backendManager.start();
 }
 function deactivate() {
