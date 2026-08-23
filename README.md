@@ -180,6 +180,12 @@ Before every provider request, DevMate calculates a usable input budget from the
 
 The current question and explicit selections, active files, and attachments are never silently removed. If that mandatory input plus the reserved instructions cannot fit, DevMate stops before contacting the model and reports a clear configuration error. Remaining capacity is assigned to current tool state, newest completed conversation turns, ranked project results, and older tool output in that order. When an older tool result does not fit, DevMate keeps the tool call and replaces only its result text with an omission marker so the agent history remains structurally valid.
 
+## Chat memory storage
+
+The private SQLite store now includes versioned foundations for chat sessions, raw turns, structured summaries, and pinned memories. Chat records use the same private database file as the project index but have an independent lifecycle, so rebuilding or deleting a code index does not delete conversation history. Deleting a chat does cascade only its turns, summary, and pinned memories.
+
+The repository preserves pending and completed raw turns, validates the future compaction-summary structure, and bounds all stored values. This milestone does not switch the extension's live session storage from VS Code state, migrate existing chats, generate summaries, or include stored memory in model requests yet.
+
 ## Agent tools
 
 Read-only tools are available in every mode:
@@ -422,7 +428,7 @@ The workspace must be trusted and VS Code Terminal Shell Integration must be ava
 
 - Only the first folder in a multi-root workspace is used.
 - Hybrid retrieval currently uses fixed equal weights and fixed bounded query-signal boosts; it does not yet expose diagnostic retrieval modes or language-server symbol-graph ranking.
-- Token counts use a conservative character estimate and fixed prompt reserve rather than each provider's exact tokenizer; pinned memories, compacted chat summaries, and manual memory controls are not implemented yet.
+- Token counts use a conservative character estimate and fixed prompt reserve rather than each provider's exact tokenizer; chat migration, automatic summary generation, prompt inclusion, and manual memory controls are not implemented yet.
 - Code navigation depends on installed VS Code language providers.
 - Completed change snapshots are kept in memory, so an old native diff may be unavailable after reloading VS Code.
 - Standalone backend builds are platform-specific and currently prepared for Windows x64.

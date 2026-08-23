@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from backend.app.api_models import DEVMATE_BACKEND_TOKEN_HEADER
 from backend.app.embedding_index_service import EmbeddingIndexService
+from backend.app.chat_memory_repository import ChatMemoryRepository
 from backend.app.embedding_providers import EmbeddingBatch, EmbeddingRequest
 from backend.app.embedding_repository import EmbeddingRepository
 from backend.app.main import create_app
@@ -454,6 +455,10 @@ class KnowledgeIndexApiTests(unittest.TestCase):
         self.assertIsInstance(
             dependencies.semantic_search_service,
             SemanticSearchService,
+        )
+        self.assertIsInstance(
+            dependencies.chat_memory_repository,
+            ChatMemoryRepository,
         )
 
     def _open_workspace(self):

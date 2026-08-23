@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from fastapi import Request
 
+from .chat_memory_repository import ChatMemoryRepository
 from .chat_service import ChatService
 from .embedding_index_service import EmbeddingIndexService
 from .errors import BackendApiError
@@ -22,6 +23,7 @@ class BackendDependencies:
     backend_token_provider: BackendTokenProvider
     knowledge_store: KnowledgeStore | None
     knowledge_repository: KnowledgeRepository | None
+    chat_memory_repository: ChatMemoryRepository | None
     embedding_index_service: EmbeddingIndexService | None
     semantic_search_service: SemanticSearchService | None
 

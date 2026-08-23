@@ -136,6 +136,76 @@ _SCHEMA_MIGRATIONS = (
             """,
         ),
     ),
+    SchemaMigration(
+        version=2,
+        name="chat_memory_foundation",
+        statements=(
+            """
+            CREATE TABLE chat_sessions (
+                session_id TEXT PRIMARY KEY CHECK (
+                    length(session_id) BETWEEN 1 AND 120
+                ),
+                workspace_identity TEXT NOT NULL CHECK (
+                    length(workspace_identity) BETWEEN 1 AND 2048
+                ),
+                workspace_name TEXT NOT NULL CHECK (
+                    length(workspace_name) BETWEEN 1 AND 120
+                ),
+                title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 80),
+                created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
+                updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms)
+            )
+            """,
+            """
+            CREATE TABLE chat_turns (
+                id INTEGER PRIMARY KEY,
+                session_id TEXT NOT NULL
+                    REFERENCES chat_sessions(session_id) ON DELETE CASCADE,
+                ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+                user_text TEXT NOT NULL CHECK (
+                    length(user_text) BETWEEN 1 AND 6000
+                ),
+                assistant_text TEXT NOT NULL CHECK (length(assistant_text) <= 6000),
+                file_changes_json TEXT NOT NULL DEFAULT '[]' CHECK (
+                    length(file_changes_json) BETWEEN 2 AND 16000
+                ),
+                UNIQUE (session_id, ordinal)
+            )
+            """,
+            """
+            CREATE TABLE chat_summaries (
+                session_id TEXT PRIMARY KEY
+                    REFERENCES chat_sessions(session_id) ON DELETE CASCADE,
+                summary_version INTEGER NOT NULL CHECK (summary_version >= 1),
+                summary_json TEXT NOT NULL CHECK (
+                    length(summary_json) BETWEEN 2 AND 32000
+                ),
+                last_compacted_turn INTEGER NOT NULL CHECK (last_compacted_turn >= 0),
+                created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
+                updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms)
+            )
+            """,
+            """
+            CREATE TABLE pinned_memories (
+                session_id TEXT NOT NULL
+                    REFERENCES chat_sessions(session_id) ON DELETE CASCADE,
+                memory_id TEXT NOT NULL CHECK (length(memory_id) BETWEEN 1 AND 120),
+                content TEXT NOT NULL CHECK (length(content) BETWEEN 1 AND 4000),
+                created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
+                updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms),
+                PRIMARY KEY (session_id, memory_id)
+            )
+            """,
+            """
+            CREATE INDEX chat_sessions_workspace_updated_index
+            ON chat_sessions(workspace_identity, updated_at_ms DESC, session_id)
+            """,
+            """
+            CREATE INDEX pinned_memories_session_created_index
+            ON pinned_memories(session_id, created_at_ms, memory_id)
+            """,
+        ),
+    ),
 )
 KNOWLEDGE_SCHEMA_VERSION = _SCHEMA_MIGRATIONS[-1].version
 

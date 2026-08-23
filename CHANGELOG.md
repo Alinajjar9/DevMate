@@ -2,6 +2,25 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Add the local chat-memory foundation
+
+### Changed
+
+- Added a backward-compatible second SQLite migration for chat sessions, raw turns, structured summaries, and pinned memories in the private DevMate store.
+- Kept chat history independent from code-index workspace rows so index rebuilds and deletion cannot remove conversations.
+- Added a bounded transactional repository for session snapshots, pending-turn completion, ordered workspace session lists, validated structured summaries, and session-scoped pinned memories.
+- Preserved raw turns when summaries are saved and cascaded only chat-owned records when a session is deleted.
+- Composed the repository with the managed backend while leaving the live VS Code session store, existing chats, model requests, and compaction behavior unchanged.
+- Added migration-upgrade, isolation, validation, cascade, pending-turn, pin-limit, and transaction-rollback coverage.
+
+### Verification
+
+- Focused chat-memory and knowledge-store coverage — 15 tests passed.
+- `npm run verify` — 278 extension tests and 150 backend tests passed; 49 cross-language contracts and 29 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-23 — Budget context before every model request
 
 ### Changed

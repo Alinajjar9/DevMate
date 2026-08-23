@@ -40,6 +40,10 @@ class KnowledgeStoreTests(unittest.TestCase):
             "chunks_fts",
             "embeddings",
             "index_metadata",
+            "chat_sessions",
+            "chat_turns",
+            "chat_summaries",
+            "pinned_memories",
         }
 
         with KnowledgeStore(self.database_path) as store:
@@ -64,8 +68,47 @@ class KnowledgeStoreTests(unittest.TestCase):
             ).fetchall()
             self.assertEqual(
                 [(row["version"], row["name"]) for row in migrations],
-                [(1, "initial_knowledge_store")],
+                [
+                    (1, "initial_knowledge_store"),
+                    (2, "chat_memory_foundation"),
+                ],
             )
+
+    def test_upgrades_the_existing_index_without_losing_workspace_data(self) -> None:
+        with (
+            mock.patch.object(
+                knowledge_store_module,
+                "_SCHEMA_MIGRATIONS",
+                knowledge_store_module._SCHEMA_MIGRATIONS[:1],
+            ),
+            mock.patch.object(knowledge_store_module, "KNOWLEDGE_SCHEMA_VERSION", 1),
+            KnowledgeStore(self.database_path) as store,
+        ):
+            store.connection.execute(
+                "INSERT INTO workspaces(workspace_key, root_path) VALUES (?, ?)",
+                ("workspace-one", "/projects/one"),
+            )
+
+        with KnowledgeStore(self.database_path) as upgraded:
+            workspace = upgraded.connection.execute(
+                "SELECT workspace_key, root_path FROM workspaces"
+            ).fetchone()
+            chat_table = upgraded.connection.execute(
+                "SELECT name FROM sqlite_master WHERE name = 'chat_sessions'"
+            ).fetchone()
+            migrations = upgraded.connection.execute(
+                "SELECT version, name FROM schema_migrations ORDER BY version"
+            ).fetchall()
+
+        self.assertEqual(tuple(workspace), ("workspace-one", "/projects/one"))
+        self.assertIsNotNone(chat_table)
+        self.assertEqual(
+            [(row["version"], row["name"]) for row in migrations],
+            [
+                (1, "initial_knowledge_store"),
+                (2, "chat_memory_foundation"),
+            ],
+        )
 
     def test_transactions_commit_or_roll_back_as_one_unit(self) -> None:
         with KnowledgeStore(self.database_path) as store:
@@ -97,7 +140,7 @@ class KnowledgeStoreTests(unittest.TestCase):
             pass
 
         failing_migration = SchemaMigration(
-            version=2,
+            version=3,
             name="failing_test_migration",
             statements=(
                 "CREATE TABLE migration_should_roll_back(id INTEGER PRIMARY KEY)",
@@ -110,8 +153,8 @@ class KnowledgeStoreTests(unittest.TestCase):
                 "_SCHEMA_MIGRATIONS",
                 (*knowledge_store_module._SCHEMA_MIGRATIONS, failing_migration),
             ),
-            mock.patch.object(knowledge_store_module, "KNOWLEDGE_SCHEMA_VERSION", 2),
-            self.assertRaisesRegex(KnowledgeStoreMigrationError, "migration 2"),
+            mock.patch.object(knowledge_store_module, "KNOWLEDGE_SCHEMA_VERSION", 3),
+            self.assertRaisesRegex(KnowledgeStoreMigrationError, "migration 3"),
         ):
             KnowledgeStore(self.database_path).open()
 
@@ -124,8 +167,8 @@ class KnowledgeStoreTests(unittest.TestCase):
             ).fetchone()[0]
             user_version = connection.execute("PRAGMA user_version").fetchone()[0]
         self.assertIsNone(table)
-        self.assertEqual(migration_count, 1)
-        self.assertEqual(user_version, 1)
+        self.assertEqual(migration_count, 2)
+        self.assertEqual(user_version, 2)
 
     def test_foreign_keys_and_fts_follow_the_chunk_lifecycle(self) -> None:
         with KnowledgeStore(self.database_path) as store:
