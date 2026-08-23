@@ -47,6 +47,9 @@ class ChatMemoryApiTests(unittest.TestCase):
             "/memory/v1/sessions/load",
             "/memory/v1/sessions/list",
             "/memory/v1/sessions/delete",
+            "/memory/v1/summaries/save",
+            "/memory/v1/summaries/load",
+            "/memory/v1/summaries/clear",
         ):
             with self.subTest(path=path):
                 response = self.client.post(
@@ -165,6 +168,85 @@ class ChatMemoryApiTests(unittest.TestCase):
                 0,
             )
 
+    def test_round_trips_and_clears_a_strict_summary_without_removing_turns(self) -> None:
+        snapshot = self._snapshot("session-one")
+        self.client.post("/memory/v1/sessions/save", json={"sessions": [snapshot]})
+        missing = self.client.post(
+            "/memory/v1/summaries/load",
+            json={"sessionId": "session-one"},
+        )
+
+        saved = self.client.post(
+            "/memory/v1/summaries/save",
+            json={
+                "sessionId": "session-one",
+                "content": self._summary_content(),
+                "lastCompactedTurn": 0,
+                "updatedAtMs": 300,
+            },
+        )
+        loaded = self.client.post(
+            "/memory/v1/summaries/load",
+            json={"sessionId": "session-one"},
+        )
+        cleared = self.client.post(
+            "/memory/v1/summaries/clear",
+            json={"sessionId": "session-one"},
+        )
+        session = self.client.post(
+            "/memory/v1/sessions/load",
+            json={"sessionId": "session-one"},
+        )
+
+        self.assertEqual(missing.json()["data"], {"summary": None})
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(saved.json()["data"]["summary"], {
+            "sessionId": "session-one",
+            "summaryVersion": 1,
+            "content": self._summary_content(),
+            "lastCompactedTurn": 0,
+            "createdAtMs": 300,
+            "updatedAtMs": 300,
+        })
+        self.assertEqual(loaded.json(), saved.json())
+        self.assertEqual(cleared.json()["data"], {"cleared": True})
+        self.assertEqual(session.json()["data"]["session"]["turns"], snapshot["turns"])
+
+    def test_rejects_invalid_summary_content_and_non_completed_boundaries(self) -> None:
+        snapshot = self._snapshot("session-one")
+        self.client.post("/memory/v1/sessions/save", json={"sessions": [snapshot]})
+        invalid_requests = (
+            {
+                "sessionId": "session-one",
+                "content": {**self._summary_content(), "unexpected": True},
+                "lastCompactedTurn": 0,
+                "updatedAtMs": 300,
+            },
+            {
+                "sessionId": "session-one",
+                "content": {**self._summary_content(), "goal": ""},
+                "lastCompactedTurn": 0,
+                "updatedAtMs": 300,
+            },
+            {
+                "sessionId": "session-one",
+                "content": self._summary_content(),
+                "lastCompactedTurn": 1,
+                "updatedAtMs": 300,
+            },
+        )
+        for request in invalid_requests:
+            with self.subTest(request=request):
+                response = self.client.post("/memory/v1/summaries/save", json=request)
+                self.assertEqual(response.status_code, 422)
+                self.assertEqual(response.json()["errorCode"], "request_validation_failed")
+
+        loaded = self.client.post(
+            "/memory/v1/summaries/load",
+            json={"sessionId": "session-one"},
+        )
+        self.assertEqual(loaded.json()["data"], {"summary": None})
+
     def test_reports_when_chat_memory_storage_is_unavailable(self) -> None:
         application = create_app(
             chat_provider=UnusedProvider(),
@@ -203,6 +285,21 @@ class ChatMemoryApiTests(unittest.TestCase):
                     "diffId": "diff-one",
                 }],
             }],
+        }
+
+    @staticmethod
+    def _summary_content() -> dict:
+        return {
+            "goal": "Keep useful chat context compact.",
+            "constraints": ["Keep raw turns."],
+            "decisions": [{
+                "decision": "Use structured summaries.",
+                "reason": "They can be validated before storage.",
+            }],
+            "importantFiles": ["src/contextPlanner.ts"],
+            "completedWork": ["Added SQLite chat storage."],
+            "openTasks": ["Generate summaries."],
+            "unresolvedQuestions": ["When should compaction run?"],
         }
 
 

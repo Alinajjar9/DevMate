@@ -6,6 +6,7 @@ const {
   applyKnowledgeIndexChanges,
   ask,
   askStream,
+  clearChatMemorySummary,
   deleteChatMemorySession,
   DEFAULT_ASK_TIMEOUT_MS,
   DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS,
@@ -14,10 +15,12 @@ const {
   isLoopbackBackendUrl,
   listChatMemorySessions,
   loadChatMemorySession,
+  loadChatMemorySummary,
   openKnowledgeIndex,
   searchKnowledgeIndex,
   searchKnowledgeIndexSemantically,
   saveChatMemorySessions,
+  saveChatMemorySummary,
   synchronizeKnowledgeIndexEmbeddings,
   updateKnowledgeIndexMetadata
 } = require('../out/api/client');
@@ -246,6 +249,18 @@ test('sends authenticated versioned chat-memory requests and strictly decodes th
       });
       return;
     }
+    if (request.url === '/memory/v1/summaries/save'
+      || request.url === '/memory/v1/summaries/load') {
+      sendJson(response, 200, {
+        status: 'ok',
+        data: { summary: chatMemorySummary() }
+      });
+      return;
+    }
+    if (request.url === '/memory/v1/summaries/clear') {
+      sendJson(response, 200, { status: 'ok', data: { cleared: true } });
+      return;
+    }
     sendJson(response, 200, { status: 'ok', data: { deleted: true } });
   }, async (backendUrl) => {
     const saved = await saveChatMemorySessions(
@@ -268,24 +283,48 @@ test('sends authenticated versioned chat-memory requests and strictly decodes th
       { sessionId: 'session-one' },
       TEST_BACKEND_TOKEN
     );
+    const summarySaved = await saveChatMemorySummary(
+      backendUrl,
+      chatMemorySummarySaveRequest(),
+      TEST_BACKEND_TOKEN
+    );
+    const summaryLoaded = await loadChatMemorySummary(
+      backendUrl,
+      { sessionId: 'session-one' },
+      TEST_BACKEND_TOKEN
+    );
+    const summaryCleared = await clearChatMemorySummary(
+      backendUrl,
+      { sessionId: 'session-one' },
+      TEST_BACKEND_TOKEN
+    );
 
     assert.deepEqual(saved.data, { savedSessionIds: ['session-one'] });
     assert.deepEqual(loaded.data, { session: chatMemorySnapshot() });
     assert.deepEqual(listed.data, { sessions: [chatMemorySnapshot().session] });
     assert.deepEqual(deleted.data, { deleted: true });
+    assert.deepEqual(summarySaved.data, { summary: chatMemorySummary() });
+    assert.deepEqual(summaryLoaded.data, { summary: chatMemorySummary() });
+    assert.deepEqual(summaryCleared.data, { cleared: true });
   });
 
   assert.deepEqual(received.map((request) => request.path), [
     '/memory/v1/sessions/save',
     '/memory/v1/sessions/load',
     '/memory/v1/sessions/list',
-    '/memory/v1/sessions/delete'
+    '/memory/v1/sessions/delete',
+    '/memory/v1/summaries/save',
+    '/memory/v1/summaries/load',
+    '/memory/v1/summaries/clear'
   ]);
   assert.ok(received.every((request) => request.token === TEST_BACKEND_TOKEN));
   assert.deepEqual(received.map((request) => request.body), [
     chatMemorySaveRequest(),
     { sessionId: 'session-one' },
     chatMemoryListRequest(),
+    { sessionId: 'session-one' },
+    chatMemorySummarySaveRequest(),
+    { sessionId: 'session-one' },
     { sessionId: 'session-one' }
   ]);
 });
@@ -333,6 +372,47 @@ test('rejects malformed or request-mismatched chat-memory responses', async (con
         TEST_BACKEND_TOKEN
       ),
       data: { deleted: true, unexpected: true }
+    },
+    {
+      call: (backendUrl) => saveChatMemorySummary(
+        backendUrl,
+        chatMemorySummarySaveRequest(),
+        TEST_BACKEND_TOKEN
+      ),
+      data: {
+        summary: { ...chatMemorySummary(), lastCompactedTurn: 1 }
+      }
+    },
+    {
+      call: (backendUrl) => loadChatMemorySummary(
+        backendUrl,
+        { sessionId: 'session-one' },
+        TEST_BACKEND_TOKEN
+      ),
+      data: {
+        summary: { ...chatMemorySummary(), sessionId: 'different-session' }
+      }
+    },
+    {
+      call: (backendUrl) => loadChatMemorySummary(
+        backendUrl,
+        { sessionId: 'session-one' },
+        TEST_BACKEND_TOKEN
+      ),
+      data: {
+        summary: {
+          ...chatMemorySummary(),
+          content: { ...chatMemorySummaryContent(), goal: '' }
+        }
+      }
+    },
+    {
+      call: (backendUrl) => clearChatMemorySummary(
+        backendUrl,
+        { sessionId: 'session-one' },
+        TEST_BACKEND_TOKEN
+      ),
+      data: { cleared: true, unexpected: true }
     }
   ];
 
@@ -347,6 +427,20 @@ test('rejects malformed or request-mismatched chat-memory responses', async (con
       });
     });
   }
+});
+
+test('accepts an explicit missing chat summary', async () => {
+  await withServer((_request, response) => {
+    sendJson(response, 200, { status: 'ok', data: { summary: null } });
+  }, async (backendUrl) => {
+    const result = await loadChatMemorySummary(
+      backendUrl,
+      { sessionId: 'session-one' },
+      TEST_BACKEND_TOKEN
+    );
+
+    assert.deepEqual(result, { status: 'ok', data: { summary: null } });
+  });
 });
 
 test('refuses to send chat history to a non-loopback backend', async () => {
@@ -951,6 +1045,41 @@ function chatMemorySaveRequest() {
 
 function chatMemoryListRequest() {
   return { workspaceIdentity: 'file:///workspace-one', limit: 20 };
+}
+
+function chatMemorySummarySaveRequest() {
+  return {
+    sessionId: 'session-one',
+    content: chatMemorySummaryContent(),
+    lastCompactedTurn: 0,
+    updatedAtMs: 300
+  };
+}
+
+function chatMemorySummary() {
+  return {
+    sessionId: 'session-one',
+    summaryVersion: 1,
+    content: chatMemorySummaryContent(),
+    lastCompactedTurn: 0,
+    createdAtMs: 300,
+    updatedAtMs: 300
+  };
+}
+
+function chatMemorySummaryContent() {
+  return {
+    goal: 'Keep useful chat context compact.',
+    constraints: ['Keep raw turns.'],
+    decisions: [{
+      decision: 'Use structured summaries.',
+      reason: 'They can be validated before storage.'
+    }],
+    importantFiles: ['src/contextPlanner.ts'],
+    completedWork: ['Added SQLite chat storage.'],
+    openTasks: ['Generate summaries.'],
+    unresolvedQuestions: ['When should compaction run?']
+  };
 }
 
 function chatMemorySnapshot() {

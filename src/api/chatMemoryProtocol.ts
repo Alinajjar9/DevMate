@@ -1,4 +1,5 @@
 import {
+  CHAT_SUMMARY_VERSION,
   MAX_CHAT_DIFF_ID_CHARACTERS,
   MAX_CHAT_FILE_CHANGE_PATH_CHARACTERS,
   MAX_CHAT_FILE_CHANGES,
@@ -7,6 +8,9 @@ import {
   MAX_CHAT_SESSIONS_RETURNED,
   MAX_CHAT_SESSION_ID_CHARACTERS,
   MAX_CHAT_SESSION_TITLE_CHARACTERS,
+  MAX_CHAT_SUMMARY_CHARACTERS,
+  MAX_CHAT_SUMMARY_ITEM_CHARACTERS,
+  MAX_CHAT_SUMMARY_ITEMS,
   MAX_CHAT_TURNS_PER_SNAPSHOT,
   MAX_CHAT_TURN_CHARACTERS,
   MAX_CHAT_WORKSPACE_IDENTITY_CHARACTERS,
@@ -19,6 +23,11 @@ import type {
   ChatMemoryLoadResponse,
   ChatMemorySaveResponse,
   ChatMemorySession,
+  ChatMemorySummary,
+  ChatMemorySummaryClearResponse,
+  ChatMemorySummaryContent,
+  ChatMemorySummaryLoadResponse,
+  ChatMemorySummarySaveResponse,
   ChatMemorySnapshot,
   ChatMemoryTurn
 } from './types';
@@ -92,6 +101,125 @@ export function parseChatMemoryDeleteResponse(
     return undefined;
   }
   return { deleted: value.deleted };
+}
+
+export function parseChatMemorySummarySaveResponse(
+  value: unknown
+): ChatMemorySummarySaveResponse | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['summary'])) {
+    return undefined;
+  }
+  const summary = parseChatMemorySummary(value.summary);
+  return summary ? { summary } : undefined;
+}
+
+export function parseChatMemorySummaryLoadResponse(
+  value: unknown
+): ChatMemorySummaryLoadResponse | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['summary'])) {
+    return undefined;
+  }
+  if (value.summary === null) {
+    return { summary: null };
+  }
+  const summary = parseChatMemorySummary(value.summary);
+  return summary ? { summary } : undefined;
+}
+
+export function parseChatMemorySummaryClearResponse(
+  value: unknown
+): ChatMemorySummaryClearResponse | undefined {
+  if (!isRecord(value)
+    || !hasOnlyKeys(value, ['cleared'])
+    || typeof value.cleared !== 'boolean') {
+    return undefined;
+  }
+  return { cleared: value.cleared };
+}
+
+export function parseChatMemorySummary(value: unknown): ChatMemorySummary | undefined {
+  if (!isRecord(value)
+    || !hasOnlyKeys(value, [
+      'sessionId',
+      'summaryVersion',
+      'content',
+      'lastCompactedTurn',
+      'createdAtMs',
+      'updatedAtMs'
+    ])
+    || !isChatMemoryIdentifier(value.sessionId)
+    || value.summaryVersion !== CHAT_SUMMARY_VERSION
+    || !isChatInteger(value.lastCompactedTurn, 0)
+    || !isChatInteger(value.createdAtMs, 0)
+    || !isChatInteger(value.updatedAtMs, value.createdAtMs)) {
+    return undefined;
+  }
+  const content = parseChatMemorySummaryContent(value.content);
+  return content
+    ? {
+      sessionId: value.sessionId,
+      summaryVersion: CHAT_SUMMARY_VERSION,
+      content,
+      lastCompactedTurn: value.lastCompactedTurn,
+      createdAtMs: value.createdAtMs,
+      updatedAtMs: value.updatedAtMs
+    }
+    : undefined;
+}
+
+function parseChatMemorySummaryContent(value: unknown): ChatMemorySummaryContent | undefined {
+  const itemKeys = [
+    'constraints',
+    'importantFiles',
+    'completedWork',
+    'openTasks',
+    'unresolvedQuestions'
+  ] as const;
+  if (!isRecord(value)
+    || !hasOnlyKeys(value, ['goal', 'decisions', ...itemKeys])
+    || !isSummaryText(value.goal)
+    || !Array.isArray(value.decisions)
+    || value.decisions.length > MAX_CHAT_SUMMARY_ITEMS) {
+    return undefined;
+  }
+  const decisions: ChatMemorySummaryContent['decisions'] = [];
+  for (const candidate of value.decisions) {
+    if (!isRecord(candidate)
+      || !hasOnlyKeys(candidate, ['decision', 'reason'])
+      || !isSummaryText(candidate.decision)
+      || !isSummaryText(candidate.reason)) {
+      return undefined;
+    }
+    decisions.push({ decision: candidate.decision, reason: candidate.reason });
+  }
+  const lists: Record<(typeof itemKeys)[number], string[]> = {
+    constraints: [],
+    importantFiles: [],
+    completedWork: [],
+    openTasks: [],
+    unresolvedQuestions: []
+  };
+  for (const key of itemKeys) {
+    const items = value[key];
+    if (!Array.isArray(items)
+      || items.length > MAX_CHAT_SUMMARY_ITEMS
+      || !items.every(isSummaryText)) {
+      return undefined;
+    }
+    lists[key] = [...items];
+  }
+  const content: ChatMemorySummaryContent = {
+    goal: value.goal,
+    constraints: lists.constraints,
+    decisions,
+    importantFiles: lists.importantFiles,
+    completedWork: lists.completedWork,
+    openTasks: lists.openTasks,
+    unresolvedQuestions: lists.unresolvedQuestions
+  };
+  return JSON.stringify(content).length <= MAX_CHAT_SUMMARY_CHARACTERS
+    ? content
+    : undefined;
 }
 
 export function parseChatMemorySnapshot(value: unknown): ChatMemorySnapshot | undefined {
@@ -214,6 +342,13 @@ function isContentText(value: unknown, allowEmpty: boolean): value is string {
   return typeof value === 'string'
     && (allowEmpty || value.trim().length > 0)
     && value.length <= MAX_CHAT_TURN_CHARACTERS
+    && !value.includes('\0');
+}
+
+function isSummaryText(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.trim().length > 0
+    && value.length <= MAX_CHAT_SUMMARY_ITEM_CHARACTERS
     && !value.includes('\0');
 }
 

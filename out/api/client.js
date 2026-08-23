@@ -6,6 +6,9 @@ exports.saveChatMemorySessions = saveChatMemorySessions;
 exports.loadChatMemorySession = loadChatMemorySession;
 exports.listChatMemorySessions = listChatMemorySessions;
 exports.deleteChatMemorySession = deleteChatMemorySession;
+exports.saveChatMemorySummary = saveChatMemorySummary;
+exports.loadChatMemorySummary = loadChatMemorySummary;
+exports.clearChatMemorySummary = clearChatMemorySummary;
 exports.openKnowledgeIndex = openKnowledgeIndex;
 exports.applyKnowledgeIndexChanges = applyKnowledgeIndexChanges;
 exports.updateKnowledgeIndexMetadata = updateKnowledgeIndexMetadata;
@@ -101,6 +104,29 @@ function listChatMemorySessions(backendUrl, request, backendToken, signal) {
 }
 function deleteChatMemorySession(backendUrl, request, backendToken, signal) {
     return chatMemoryRequest(backendUrl, `${chatMemoryPath}/sessions/delete`, request, backendToken, chatMemoryProtocol_1.parseChatMemoryDeleteResponse, signal);
+}
+function saveChatMemorySummary(backendUrl, request, backendToken, signal) {
+    return chatMemoryRequest(backendUrl, `${chatMemoryPath}/summaries/save`, request, backendToken, (value) => {
+        const response = (0, chatMemoryProtocol_1.parseChatMemorySummarySaveResponse)(value);
+        return response
+            && response.summary.sessionId === request.sessionId
+            && response.summary.lastCompactedTurn === request.lastCompactedTurn
+            && response.summary.updatedAtMs === request.updatedAtMs
+            && JSON.stringify(response.summary.content) === JSON.stringify(request.content)
+            ? response
+            : undefined;
+    }, signal);
+}
+function loadChatMemorySummary(backendUrl, request, backendToken, signal) {
+    return chatMemoryRequest(backendUrl, `${chatMemoryPath}/summaries/load`, request, backendToken, (value) => {
+        const response = (0, chatMemoryProtocol_1.parseChatMemorySummaryLoadResponse)(value);
+        return response && (response.summary === null || response.summary.sessionId === request.sessionId)
+            ? response
+            : undefined;
+    }, signal);
+}
+function clearChatMemorySummary(backendUrl, request, backendToken, signal) {
+    return chatMemoryRequest(backendUrl, `${chatMemoryPath}/summaries/clear`, request, backendToken, chatMemoryProtocol_1.parseChatMemorySummaryClearResponse, signal);
 }
 function openKnowledgeIndex(backendUrl, request, backendToken, signal) {
     return knowledgeIndexRequest(backendUrl, `${knowledgeIndexPath}/workspaces/open`, request, backendToken, knowledgeIndexProtocol_1.parseKnowledgeIndexOpenResponse, signal);

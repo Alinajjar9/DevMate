@@ -4,6 +4,10 @@ exports.parseChatMemorySaveResponse = parseChatMemorySaveResponse;
 exports.parseChatMemoryLoadResponse = parseChatMemoryLoadResponse;
 exports.parseChatMemoryListResponse = parseChatMemoryListResponse;
 exports.parseChatMemoryDeleteResponse = parseChatMemoryDeleteResponse;
+exports.parseChatMemorySummarySaveResponse = parseChatMemorySummarySaveResponse;
+exports.parseChatMemorySummaryLoadResponse = parseChatMemorySummaryLoadResponse;
+exports.parseChatMemorySummaryClearResponse = parseChatMemorySummaryClearResponse;
+exports.parseChatMemorySummary = parseChatMemorySummary;
 exports.parseChatMemorySnapshot = parseChatMemorySnapshot;
 exports.parseChatMemorySession = parseChatMemorySession;
 const types_1 = require("./types");
@@ -62,6 +66,114 @@ function parseChatMemoryDeleteResponse(value) {
         return undefined;
     }
     return { deleted: value.deleted };
+}
+function parseChatMemorySummarySaveResponse(value) {
+    if (!isRecord(value) || !hasOnlyKeys(value, ['summary'])) {
+        return undefined;
+    }
+    const summary = parseChatMemorySummary(value.summary);
+    return summary ? { summary } : undefined;
+}
+function parseChatMemorySummaryLoadResponse(value) {
+    if (!isRecord(value) || !hasOnlyKeys(value, ['summary'])) {
+        return undefined;
+    }
+    if (value.summary === null) {
+        return { summary: null };
+    }
+    const summary = parseChatMemorySummary(value.summary);
+    return summary ? { summary } : undefined;
+}
+function parseChatMemorySummaryClearResponse(value) {
+    if (!isRecord(value)
+        || !hasOnlyKeys(value, ['cleared'])
+        || typeof value.cleared !== 'boolean') {
+        return undefined;
+    }
+    return { cleared: value.cleared };
+}
+function parseChatMemorySummary(value) {
+    if (!isRecord(value)
+        || !hasOnlyKeys(value, [
+            'sessionId',
+            'summaryVersion',
+            'content',
+            'lastCompactedTurn',
+            'createdAtMs',
+            'updatedAtMs'
+        ])
+        || !isChatMemoryIdentifier(value.sessionId)
+        || value.summaryVersion !== types_1.CHAT_SUMMARY_VERSION
+        || !isChatInteger(value.lastCompactedTurn, 0)
+        || !isChatInteger(value.createdAtMs, 0)
+        || !isChatInteger(value.updatedAtMs, value.createdAtMs)) {
+        return undefined;
+    }
+    const content = parseChatMemorySummaryContent(value.content);
+    return content
+        ? {
+            sessionId: value.sessionId,
+            summaryVersion: types_1.CHAT_SUMMARY_VERSION,
+            content,
+            lastCompactedTurn: value.lastCompactedTurn,
+            createdAtMs: value.createdAtMs,
+            updatedAtMs: value.updatedAtMs
+        }
+        : undefined;
+}
+function parseChatMemorySummaryContent(value) {
+    const itemKeys = [
+        'constraints',
+        'importantFiles',
+        'completedWork',
+        'openTasks',
+        'unresolvedQuestions'
+    ];
+    if (!isRecord(value)
+        || !hasOnlyKeys(value, ['goal', 'decisions', ...itemKeys])
+        || !isSummaryText(value.goal)
+        || !Array.isArray(value.decisions)
+        || value.decisions.length > types_1.MAX_CHAT_SUMMARY_ITEMS) {
+        return undefined;
+    }
+    const decisions = [];
+    for (const candidate of value.decisions) {
+        if (!isRecord(candidate)
+            || !hasOnlyKeys(candidate, ['decision', 'reason'])
+            || !isSummaryText(candidate.decision)
+            || !isSummaryText(candidate.reason)) {
+            return undefined;
+        }
+        decisions.push({ decision: candidate.decision, reason: candidate.reason });
+    }
+    const lists = {
+        constraints: [],
+        importantFiles: [],
+        completedWork: [],
+        openTasks: [],
+        unresolvedQuestions: []
+    };
+    for (const key of itemKeys) {
+        const items = value[key];
+        if (!Array.isArray(items)
+            || items.length > types_1.MAX_CHAT_SUMMARY_ITEMS
+            || !items.every(isSummaryText)) {
+            return undefined;
+        }
+        lists[key] = [...items];
+    }
+    const content = {
+        goal: value.goal,
+        constraints: lists.constraints,
+        decisions,
+        importantFiles: lists.importantFiles,
+        completedWork: lists.completedWork,
+        openTasks: lists.openTasks,
+        unresolvedQuestions: lists.unresolvedQuestions
+    };
+    return JSON.stringify(content).length <= types_1.MAX_CHAT_SUMMARY_CHARACTERS
+        ? content
+        : undefined;
 }
 function parseChatMemorySnapshot(value) {
     if (!isRecord(value)
@@ -177,6 +289,12 @@ function isContentText(value, allowEmpty) {
     return typeof value === 'string'
         && (allowEmpty || value.trim().length > 0)
         && value.length <= types_1.MAX_CHAT_TURN_CHARACTERS
+        && !value.includes('\0');
+}
+function isSummaryText(value) {
+    return typeof value === 'string'
+        && value.trim().length > 0
+        && value.length <= types_1.MAX_CHAT_SUMMARY_ITEM_CHARACTERS
         && !value.includes('\0');
 }
 function isChatInteger(value, minimum) {

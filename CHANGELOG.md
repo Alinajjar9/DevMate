@@ -2,6 +2,26 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Add secure storage access for compact chat summaries
+
+### Changed
+
+- Added shared bounded contracts for structured chat summaries containing the goal, constraints, decisions and reasons, important files, completed work, open tasks, and unresolved questions.
+- Added authenticated `chat-memory-v1` endpoints to save, load, and clear one session summary through the existing transactional SQLite repository.
+- Keeps raw turns unchanged when summaries are written or removed and accepts compaction boundaries only at completed turns.
+- Returns an explicit `null` when a chat has no summary so absence remains unambiguous across the Python and TypeScript boundary.
+- Added loopback-only TypeScript client operations with strict response decoding and request matching for session, boundary, timestamp, and content.
+- Added the summary version and size limits to cross-language contract verification.
+- Kept model-based summary generation, automatic compaction triggers, prompt inclusion, and manual UI controls out of this step.
+
+### Verification
+
+- Focused authenticated summary API coverage — 7 backend tests passed.
+- `npm run verify` — 297 extension tests and 157 backend tests passed; 67 cross-language contracts and 31 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-23 — Store chats directly in SQLite
 
 ### Changed

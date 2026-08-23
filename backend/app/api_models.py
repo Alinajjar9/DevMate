@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .chat_memory_contracts import (
+    CHAT_SUMMARY_VERSION,
     FILE_CHANGE_KINDS,
     MAX_CHAT_DIFF_ID_CHARACTERS,
     MAX_CHAT_FILE_CHANGE_PATH_CHARACTERS,
@@ -13,6 +14,9 @@ from .chat_memory_contracts import (
     MAX_CHAT_SESSIONS_RETURNED,
     MAX_CHAT_SESSION_ID_CHARACTERS,
     MAX_CHAT_SESSION_TITLE_CHARACTERS,
+    MAX_CHAT_SUMMARY_CHARACTERS,
+    MAX_CHAT_SUMMARY_ITEM_CHARACTERS,
+    MAX_CHAT_SUMMARY_ITEMS,
     MAX_CHAT_TURNS_PER_SNAPSHOT,
     MAX_CHAT_TURN_CHARACTERS,
     MAX_CHAT_WORKSPACE_IDENTITY_CHARACTERS,
@@ -725,6 +729,131 @@ class ChatMemoryDeleteData(ChatMemoryModel):
 class ChatMemoryDeleteResult(ChatMemoryModel):
     status: Literal["ok"]
     data: ChatMemoryDeleteData
+
+
+class ChatMemorySummaryDecisionData(ChatMemoryModel):
+    decision: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_decision_text(self) -> "ChatMemorySummaryDecisionData":
+        _validate_chat_content(
+            self.decision,
+            "summary decision",
+            MAX_CHAT_SUMMARY_ITEM_CHARACTERS,
+            allow_empty=False,
+        )
+        _validate_chat_content(
+            self.reason,
+            "summary decision reason",
+            MAX_CHAT_SUMMARY_ITEM_CHARACTERS,
+            allow_empty=False,
+        )
+        return self
+
+
+class ChatMemorySummaryContentData(ChatMemoryModel):
+    goal: str = Field(min_length=1)
+    constraints: list[str] = Field(default_factory=list, max_length=MAX_CHAT_SUMMARY_ITEMS)
+    decisions: list[ChatMemorySummaryDecisionData] = Field(
+        default_factory=list,
+        max_length=MAX_CHAT_SUMMARY_ITEMS,
+    )
+    importantFiles: list[str] = Field(default_factory=list, max_length=MAX_CHAT_SUMMARY_ITEMS)
+    completedWork: list[str] = Field(default_factory=list, max_length=MAX_CHAT_SUMMARY_ITEMS)
+    openTasks: list[str] = Field(default_factory=list, max_length=MAX_CHAT_SUMMARY_ITEMS)
+    unresolvedQuestions: list[str] = Field(
+        default_factory=list,
+        max_length=MAX_CHAT_SUMMARY_ITEMS,
+    )
+
+    @model_validator(mode="after")
+    def validate_summary_content(self) -> "ChatMemorySummaryContentData":
+        _validate_chat_content(
+            self.goal,
+            "summary goal",
+            MAX_CHAT_SUMMARY_ITEM_CHARACTERS,
+            allow_empty=False,
+        )
+        for label, values in (
+            ("constraints", self.constraints),
+            ("important files", self.importantFiles),
+            ("completed work", self.completedWork),
+            ("open tasks", self.openTasks),
+            ("unresolved questions", self.unresolvedQuestions),
+        ):
+            for value in values:
+                _validate_chat_content(
+                    value,
+                    f"summary {label} item",
+                    MAX_CHAT_SUMMARY_ITEM_CHARACTERS,
+                    allow_empty=False,
+                )
+        serialized = json.dumps(
+            self.model_dump(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        if _utf16_character_count(serialized) > MAX_CHAT_SUMMARY_CHARACTERS:
+            raise ValueError("chat summary is too large")
+        return self
+
+
+class ChatMemorySummaryData(ChatMemoryModel):
+    sessionId: str = Field(
+        min_length=1,
+        max_length=MAX_CHAT_SESSION_ID_CHARACTERS,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$",
+    )
+    summaryVersion: Literal[CHAT_SUMMARY_VERSION]
+    content: ChatMemorySummaryContentData
+    lastCompactedTurn: int = Field(ge=0, le=MAX_CHAT_INTEGER)
+    createdAtMs: int = Field(ge=0, le=MAX_CHAT_INTEGER)
+    updatedAtMs: int = Field(ge=0, le=MAX_CHAT_INTEGER)
+
+    @model_validator(mode="after")
+    def validate_summary_timestamps(self) -> "ChatMemorySummaryData":
+        if self.updatedAtMs < self.createdAtMs:
+            raise ValueError("summary update time cannot precede its creation time")
+        return self
+
+
+class ChatMemorySummarySaveRequest(ChatMemoryModel):
+    sessionId: str = Field(
+        min_length=1,
+        max_length=MAX_CHAT_SESSION_ID_CHARACTERS,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$",
+    )
+    content: ChatMemorySummaryContentData
+    lastCompactedTurn: int = Field(ge=0, le=MAX_CHAT_INTEGER)
+    updatedAtMs: int = Field(ge=0, le=MAX_CHAT_INTEGER)
+
+
+class ChatMemorySummarySaveData(ChatMemoryModel):
+    summary: ChatMemorySummaryData
+
+
+class ChatMemorySummarySaveResult(ChatMemoryModel):
+    status: Literal["ok"]
+    data: ChatMemorySummarySaveData
+
+
+class ChatMemorySummaryLoadData(ChatMemoryModel):
+    summary: ChatMemorySummaryData | None
+
+
+class ChatMemorySummaryLoadResult(ChatMemoryModel):
+    status: Literal["ok"]
+    data: ChatMemorySummaryLoadData
+
+
+class ChatMemorySummaryClearData(ChatMemoryModel):
+    cleared: bool
+
+
+class ChatMemorySummaryClearResult(ChatMemoryModel):
+    status: Literal["ok"]
+    data: ChatMemorySummaryClearData
 
 
 class FileChange(BaseModel):

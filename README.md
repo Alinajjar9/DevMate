@@ -186,7 +186,7 @@ The private SQLite store now includes versioned foundations for chat sessions, r
 
 SQLite is the live persistent source for the current workspace's sessions. The extension loads recent sessions after the managed backend is authenticated, writes pending and completed turns directly through a focused session repository, and keeps unsaved changes in memory if local storage is temporarily unavailable. Pre-release VS Code chat state is intentionally not migrated or maintained as a second copy.
 
-The managed backend advertises the optional `chat-memory-v1` capability and exposes authenticated versioned operations to atomically save bounded session batches, load one complete raw transcript, list recent sessions for one workspace, and delete one session. The TypeScript client sends chat data only to a verified loopback backend and strictly validates every response against the request. Summary and pinned-memory tables remain isolated foundations for the upcoming compaction feature and are not included in model requests yet.
+The managed backend advertises the optional `chat-memory-v1` capability and exposes authenticated versioned operations to atomically save bounded session batches, load one complete raw transcript, list recent sessions for one workspace, and delete one session. It also provides strict save, load, and clear operations for one validated structured summary without removing raw turns. The TypeScript client sends chat data only to a verified loopback backend and validates every response against the request. Automatic summary generation, summary prompt inclusion, and pinned-memory API operations are not connected yet.
 
 ## Agent tools
 

@@ -18,16 +18,28 @@ from .api_models import (
     ChatMemorySessionData,
     ChatMemorySessionRequest,
     ChatMemorySnapshotData,
+    ChatMemorySummaryClearData,
+    ChatMemorySummaryClearResult,
+    ChatMemorySummaryContentData,
+    ChatMemorySummaryData,
+    ChatMemorySummaryLoadData,
+    ChatMemorySummaryLoadResult,
+    ChatMemorySummarySaveData,
+    ChatMemorySummarySaveRequest,
+    ChatMemorySummarySaveResult,
     ChatMemoryTurnData,
 )
-from .chat_memory_contracts import DEVMATE_CHAT_MEMORY_API_VERSION
+from .chat_memory_contracts import CHAT_SUMMARY_VERSION, DEVMATE_CHAT_MEMORY_API_VERSION
 from .chat_memory_repository import (
+    ChatDecision,
     ChatMemoryNotFoundError,
     ChatMemoryRepository,
     ChatMemoryRepositoryError,
     ChatMemoryValidationError,
     ChatSessionRecord,
     ChatSessionSnapshot,
+    ChatSummaryContent,
+    ChatSummaryRecord,
     ChatTurnRecord,
 )
 from .dependencies import get_chat_memory_repository
@@ -118,6 +130,43 @@ def _snapshot_data(value: ChatSessionSnapshot) -> ChatMemorySnapshotData:
         ) from error
 
 
+def _summary_content_record(value: ChatMemorySummaryContentData) -> ChatSummaryContent:
+    return ChatSummaryContent(
+        goal=value.goal,
+        constraints=tuple(value.constraints),
+        decisions=tuple(
+            ChatDecision(decision=item.decision, reason=item.reason)
+            for item in value.decisions
+        ),
+        important_files=tuple(value.importantFiles),
+        completed_work=tuple(value.completedWork),
+        open_tasks=tuple(value.openTasks),
+        unresolved_questions=tuple(value.unresolvedQuestions),
+    )
+
+
+def _summary_data(value: ChatSummaryRecord) -> ChatMemorySummaryData:
+    return ChatMemorySummaryData(
+        sessionId=value.session_id,
+        summaryVersion=CHAT_SUMMARY_VERSION,
+        content=ChatMemorySummaryContentData(
+            goal=value.content.goal,
+            constraints=list(value.content.constraints),
+            decisions=[
+                {"decision": item.decision, "reason": item.reason}
+                for item in value.content.decisions
+            ],
+            importantFiles=list(value.content.important_files),
+            completedWork=list(value.content.completed_work),
+            openTasks=list(value.content.open_tasks),
+            unresolvedQuestions=list(value.content.unresolved_questions),
+        ),
+        lastCompactedTurn=value.last_compacted_turn,
+        createdAtMs=value.created_at_ms,
+        updatedAtMs=value.updated_at_ms,
+    )
+
+
 @chat_memory_router.post(
     "/sessions/save",
     response_model=ChatMemorySaveResult,
@@ -200,4 +249,67 @@ async def delete_chat_memory_session(
     return ChatMemoryDeleteResult(
         status="ok",
         data=ChatMemoryDeleteData(deleted=deleted),
+    )
+
+
+@chat_memory_router.post(
+    "/summaries/save",
+    response_model=ChatMemorySummarySaveResult,
+    response_model_exclude_none=True,
+)
+async def save_chat_memory_summary(
+    request: ChatMemorySummarySaveRequest,
+    repository: Annotated[ChatMemoryRepository, Depends(get_chat_memory_repository)],
+) -> ChatMemorySummarySaveResult:
+    try:
+        summary = repository.save_summary(
+            request.sessionId,
+            _summary_content_record(request.content),
+            last_compacted_turn=request.lastCompactedTurn,
+            updated_at_ms=request.updatedAtMs,
+        )
+    except ChatMemoryRepositoryError as error:
+        _raise_repository_error(error)
+    return ChatMemorySummarySaveResult(
+        status="ok",
+        data=ChatMemorySummarySaveData(summary=_summary_data(summary)),
+    )
+
+
+@chat_memory_router.post(
+    "/summaries/load",
+    response_model=ChatMemorySummaryLoadResult,
+)
+async def load_chat_memory_summary(
+    request: ChatMemorySessionRequest,
+    repository: Annotated[ChatMemoryRepository, Depends(get_chat_memory_repository)],
+) -> ChatMemorySummaryLoadResult:
+    try:
+        summary = repository.load_summary(request.sessionId)
+    except ChatMemoryRepositoryError as error:
+        _raise_repository_error(error)
+    return ChatMemorySummaryLoadResult(
+        status="ok",
+        data=ChatMemorySummaryLoadData(
+            summary=_summary_data(summary) if summary is not None else None,
+        ),
+    )
+
+
+@chat_memory_router.post(
+    "/summaries/clear",
+    response_model=ChatMemorySummaryClearResult,
+    response_model_exclude_none=True,
+)
+async def clear_chat_memory_summary(
+    request: ChatMemorySessionRequest,
+    repository: Annotated[ChatMemoryRepository, Depends(get_chat_memory_repository)],
+) -> ChatMemorySummaryClearResult:
+    try:
+        cleared = repository.clear_summary(request.sessionId)
+    except ChatMemoryRepositoryError as error:
+        _raise_repository_error(error)
+    return ChatMemorySummaryClearResult(
+        status="ok",
+        data=ChatMemorySummaryClearData(cleared=cleared),
     )

@@ -86,7 +86,11 @@ export const MAX_CHAT_DIFF_ID_CHARACTERS = 120;
 export const MAX_CHAT_TURNS_PER_SNAPSHOT = 1_000;
 export const MAX_CHAT_SESSIONS_PER_REQUEST = 20;
 export const MAX_CHAT_SESSIONS_RETURNED = 100;
+export const MAX_CHAT_SUMMARY_CHARACTERS = 32_000;
+export const MAX_CHAT_SUMMARY_ITEMS = 50;
+export const MAX_CHAT_SUMMARY_ITEM_CHARACTERS = 1_000;
 export const MAX_CHAT_INTEGER = 9_007_199_254_740_991;
+export const CHAT_SUMMARY_VERSION = 1;
 export type ApiErrorKind =
   | 'cancelled'
   | 'configuration'
@@ -310,6 +314,49 @@ export type ChatMemoryListResponse = {
 
 export type ChatMemoryDeleteResponse = {
   deleted: boolean;
+};
+
+export type ChatMemorySummaryDecision = {
+  decision: string;
+  reason: string;
+};
+
+export type ChatMemorySummaryContent = {
+  goal: string;
+  constraints: string[];
+  decisions: ChatMemorySummaryDecision[];
+  importantFiles: string[];
+  completedWork: string[];
+  openTasks: string[];
+  unresolvedQuestions: string[];
+};
+
+export type ChatMemorySummary = {
+  sessionId: string;
+  summaryVersion: typeof CHAT_SUMMARY_VERSION;
+  content: ChatMemorySummaryContent;
+  lastCompactedTurn: number;
+  createdAtMs: number;
+  updatedAtMs: number;
+};
+
+export type ChatMemorySummarySaveRequest = {
+  sessionId: string;
+  content: ChatMemorySummaryContent;
+  lastCompactedTurn: number;
+  updatedAtMs: number;
+};
+
+export type ChatMemorySummarySaveResponse = {
+  summary: ChatMemorySummary;
+};
+
+export type ChatMemorySummaryLoadResponse = {
+  summary: ChatMemorySummary | null;
+};
+
+export type ChatMemorySummaryClearResponse = {
+  cleared: boolean;
 };
 
 export type LlmSettings = {
