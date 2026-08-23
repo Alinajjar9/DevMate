@@ -12,6 +12,7 @@ class EmbeddingRequest:
     base_url: str
     api_key: str | None
     inputs: tuple[str, ...]
+    remote_allowed: bool = False
 
 
 @dataclass(frozen=True, slots=True)

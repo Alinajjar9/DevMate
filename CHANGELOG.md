@@ -2,6 +2,24 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Add safe embedding provider clients
+
+### Changed
+
+- Added bounded batch clients for native Ollama `/api/embed` and OpenAI-compatible `/embeddings` endpoints.
+- Reused the existing HTTPS, loopback, DNS-resolution, address-pinning, redirect, timeout, and provider-error safeguards instead of creating a separate network trust path.
+- Required backend-side remote-provider consent before DNS resolution or source transfer, even when a caller previously validated the embedding profile.
+- Disabled silent Ollama input truncation and requested explicit floating-point output from OpenAI-compatible providers.
+- Strictly validated response models, batch counts, OpenAI indexes, dimensions, numeric values, and nonzero vectors; restored request order and normalized every accepted vector to unit length.
+- Kept the clients disconnected from HTTP routes, profile UI, SQLite writes, indexing, and retrieval so semantic search remains inactive in this step.
+
+### Verification
+
+- `npm run verify` — 221 extension tests and 118 backend tests passed; 40 cross-language contracts and 25 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-22 — Prepare configurable embedding providers
 
 ### Changed

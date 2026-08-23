@@ -6,7 +6,7 @@ import os
 import socket
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import Literal, Protocol
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 import httpx
 
@@ -256,7 +256,7 @@ class OpenAICompatibleProvider:
                 "provider_invalid_response",
             )
         if response.status_code >= 400:
-            raise _provider_http_error(response)
+            raise provider_http_error(response)
 
         try:
             response_payload = response.json()
@@ -314,7 +314,7 @@ class OpenAICompatibleProvider:
                         )
                     if response.status_code >= 400:
                         await response.aread()
-                        raise _provider_http_error(response)
+                        raise provider_http_error(response)
 
                     content_type = response.headers.get("content-type", "").casefold()
                     if "text/event-stream" not in content_type:
@@ -547,34 +547,7 @@ def create_chat_completions_url(
     base_url = configured_base_url or (
         DEFAULT_OPENAI_BASE_URL if provider == "openai" else DEFAULT_OLLAMA_BASE_URL
     )
-    try:
-        parsed = urlsplit(base_url.strip())
-        hostname = parsed.hostname
-    except ValueError as error:
-        raise ProviderError("The model profile has an invalid base URL.", 400) from error
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.netloc
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ProviderError("The model profile has an invalid base URL.", 400)
-    if parsed.scheme == "http" and not _is_loopback_provider_hostname(hostname):
-        raise ProviderError(
-            "Remote model providers must use HTTPS. Plain HTTP is allowed only for local loopback providers.",
-            400,
-        )
-    literal_address = _provider_ip_address(hostname)
-    if literal_address is not None and not _is_allowed_provider_address(
-        literal_address,
-        local_provider=_is_loopback_provider_hostname(hostname),
-    ):
-        raise ProviderError(
-            "The model provider URL points to a private or otherwise unsafe network address.",
-            400,
-        )
+    parsed = validate_provider_base_url(base_url)
 
     path = parsed.path.rstrip("/")
     if provider == "ollama" and path in {"", "/"}:
@@ -587,7 +560,52 @@ def create_chat_completions_url(
     return urlunsplit((parsed.scheme, parsed.netloc, endpoint_path, "", ""))
 
 
-def _is_loopback_provider_hostname(hostname: str | None) -> bool:
+def validate_provider_base_url(
+    base_url: str,
+    *,
+    profile_label: str = "model",
+) -> SplitResult:
+    try:
+        parsed = urlsplit(base_url.strip())
+        hostname = parsed.hostname
+    except ValueError as error:
+        raise ProviderError(
+            f"The {profile_label} profile has an invalid base URL.",
+            400,
+        ) from error
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ProviderError(
+            f"The {profile_label} profile has an invalid base URL.",
+            400,
+        )
+    if parsed.scheme == "http" and not is_loopback_provider_hostname(hostname):
+        raise ProviderError(
+            f"Remote {profile_label} providers must use HTTPS. "
+            "Plain HTTP is allowed only for local loopback providers.",
+            400,
+        )
+    literal_address = _provider_ip_address(hostname)
+    if literal_address is not None and not _is_allowed_provider_address(
+        literal_address,
+        local_provider=is_loopback_provider_hostname(hostname),
+    ):
+        raise ProviderError(
+            f"The {profile_label} provider URL points to a private or otherwise "
+            "unsafe network address.",
+            400,
+        )
+
+    return parsed
+
+
+def is_loopback_provider_hostname(hostname: str | None) -> bool:
     if hostname is None:
         return False
     if hostname.casefold() == "localhost":
@@ -663,7 +681,7 @@ async def resolve_provider_destination(
                 502,
             )
 
-    local_provider = _is_loopback_provider_hostname(hostname)
+    local_provider = is_loopback_provider_hostname(hostname)
     if any(
         not _is_allowed_provider_address(address, local_provider=local_provider)
         for address in addresses
@@ -732,7 +750,7 @@ def _is_allowed_provider_address(
     )
 
 
-def _provider_http_error(response: httpx.Response) -> ProviderError:
+def provider_http_error(response: httpx.Response) -> ProviderError:
     detail = _read_error_detail(response)
     if response.status_code in {401, 403}:
         return ProviderError(
