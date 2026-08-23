@@ -135,6 +135,7 @@ class KnowledgeIndexSynchronizer {
             }, signal), 'finish the workspace index');
             const result = {
                 kind: 'completed',
+                workspaceKey: snapshot.workspaceKey,
                 indexState,
                 scannedFiles: snapshot.files.length,
                 indexedFiles: writer.upsertedFiles,

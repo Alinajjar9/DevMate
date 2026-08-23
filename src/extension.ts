@@ -4,6 +4,12 @@ import { health } from './api/client';
 import { DEVMATE_KNOWLEDGE_STORE_FILE_NAME } from './api/types';
 import { LocalBackendManager } from './backendManager';
 import { DevMateChatViewProvider, getBackendUrl } from './chatViewProvider';
+import { EmbeddingIndexScheduler } from './embeddingIndexScheduler';
+import {
+  ACTIVE_EMBEDDING_PROFILE_STORAGE_KEY,
+  EMBEDDING_PROFILES_STORAGE_KEY,
+  embeddingSecretKeyForProfile
+} from './embeddingProfiles';
 import {
   KnowledgeIndexSynchronizer,
   defaultKnowledgeIndexApi
@@ -23,15 +29,42 @@ export function activate(context: vscode.ExtensionContext): void {
     DEVMATE_KNOWLEDGE_STORE_FILE_NAME
   ).fsPath;
   let chatViewProvider: DevMateChatViewProvider | undefined;
+  let backendCapabilities: readonly string[] = [];
   const workspaceIndexSource = new VsCodeWorkspaceIndexSource();
   const knowledgeIndexSynchronizer = new KnowledgeIndexSynchronizer(
     workspaceIndexSource,
     defaultKnowledgeIndexApi,
     (message) => backendOutput.append(`[DevMate] Knowledge index: ${message}\n`)
   );
+  const embeddingIndexScheduler = new EmbeddingIndexScheduler(
+    {
+      readProfiles: () => context.globalState.get<unknown>(EMBEDDING_PROFILES_STORAGE_KEY),
+      readActiveProfileId: () => context.globalState.get<unknown>(
+        ACTIVE_EMBEDDING_PROFILE_STORAGE_KEY
+      ),
+      readSecret: (profileId) => context.secrets.get(
+        embeddingSecretKeyForProfile(profileId)
+      )
+    },
+    undefined,
+    (message) => backendOutput.append(`[DevMate] Embedding index: ${message}\n`)
+  );
+  const workspaceIndexChangeSource = new VsCodeWorkspaceIndexChangeSource();
+  const embeddingInvalidationSubscription = workspaceIndexChangeSource.onDidChange(() => {
+    embeddingIndexScheduler.invalidateWorkspace();
+  });
   const workspaceIndexCoordinator = new WorkspaceIndexCoordinator(
-    new VsCodeWorkspaceIndexChangeSource(),
-    (access, signal) => knowledgeIndexSynchronizer.synchronize(access, signal)
+    workspaceIndexChangeSource,
+    async (access, signal) => {
+      embeddingIndexScheduler.invalidateWorkspace();
+      const result = await knowledgeIndexSynchronizer.synchronize(access, signal);
+      if (result.kind === 'completed'
+        && result.indexState === 'ready'
+        && !signal.aborted) {
+        embeddingIndexScheduler.scheduleWorkspace(result.workspaceKey);
+      }
+      return result;
+    }
   );
   let backendManager: LocalBackendManager;
   backendManager = new LocalBackendManager({
@@ -46,19 +79,29 @@ export function activate(context: vscode.ExtensionContext): void {
       'backendPythonPath',
       ''
     ),
-    healthCheck: async (backendUrl, backendToken) => (
-      await health(backendUrl, backendToken)
-    ).status === 'ok',
+    healthCheck: async (backendUrl, backendToken) => {
+      const result = await health(backendUrl, backendToken);
+      backendCapabilities = result.status === 'ok'
+        ? result.data?.capabilities ?? []
+        : [];
+      return result.status === 'ok';
+    },
     fileExists: (filePath) => fs.existsSync(filePath),
     onStatus: (status) => {
       chatViewProvider?.notifyBackendStatusChanged(status);
       const backendToken = backendManager.requestToken;
       if (status.state === 'online' && backendToken) {
-        workspaceIndexCoordinator.setBackendAccess({
+        const access = {
           backendUrl: getBackendUrl(),
           backendToken
+        };
+        embeddingIndexScheduler.setBackendAccess({
+          ...access,
+          capabilities: backendCapabilities
         });
+        workspaceIndexCoordinator.setBackendAccess(access);
       } else {
+        embeddingIndexScheduler.setBackendAccess(undefined);
         workspaceIndexCoordinator.setBackendAccess(undefined);
       }
     },
@@ -126,6 +169,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     chatViewProvider,
+    embeddingIndexScheduler,
+    embeddingInvalidationSubscription,
     workspaceIndexCoordinator,
     knowledgeIndexSynchronizer,
     backendManager,

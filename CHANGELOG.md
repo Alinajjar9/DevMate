@@ -2,6 +2,26 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Schedule code embedding generation in the extension
+
+### Changed
+
+- Added a separate extension-host scheduler that starts only after the authenticated lexical workspace index finishes in a fully ready state.
+- Selected the explicitly active validated embedding profile, otherwise preferring a configured local Ollama profile, and read only the selected profile's credential from SecretStorage.
+- Required the backend's optional `embedding-index-v1` capability before scheduling any embedding request.
+- Generated at most 32 code embeddings in each one-batch request and continued incomplete indexes through delayed, independently cancellable calls.
+- Cancelled active and pending embedding work when source files, the workspace, backend access, or backend authentication changed.
+- Stopped cleanly for missing profiles, unsupported backends, provider failures, and completed indexes without creating an automatic failure-retry loop.
+- Kept query embeddings, semantic ranking, hybrid retrieval, and embedding-profile UI behavior unchanged.
+
+### Verification
+
+- Focused scheduler, API-client, synchronization, and watcher coverage — 73 tests passed.
+- `npm run verify` — 240 extension tests and 136 backend tests passed; 47 cross-language contracts and 26 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-23 — Add the extension client for embedding indexing
 
 ### Changed

@@ -319,6 +319,7 @@ function deferred() {
 function completedResult() {
   return {
     kind: 'completed',
+    workspaceKey: 'workspace:test',
     indexState: 'ready',
     scannedFiles: 0,
     indexedFiles: 0,

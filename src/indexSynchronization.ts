@@ -84,6 +84,7 @@ export type KnowledgeIndexApi = {
 export type KnowledgeIndexSynchronizationResult =
   | {
     kind: 'completed';
+    workspaceKey: string;
     indexState: 'ready' | 'stale';
     scannedFiles: number;
     indexedFiles: number;
@@ -275,6 +276,7 @@ export class KnowledgeIndexSynchronizer {
 
       const result: KnowledgeIndexSynchronizationResult = {
         kind: 'completed',
+        workspaceKey: snapshot.workspaceKey,
         indexState,
         scannedFiles: snapshot.files.length,
         indexedFiles: writer.upsertedFiles,

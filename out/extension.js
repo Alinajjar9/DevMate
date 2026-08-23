@@ -41,6 +41,8 @@ const client_1 = require("./api/client");
 const types_1 = require("./api/types");
 const backendManager_1 = require("./backendManager");
 const chatViewProvider_1 = require("./chatViewProvider");
+const embeddingIndexScheduler_1 = require("./embeddingIndexScheduler");
+const embeddingProfiles_1 = require("./embeddingProfiles");
 const indexSynchronization_1 = require("./indexSynchronization");
 const projectRetriever_1 = require("./projectRetriever");
 const workspaceIndexSource_1 = require("./workspaceIndexSource");
@@ -49,9 +51,28 @@ function activate(context) {
     const backendOutput = vscode.window.createOutputChannel('DevMate Backend');
     const knowledgeStorePath = vscode.Uri.joinPath(context.globalStorageUri, 'knowledge', types_1.DEVMATE_KNOWLEDGE_STORE_FILE_NAME).fsPath;
     let chatViewProvider;
+    let backendCapabilities = [];
     const workspaceIndexSource = new workspaceIndexSource_1.VsCodeWorkspaceIndexSource();
     const knowledgeIndexSynchronizer = new indexSynchronization_1.KnowledgeIndexSynchronizer(workspaceIndexSource, indexSynchronization_1.defaultKnowledgeIndexApi, (message) => backendOutput.append(`[DevMate] Knowledge index: ${message}\n`));
-    const workspaceIndexCoordinator = new workspaceIndexWatcher_1.WorkspaceIndexCoordinator(new workspaceIndexWatcher_1.VsCodeWorkspaceIndexChangeSource(), (access, signal) => knowledgeIndexSynchronizer.synchronize(access, signal));
+    const embeddingIndexScheduler = new embeddingIndexScheduler_1.EmbeddingIndexScheduler({
+        readProfiles: () => context.globalState.get(embeddingProfiles_1.EMBEDDING_PROFILES_STORAGE_KEY),
+        readActiveProfileId: () => context.globalState.get(embeddingProfiles_1.ACTIVE_EMBEDDING_PROFILE_STORAGE_KEY),
+        readSecret: (profileId) => context.secrets.get((0, embeddingProfiles_1.embeddingSecretKeyForProfile)(profileId))
+    }, undefined, (message) => backendOutput.append(`[DevMate] Embedding index: ${message}\n`));
+    const workspaceIndexChangeSource = new workspaceIndexWatcher_1.VsCodeWorkspaceIndexChangeSource();
+    const embeddingInvalidationSubscription = workspaceIndexChangeSource.onDidChange(() => {
+        embeddingIndexScheduler.invalidateWorkspace();
+    });
+    const workspaceIndexCoordinator = new workspaceIndexWatcher_1.WorkspaceIndexCoordinator(workspaceIndexChangeSource, async (access, signal) => {
+        embeddingIndexScheduler.invalidateWorkspace();
+        const result = await knowledgeIndexSynchronizer.synchronize(access, signal);
+        if (result.kind === 'completed'
+            && result.indexState === 'ready'
+            && !signal.aborted) {
+            embeddingIndexScheduler.scheduleWorkspace(result.workspaceKey);
+        }
+        return result;
+    });
     let backendManager;
     backendManager = new backendManager_1.LocalBackendManager({
         extensionPath: context.extensionUri.fsPath,
@@ -59,18 +80,30 @@ function activate(context) {
         getBackendUrl: chatViewProvider_1.getBackendUrl,
         isManagementEnabled: () => vscode.workspace.getConfiguration('devMate').get('manageLocalBackend', true),
         getConfiguredPythonPath: () => vscode.workspace.getConfiguration('devMate').get('backendPythonPath', ''),
-        healthCheck: async (backendUrl, backendToken) => (await (0, client_1.health)(backendUrl, backendToken)).status === 'ok',
+        healthCheck: async (backendUrl, backendToken) => {
+            const result = await (0, client_1.health)(backendUrl, backendToken);
+            backendCapabilities = result.status === 'ok'
+                ? result.data?.capabilities ?? []
+                : [];
+            return result.status === 'ok';
+        },
         fileExists: (filePath) => fs.existsSync(filePath),
         onStatus: (status) => {
             chatViewProvider?.notifyBackendStatusChanged(status);
             const backendToken = backendManager.requestToken;
             if (status.state === 'online' && backendToken) {
-                workspaceIndexCoordinator.setBackendAccess({
+                const access = {
                     backendUrl: (0, chatViewProvider_1.getBackendUrl)(),
                     backendToken
+                };
+                embeddingIndexScheduler.setBackendAccess({
+                    ...access,
+                    capabilities: backendCapabilities
                 });
+                workspaceIndexCoordinator.setBackendAccess(access);
             }
             else {
+                embeddingIndexScheduler.setBackendAccess(undefined);
                 workspaceIndexCoordinator.setBackendAccess(undefined);
             }
         },
@@ -115,7 +148,7 @@ function activate(context) {
     statusBarItem.tooltip = 'Open DevMate';
     statusBarItem.command = 'devMate.openChat';
     statusBarItem.show();
-    context.subscriptions.push(chatViewProvider, workspaceIndexCoordinator, knowledgeIndexSynchronizer, backendManager, backendOutput, viewRegistration, diffContentRegistration, workspaceTrustRegistration, backendConfigurationRegistration, openChatCommand, statusBarItem);
+    context.subscriptions.push(chatViewProvider, embeddingIndexScheduler, embeddingInvalidationSubscription, workspaceIndexCoordinator, knowledgeIndexSynchronizer, backendManager, backendOutput, viewRegistration, diffContentRegistration, workspaceTrustRegistration, backendConfigurationRegistration, openChatCommand, statusBarItem);
     void backendManager.start();
 }
 function deactivate() {

@@ -29,6 +29,7 @@ test('initial synchronization hashes, chunks, and stores each workspace file', a
 
   assert.deepEqual(result, {
     kind: 'completed',
+    workspaceKey: 'workspace:test',
     indexState: 'ready',
     scannedFiles: 2,
     indexedFiles: 2,
