@@ -8,7 +8,9 @@ const {
   retrieveProjectChunks
 } = require('../out/projectIndex');
 const {
+  fuseProjectSearchResults,
   LexicalProjectRetriever,
+  RECIPROCAL_RANK_FUSION_CONSTANT,
   SqliteProjectRetriever
 } = require('../out/projectRetriever');
 
@@ -152,7 +154,7 @@ test('SQLite project retrieval uses semantic ranking when a selected profile is 
     },
     search: async () => {
       lexicalCalls += 1;
-      throw new Error('Lexical search must not run after a usable semantic result.');
+      return { status: 'ok', data: { results: [] } };
     }
   });
   const signal = new AbortController().signal;
@@ -164,7 +166,7 @@ test('SQLite project retrieval uses semantic ranking when a selected profile is 
     signal
   });
 
-  assert.equal(lexicalCalls, 0);
+  assert.equal(lexicalCalls, 1);
   assert.equal(results.length, 1);
   assert.equal(results[0].relativePath, 'src/worker.ts');
   assert.equal(results[0].content, workerContent);
@@ -184,6 +186,46 @@ test('SQLite project retrieval uses semantic ranking when a selected profile is 
     providerApiKey: 'semantic-secret',
     signal
   }]);
+});
+
+test('reciprocal rank fusion rewards agreement and preserves semantic-only matches', () => {
+  const auth = searchItem(
+    'src/auth.ts',
+    'export function validateSession() { return true; }\n',
+    1,
+    1,
+    20
+  );
+  const catalog = searchItem(
+    'src/catalog.ts',
+    'export function listProducts() { return []; }\n',
+    1,
+    1,
+    10
+  );
+  const worker = searchItem(
+    'src/worker.ts',
+    'export async function runQueuedJobs() {}\n',
+    1,
+    1,
+    0.98
+  );
+
+  const fused = fuseProjectSearchResults(
+    [auth, catalog],
+    [worker, { ...auth, score: 0.75 }],
+    3
+  );
+
+  assert.equal(RECIPROCAL_RANK_FUSION_CONSTANT, 60);
+  assert.deepEqual(fused.map((result) => result.relativePath), [
+    'src/auth.ts',
+    'src/worker.ts',
+    'src/catalog.ts'
+  ]);
+  assert.ok(fused[0].score > fused[1].score);
+  assert.equal(fused.filter((result) => result.relativePath === 'src/auth.ts').length, 1);
+  assert.deepEqual(fuseProjectSearchResults([auth], [worker], 0), []);
 });
 
 test('semantic failures and stale semantic chunks fall through to SQLite lexical search', async () => {
@@ -251,7 +293,7 @@ test('semantic failures and stale semantic chunks fall through to SQLite lexical
   }
 });
 
-test('cancelled semantic searches do not continue into lexical or JSON retrieval', async () => {
+test('cancelled hybrid searches do not continue into JSON retrieval', async () => {
   let lexicalCalls = 0;
   let fallbackCalls = 0;
   const retriever = new SqliteProjectRetriever({
@@ -282,7 +324,7 @@ test('cancelled semantic searches do not continue into lexical or JSON retrieval
     question: 'background work',
     limits: { maxChunks: 5, maxCharacters: 40_000 }
   }), []);
-  assert.equal(lexicalCalls, 0);
+  assert.equal(lexicalCalls, 1);
   assert.equal(fallbackCalls, 0);
 });
 

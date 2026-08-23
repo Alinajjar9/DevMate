@@ -2,6 +2,25 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Combine semantic and exact code search
+
+### Changed
+
+- Replaced semantic-first project retrieval with equal-weight Reciprocal Rank Fusion over semantic cosine and SQLite lexical result positions.
+- Started semantic and lexical searches together so lexical lookup does not wait for the embedding provider before beginning.
+- Deduplicated chunks found by both strategies, rewarded cross-strategy agreement, retained semantic-only conceptual matches, and used deterministic tie ordering.
+- Preserved raw lexical or semantic ordering whenever only one strategy is available instead of unnecessarily rewriting its scores.
+- Kept cancellation terminal and retained exact-source rereads, stale-chunk rejection, per-file diversity, bounded context selection, and the legacy JSON fallback.
+- Kept filename, path, and symbol boosts, diagnostic retrieval modes, context budgeting, and chat compaction unchanged for later milestones.
+
+### Verification
+
+- Focused hybrid retrieval and project-context coverage — 22 tests passed.
+- `npm run verify` — 257 extension tests and 142 backend tests passed; 49 cross-language contracts and 27 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-23 — Search project code by meaning
 
 ### Changed

@@ -12,6 +12,7 @@ import {
 import type {
   ApiResult,
   KnowledgeIndexSearchRequest,
+  KnowledgeIndexSearchItem,
   KnowledgeIndexSearchResponse,
   KnowledgeIndexSemanticSearchRequest,
   KnowledgeIndexSemanticSearchResponse
@@ -49,6 +50,7 @@ export type KnowledgeIndexSearch = (
 ) => Promise<ApiResult<KnowledgeIndexSearchResponse>>;
 
 export const SEMANTIC_SEARCH_CAPABILITY = 'semantic-search-v1';
+export const RECIPROCAL_RANK_FUSION_CONSTANT = 60;
 
 export type KnowledgeIndexSearchAccess = KnowledgeIndexAccess & {
   capabilities?: readonly string[];
@@ -129,45 +131,37 @@ export class SqliteProjectRetriever implements ProjectRetriever {
       return [];
     }
 
-    const semanticResponse = await this.trySemanticSearch(
-      access,
-      request,
-      Math.min(MAX_SEMANTIC_RESULTS, Math.max(20, maxChunks * 4))
-    );
-    if (request.signal?.aborted || semanticResponse?.errorKind === 'cancelled') {
-      return [];
-    }
-    if (semanticResponse?.status === 'ok'
-      && semanticResponse.data
-      && semanticResponse.data.results.length > 0) {
-      const semanticChunks = await this.currentChunks(
-        semanticResponse.data.results,
+    const resultLimit = Math.max(20, maxChunks * 4);
+    const [lexicalResponse, semanticResponse] = await Promise.all([
+      this.tryLexicalSearch(
+        access,
         request,
-        maxChunks,
-        maxCharacters
-      );
-      if (request.signal?.aborted) {
-        return [];
-      }
-      if (semanticChunks.length > 0) {
-        return semanticChunks;
-      }
-    }
-
-    const response = await this.search(access, {
-      workspaceKey: request.workspaceKey,
-      query: request.question.slice(0, MAX_LEXICAL_QUERY_CHARACTERS),
-      limit: Math.min(MAX_LEXICAL_RESULTS, Math.max(20, maxChunks * 4))
-    }, request.signal);
-    if (request.signal?.aborted || response.errorKind === 'cancelled') {
+        Math.min(MAX_LEXICAL_RESULTS, resultLimit)
+      ),
+      this.trySemanticSearch(
+        access,
+        request,
+        Math.min(MAX_SEMANTIC_RESULTS, resultLimit)
+      )
+    ]);
+    if (request.signal?.aborted
+      || lexicalResponse?.errorKind === 'cancelled'
+      || semanticResponse?.errorKind === 'cancelled') {
       return [];
     }
-    if (response.status !== 'ok' || !response.data || response.data.results.length === 0) {
+    const lexicalResults = successfulResults(lexicalResponse);
+    const semanticResults = successfulResults(semanticResponse);
+    const rankedResults = lexicalResults.length > 0 && semanticResults.length > 0
+      ? fuseProjectSearchResults(lexicalResults, semanticResults, resultLimit)
+      : semanticResults.length > 0
+        ? semanticResults
+        : lexicalResults;
+    if (rankedResults.length === 0) {
       return this.fallback.retrieve(request);
     }
 
     const chunks = await this.currentChunks(
-      response.data.results,
+      rankedResults,
       request,
       maxChunks,
       maxCharacters
@@ -178,6 +172,22 @@ export class SqliteProjectRetriever implements ProjectRetriever {
     return chunks.length > 0
       ? chunks
       : this.fallback.retrieve(request);
+  }
+
+  private async tryLexicalSearch(
+    access: KnowledgeIndexSearchAccess,
+    request: ProjectRetrievalRequest,
+    limit: number
+  ): Promise<ApiResult<KnowledgeIndexSearchResponse> | undefined> {
+    try {
+      return await this.search(access, {
+        workspaceKey: request.workspaceKey ?? '',
+        query: request.question.slice(0, MAX_LEXICAL_QUERY_CHARACTERS),
+        limit
+      }, request.signal);
+    } catch {
+      return undefined;
+    }
   }
 
   private async trySemanticSearch(
@@ -265,6 +275,94 @@ export class SqliteProjectRetriever implements ProjectRetriever {
 
     return selected;
   }
+}
+
+export function fuseProjectSearchResults(
+  lexicalResults: readonly KnowledgeIndexSearchItem[],
+  semanticResults: readonly KnowledgeIndexSearchItem[],
+  limit: number
+): KnowledgeIndexSearchItem[] {
+  const boundedLimit = Number.isFinite(limit)
+    ? Math.max(0, Math.floor(limit))
+    : 0;
+  if (boundedLimit === 0) {
+    return [];
+  }
+
+  type FusionEntry = {
+    result: KnowledgeIndexSearchItem;
+    score: number;
+    bestRank: number;
+    sourceCount: number;
+  };
+  const entries = new Map<string, FusionEntry>();
+  const addRanking = (results: readonly KnowledgeIndexSearchItem[]) => {
+    const seen = new Set<string>();
+    for (let index = 0; index < results.length; index += 1) {
+      const result = results[index];
+      const key = searchResultKey(result);
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      const rank = index + 1;
+      const contribution = 1 / (RECIPROCAL_RANK_FUSION_CONSTANT + rank);
+      const existing = entries.get(key);
+      if (existing) {
+        existing.score += contribution;
+        existing.bestRank = Math.min(existing.bestRank, rank);
+        existing.sourceCount += 1;
+      } else {
+        entries.set(key, {
+          result,
+          score: contribution,
+          bestRank: rank,
+          sourceCount: 1
+        });
+      }
+    }
+  };
+
+  addRanking(lexicalResults);
+  addRanking(semanticResults);
+  return [...entries.values()]
+    .sort((left, right) => (
+      right.score - left.score
+      || right.sourceCount - left.sourceCount
+      || left.bestRank - right.bestRank
+      || compareSearchResults(left.result, right.result)
+    ))
+    .slice(0, boundedLimit)
+    .map((entry) => ({ ...entry.result, score: entry.score }));
+}
+
+function successfulResults(
+  response: ApiResult<KnowledgeIndexSearchResponse> | undefined
+): KnowledgeIndexSearchItem[] {
+  return response?.status === 'ok' && response.data
+    ? response.data.results
+    : [];
+}
+
+function searchResultKey(result: KnowledgeIndexSearchItem): string {
+  return `${normalizeFilePath(result.relativePath)}\0${result.stableId}`;
+}
+
+function compareSearchResults(
+  left: KnowledgeIndexSearchItem,
+  right: KnowledgeIndexSearchItem
+): number {
+  return compareText(
+    left.relativePath.toLocaleLowerCase('en-US'),
+    right.relativePath.toLocaleLowerCase('en-US')
+  )
+    || compareText(left.relativePath, right.relativePath)
+    || left.ordinal - right.ordinal
+    || compareText(left.stableId, right.stableId);
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function exactCurrentChunk(

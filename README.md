@@ -15,7 +15,7 @@ The project contains two applications:
 - Persistent sessions that are tied to their original workspace.
 - Built-in NVIDIA Nemotron profile plus custom OpenAI-compatible and Ollama profiles.
 - Streaming responses, cancellation, configurable timeouts, and retry handling.
-- Local lexical project retrieval with a private workspace index.
+- Local semantic and lexical project retrieval with a private workspace index.
 - File listing, ranged reading, and plain-text code search.
 - VS Code diagnostics, document symbols, definitions, and references.
 - Access to recent failed terminal commands captured through VS Code Shell Integration.
@@ -148,18 +148,19 @@ An unfinished tool run is stored as a bounded checkpoint. If the request fails o
 
 ## Project retrieval
 
-Project scope uses the local SQLite lexical index when the authenticated managed backend is available. DevMate:
+Project scope uses the local SQLite knowledge index when the authenticated managed backend is available. DevMate:
 
 1. Indexes eligible text files from the first workspace folder in the background.
 2. Excludes dependencies, generated files, build output, credentials, lock files, symbolic links, and binary files.
 3. Prefers VS Code document-symbol boundaries and falls back to bounded overlapping line chunks.
-4. Searches chunk content with SQLite FTS5/BM25 and keeps results diverse by file.
-5. Rereads each selected file and verifies the exact chunk hash and line range before using it.
-6. Sends only the strongest bounded excerpts to the provider.
+4. Generates optional local-first embeddings and ranks compatible cached vectors by exact cosine similarity.
+5. Combines semantic and SQLite FTS5/BM25 positions with Reciprocal Rank Fusion, then falls back to the legacy JSON lexical index when neither produces usable current source.
+6. Rereads each selected file and verifies the exact chunk hash and line range before using it.
+7. Sends only the strongest bounded excerpts to the provider.
 
 The SQLite index is stored in VS Code's private global extension storage, not inside the repository. If authenticated SQLite search is unavailable, empty, fails, or contains no usable current chunks, DevMate falls back to the previous JSON lexical index. That fallback index is refreshed lazily only when needed; cancellation stops retrieval without starting fallback work.
 
-This version does not use embeddings for retrieval yet. The embedding foundation defines separate local-first profiles for Ollama and OpenAI-compatible providers, requires explicit consent before sending source code to a remote embedding endpoint, and keeps profile credentials out of normal extension storage. The backend has bounded clients for native Ollama `/api/embed` and OpenAI-compatible `/embeddings` requests. They reuse the existing safe provider-network boundary, strictly validate batches, and normalize accepted vectors.
+Embedding retrieval uses separate local-first profiles for Ollama and OpenAI-compatible providers, requires explicit consent before sending source code or queries to a remote embedding endpoint, and keeps profile credentials out of normal extension storage. The backend has bounded clients for native Ollama `/api/embed` and OpenAI-compatible `/embeddings` requests. They reuse the existing safe provider-network boundary, strictly validate batches, and normalize accepted vectors.
 
 The SQLite embedding repository can activate one bounded configuration per workspace, discover missing chunks, atomically store normalized float32 vectors against exact chunk hashes, page through stored vectors, and invalidate stale configurations. File replacement and deletion automatically remove associated vectors through existing foreign-key cascades.
 
@@ -167,9 +168,11 @@ A backend embedding-index service now joins the provider and repository in bound
 
 The authenticated `/index/v1/embeddings/synchronize` route exposes that service through strict bounded request and response models. Provider credentials use the provider-key header rather than the JSON body, and the backend advertises the optional `embedding-index-v1` capability. After a fully ready lexical synchronization, the extension can use a configured validated embedding profile to generate missing vectors in delayed, cancellable one-batch requests. It reads only the selected profile's SecretStorage value and stops on provider failure instead of retrying indefinitely.
 
-Embedding profiles are managed separately under **DevMate settings → Semantic code index**. Local Ollama is the default when adding a profile. Non-loopback endpoints require HTTPS and an explicit confirmation that the provider may receive bounded project source-code chunks. Saving or selecting a profile refreshes background vector generation for the last ready workspace index. Query-time semantic ranking is not connected yet, so project retrieval remains lexical.
+Embedding profiles are managed separately under **DevMate settings → Semantic code index**. Local Ollama is the default when adding a profile. Non-loopback endpoints require HTTPS and an explicit confirmation that the provider may receive bounded project source-code chunks and search queries. Saving or selecting a profile refreshes background vector generation for the last ready workspace index.
 
-On the checked-in evaluation corpus, SQLite lexical retrieval produces 7 of 11 top-one hits, 7 of 11 top-three hits, and 0.6364 recall at five. Synonym-heavy conceptual searches remain the main weakness and are the target of the later semantic and hybrid retriever.
+When the backend advertises semantic-search support and the selected profile has compatible cached vectors, DevMate embeds the question once and performs an exact cosine comparison over the workspace vectors in bounded pages. Semantic and lexical searches begin together. Their ranked positions are combined with equal-weight Reciprocal Rank Fusion, which rewards chunks found by both without comparing incompatible cosine and BM25 score scales. Results are deterministically deduplicated and reread from disk before use. Missing profiles, incompatible vectors, and provider failures leave lexical ranking available; if neither strategy yields usable current source, DevMate uses the JSON fallback.
+
+On the checked-in evaluation corpus, SQLite lexical retrieval produces 7 of 11 top-one hits, 7 of 11 top-three hits, and 0.6364 recall at five. These numbers remain the model-independent lexical baseline; hybrid effectiveness also depends on the configured embedding model.
 
 ## Agent tools
 
@@ -234,13 +237,13 @@ The status indicator in the DevMate toolbar shows whether the backend is checkin
 
 DevMate generates a fresh in-memory authentication token whenever it launches the backend. The token is passed only to that child process and is required by `/health`, `/ask`, and `/ask/stream`. Manually started or externally managed backends are intentionally rejected until an explicit secure token-sharing flow is available.
 
-The managed backend also receives an explicit SQLite path below VS Code's private global extension storage. The application opens the versioned knowledge store during startup and closes it during shutdown. Its authenticated `/index/v1/` API supports workspace snapshots, atomic file batches, index metadata, and lexical search.
+The managed backend also receives an explicit SQLite path below VS Code's private global extension storage. The application opens the versioned knowledge store during startup and closes it during shutdown. Its authenticated `/index/v1/` API supports workspace snapshots, atomic file batches, index metadata, lexical search, embedding synchronization, and semantic search.
 
 After the managed backend comes online, the extension performs an initial background synchronization of the first local workspace. It then watches relevant create, change, delete, rename, and workspace-folder events. Event bursts are debounced into one follow-up synchronization, and changes arriving during an active run produce one trailing run. Indexing pauses and active work is cancelled whenever authenticated backend access is unavailable.
 
 Each synchronization reuses the existing project-file limits and exclusions, rejects symbolic-link paths, hashes the eligible files, and sends only changed files and known deletions in bounded batches. Changed files prefer validated VS Code document-symbol boundaries so declarations stay together where size limits permit. Missing, invalid, or unavailable language-provider results fall back to the existing overlapping line chunks. Symbol lookup is performed only after a fingerprint changes and is revalidated against the exact file snapshot being indexed.
 
-Unreadable files leave the SQLite index marked stale instead of deleting previously indexed content. Project chat now uses authenticated SQLite lexical retrieval first and keeps the previous JSON index as a lazy compatibility fallback. Embeddings and semantic search remain later milestones.
+Unreadable files leave the SQLite index marked stale instead of deleting previously indexed content. Project chat fuses authenticated semantic and SQLite lexical rankings when both are available, uses either strategy independently when only one succeeds, and keeps the previous JSON index as a lazy compatibility fallback.
 
 ## Settings
 
@@ -351,7 +354,7 @@ The Python backend source remains in the package as a fallback for development o
 | `src/embeddingProfileController.ts` | Validated embedding-profile persistence and UI-facing operations |
 | `src/providerUrlPolicy.ts` | Shared chat and embedding provider URL security policy |
 | `src/projectIndex.ts` | Local index representation, chunking, and lexical scoring |
-| `src/projectRetriever.ts` | SQLite-first lexical retrieval, exact-source validation, and lazy JSON fallback |
+| `src/projectRetriever.ts` | Hybrid rank fusion, capability-gated semantic retrieval, exact-source validation, and lexical fallback |
 | `src/sessions.ts` | Project-bound conversation storage |
 | `src/permissions.ts` | File and command permission storage |
 | `backend/app/api_models.py` | Backend protocol constants and validated request/response contracts |
@@ -363,6 +366,7 @@ The Python backend source remains in the package as a fallback for development o
 | `backend/app/embedding_index_service.py` | Bounded resumable generation of missing workspace vectors |
 | `backend/app/embedding_providers.py` | Batched embedding-provider request, result, and protocol boundary |
 | `backend/app/embedding_repository.py` | Workspace-isolated normalized vector persistence and invalidation |
+| `backend/app/semantic_search_service.py` | Query embedding and exact cosine ranking over cached workspace vectors |
 | `backend/app/knowledge_contracts.py` | Shared version, states, and size limits for the knowledge-index protocol |
 | `backend/app/knowledge_routes.py` | Authenticated version-one knowledge-index HTTP routes |
 | `backend/app/knowledge_store.py` | Isolated versioned SQLite schema and transaction boundary for the code index |
@@ -408,7 +412,7 @@ The workspace must be trusted and VS Code Terminal Shell Integration must be ava
 ## Known limitations
 
 - Only the first folder in a multi-root workspace is used.
-- Project retrieval is lexical rather than embedding-based.
+- Hybrid retrieval currently uses fixed equal weights and does not yet apply filename, path, or symbol boosts.
 - Code navigation depends on installed VS Code language providers.
 - Completed change snapshots are kept in memory, so an old native diff may be unavailable after reloading VS Code.
 - Standalone backend builds are platform-specific and currently prepared for Windows x64.
