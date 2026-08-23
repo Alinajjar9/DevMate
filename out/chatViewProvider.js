@@ -61,6 +61,7 @@ class DevMateChatViewProvider {
     extensionContext;
     backendManager;
     backendOutput;
+    onConversationSessionPersisted;
     static viewId = 'devmate.dedicatedAssistantView';
     static containerId = 'devmate-dedicated-chat';
     static diffScheme = 'devmate-diff';
@@ -82,10 +83,11 @@ class DevMateChatViewProvider {
     activeRequestDiffs = new Map();
     sessionStore;
     agentCheckpoint;
-    constructor(extensionContext, backendManager, backendOutput, projectRetriever = new projectRetriever_1.LexicalProjectRetriever(), onEmbeddingProfileChanged = () => undefined) {
+    constructor(extensionContext, backendManager, backendOutput, projectRetriever = new projectRetriever_1.LexicalProjectRetriever(), onEmbeddingProfileChanged = () => undefined, onConversationSessionPersisted = () => undefined) {
         this.extensionContext = extensionContext;
         this.backendManager = backendManager;
         this.backendOutput = backendOutput;
+        this.onConversationSessionPersisted = onConversationSessionPersisted;
         this.extensionUri = extensionContext.extensionUri;
         this.workspaceContext = new workspaceContext_1.WorkspaceContext(extensionContext.storageUri, (text) => this.postStatus(text), projectRetriever);
         this.workspaceMutations = new workspaceMutations_1.WorkspaceMutations({
@@ -583,7 +585,7 @@ class DevMateChatViewProvider {
             return;
         }
         this.sessionStore = (0, sessions_2.deleteConversationSession)(this.sessionStore, sessionId);
-        await this.persistSessionStore();
+        await this.persistSessionStore(sessionId);
         if (this.agentCheckpoint?.sessionId === sessionId) {
             await this.clearAgentCheckpoint();
         }
@@ -596,15 +598,22 @@ class DevMateChatViewProvider {
         this.postStatus('Wait for the active request to finish before changing sessions.', 'warning');
         return false;
     }
-    async persistSessionStore() {
+    async persistSessionStore(deletedSessionId) {
         try {
             await this.extensionContext.globalState.update(sessions_2.CONVERSATION_SESSIONS_STORAGE_KEY, this.sessionStore);
-            return true;
         }
         catch {
             this.postStatus('The session is available now, but VS Code could not save it for the next restart.', 'warning');
             return false;
         }
+        try {
+            this.onConversationSessionPersisted(this.conversationSessionSnapshot(), deletedSessionId);
+        }
+        catch (error) {
+            this.backendOutput.append('[DevMate] Chat mirror: '
+                + `${error instanceof Error ? error.message : 'could not queue the local chat copy.'}\n`);
+        }
+        return true;
     }
     postSessionState(includeMessages, openChat = false) {
         const activeSession = (0, sessions_2.activeConversationSession)(this.sessionStore);

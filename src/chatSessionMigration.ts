@@ -1,11 +1,13 @@
 import { createHash } from 'crypto';
 import {
+  deleteChatMemorySession,
   loadChatMemorySession,
   saveChatMemorySessions
 } from './api/client';
 import { parseChatMemorySnapshot } from './api/chatMemoryProtocol';
 import type {
   ApiResult,
+  ChatMemoryDeleteResponse,
   ChatMemoryLoadResponse,
   ChatMemorySaveRequest,
   ChatMemorySaveResponse,
@@ -50,6 +52,11 @@ export type ChatSessionMigrationApi = {
     request: ChatMemorySessionRequest,
     signal: AbortSignal
   ): Promise<ApiResult<ChatMemoryLoadResponse>>;
+  delete(
+    access: ChatSessionMigrationAccess,
+    request: ChatMemorySessionRequest,
+    signal: AbortSignal
+  ): Promise<ApiResult<ChatMemoryDeleteResponse>>;
 };
 
 export type ChatSessionMigrationResult =
@@ -66,6 +73,12 @@ export const defaultChatSessionMigrationApi: ChatSessionMigrationApi = {
     signal
   ),
   load: (access, request, signal) => loadChatMemorySession(
+    access.backendUrl,
+    request,
+    access.backendToken,
+    signal
+  ),
+  delete: (access, request, signal) => deleteChatMemorySession(
     access.backendUrl,
     request,
     access.backendToken,
@@ -144,12 +157,20 @@ export class ChatSessionMigration {
 
     const sourceFingerprint = fingerprintChatMemorySnapshots(snapshots);
     const sessionIds = snapshots.map((snapshot) => snapshot.session.sessionId);
+    const sessionIdSet = new Set(sessionIds);
+    const deletedSessionIds = marker?.sessionIds.filter((id) => !sessionIdSet.has(id)) ?? [];
     const markerMatches = marker?.sourceFingerprint === sourceFingerprint
       && arraysEqual(marker.sessionIds, sessionIds);
 
     if (snapshots.length === 0) {
       if (markerMatches) {
         return { kind: 'skipped', reason: 'up-to-date' };
+      }
+      const deletion = await this.deleteSessions(access, deletedSessionIds, signal);
+      if (deletion.kind !== 'verified') {
+        return deletion.kind === 'cancelled'
+          ? { kind: 'cancelled' }
+          : { kind: 'failed', message: deletion.message };
       }
       return this.saveMarker(sourceFingerprint, sessionIds, signal, 0);
     }
@@ -186,7 +207,38 @@ export class ChatSessionMigration {
         message: verification.message
       };
     }
+    const deletion = await this.deleteSessions(access, deletedSessionIds, signal);
+    if (deletion.kind === 'cancelled') {
+      return { kind: 'cancelled' };
+    }
+    if (deletion.kind === 'failed') {
+      return { kind: 'failed', message: deletion.message };
+    }
     return this.saveMarker(sourceFingerprint, sessionIds, signal, snapshots.length);
+  }
+
+  private async deleteSessions(
+    access: ChatSessionMigrationAccess,
+    sessionIds: string[],
+    signal: AbortSignal
+  ): Promise<
+    | { kind: 'verified' }
+    | { kind: 'cancelled' }
+    | { kind: 'failed'; message: string }
+  > {
+    for (const sessionId of sessionIds) {
+      const result = await this.api.delete(access, { sessionId }, signal);
+      if (signal.aborted || result.errorKind === 'cancelled') {
+        return { kind: 'cancelled' };
+      }
+      if (result.status !== 'ok') {
+        return {
+          kind: 'failed',
+          message: result.message ?? 'DevMate could not reconcile a deleted saved chat.'
+        };
+      }
+    }
+    return { kind: 'verified' };
   }
 
   private async verifySnapshots(

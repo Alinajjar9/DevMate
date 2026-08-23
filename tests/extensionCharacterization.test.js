@@ -193,6 +193,46 @@ test('loads global sessions, migrates legacy workspace sessions, and saves the m
   }
 });
 
+test('queues the SQLite mirror only after VS Code session persistence succeeds', async (context) => {
+  for (const shouldFail of [false, true]) {
+    await context.test(shouldFail ? 'VS Code save failure' : 'successful VS Code save', async () => {
+      const provider = providerWithoutConstructor();
+      const mirrored = [];
+      const statuses = [];
+      provider.sessionStore = createConversationSessionStore(
+        'session-one',
+        100,
+        workspace
+      );
+      provider.extensionContext = {
+        globalState: {
+          update: async () => {
+            if (shouldFail) {
+              throw new Error('State is unavailable.');
+            }
+          }
+        }
+      };
+      provider.onConversationSessionPersisted = (store, deletedSessionId) => {
+        mirrored.push({ store, deletedSessionId });
+      };
+      provider.postStatus = (message, level) => statuses.push({ message, level });
+      provider.backendOutput = { append() {} };
+
+      const saved = await provider.persistSessionStore('deleted-session');
+
+      assert.equal(saved, !shouldFail);
+      assert.equal(mirrored.length, shouldFail ? 0 : 1);
+      if (!shouldFail) {
+        assert.equal(mirrored[0].deletedSessionId, 'deleted-session');
+        assert.notEqual(mirrored[0].store, provider.sessionStore);
+      } else {
+        assert.match(statuses[0].message, /could not save it/);
+      }
+    });
+  }
+});
+
 test('collects active-file and selection context with explicit attachments first-class', async () => {
   const workspaceContext = new WorkspaceContext(undefined);
   const selection = { marker: 'selection' };

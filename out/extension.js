@@ -41,6 +41,7 @@ const client_1 = require("./api/client");
 const types_1 = require("./api/types");
 const backendManager_1 = require("./backendManager");
 const chatSessionMigration_1 = require("./chatSessionMigration");
+const chatSessionMirror_1 = require("./chatSessionMirror");
 const chatViewProvider_1 = require("./chatViewProvider");
 const embeddingIndexScheduler_1 = require("./embeddingIndexScheduler");
 const embeddingProfiles_1 = require("./embeddingProfiles");
@@ -53,6 +54,7 @@ function activate(context) {
     const knowledgeStorePath = vscode.Uri.joinPath(context.globalStorageUri, 'knowledge', types_1.DEVMATE_KNOWLEDGE_STORE_FILE_NAME).fsPath;
     let chatViewProvider;
     let chatSessionMigration;
+    let chatSessionMirror;
     let backendCapabilities = [];
     const workspaceIndexSource = new workspaceIndexSource_1.VsCodeWorkspaceIndexSource();
     const knowledgeIndexSynchronizer = new indexSynchronization_1.KnowledgeIndexSynchronizer(workspaceIndexSource, indexSynchronization_1.defaultKnowledgeIndexApi, (message) => backendOutput.append(`[DevMate] Knowledge index: ${message}\n`));
@@ -104,15 +106,32 @@ function activate(context) {
                     capabilities: backendCapabilities
                 });
                 workspaceIndexCoordinator.setBackendAccess(access);
-                void chatSessionMigration?.synchronize(access, backendCapabilities).then((result) => {
-                    if (result.kind === 'failed') {
-                        backendOutput.append(`[DevMate] Chat migration: ${result.message}\n`);
-                    }
-                });
+                const migration = chatSessionMigration?.synchronize(access, backendCapabilities);
+                if (migration) {
+                    void migration.then((result) => {
+                        if (result.kind === 'failed') {
+                            backendOutput.append(`[DevMate] Chat migration: ${result.message}\n`);
+                        }
+                        if (backendManager.status.state === 'online'
+                            && backendManager.requestToken === backendToken) {
+                            chatSessionMirror?.setBackendAccess({
+                                ...access,
+                                capabilities: backendCapabilities
+                            });
+                        }
+                    });
+                }
+                else {
+                    chatSessionMirror?.setBackendAccess({
+                        ...access,
+                        capabilities: backendCapabilities
+                    });
+                }
             }
             else {
                 embeddingIndexScheduler.setBackendAccess(undefined);
                 workspaceIndexCoordinator.setBackendAccess(undefined);
+                chatSessionMirror?.setBackendAccess(undefined);
             }
         },
         onOutput: (value) => backendOutput.append(value)
@@ -131,7 +150,8 @@ function activate(context) {
         getEmbeddingProfile: () => (0, embeddingProfiles_1.readPreferredEmbeddingProfile)(embeddingProfileReader),
         readCurrentFile: (relativePath, signal) => workspaceIndexSource.readCurrentFile(relativePath, signal)
     });
-    chatViewProvider = new chatViewProvider_1.DevMateChatViewProvider(context, backendManager, backendOutput, projectRetriever, () => embeddingIndexScheduler.refreshActiveProfile());
+    chatViewProvider = new chatViewProvider_1.DevMateChatViewProvider(context, backendManager, backendOutput, projectRetriever, () => embeddingIndexScheduler.refreshActiveProfile(), (store, deletedSessionId) => chatSessionMirror?.mirror(store, deletedSessionId));
+    chatSessionMirror = new chatSessionMirror_1.ChatSessionMirror(chatSessionMirror_1.defaultChatSessionMirrorApi, (message) => backendOutput.append(`${message}\n`));
     const chatSessionSource = chatViewProvider;
     chatSessionMigration = new chatSessionMigration_1.ChatSessionMigration({ read: () => chatSessionSource.conversationSessionSnapshot() }, {
         read: () => context.globalState.get(chatSessionMigration_1.CHAT_SESSION_MIGRATION_STORAGE_KEY),
@@ -166,7 +186,7 @@ function activate(context) {
     statusBarItem.tooltip = 'Open DevMate';
     statusBarItem.command = 'devMate.openChat';
     statusBarItem.show();
-    context.subscriptions.push(chatViewProvider, embeddingIndexScheduler, embeddingInvalidationSubscription, workspaceIndexCoordinator, chatSessionMigration, knowledgeIndexSynchronizer, backendManager, backendOutput, viewRegistration, diffContentRegistration, workspaceTrustRegistration, backendConfigurationRegistration, openChatCommand, statusBarItem);
+    context.subscriptions.push(chatViewProvider, embeddingIndexScheduler, embeddingInvalidationSubscription, workspaceIndexCoordinator, chatSessionMigration, chatSessionMirror, knowledgeIndexSynchronizer, backendManager, backendOutput, viewRegistration, diffContentRegistration, workspaceTrustRegistration, backendConfigurationRegistration, openChatCommand, statusBarItem);
     void backendManager.start();
 }
 function deactivate() {

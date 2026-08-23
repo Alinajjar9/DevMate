@@ -276,7 +276,11 @@ export class DevMateChatViewProvider implements
     private readonly backendManager: LocalBackendManager,
     private readonly backendOutput: vscode.OutputChannel,
     projectRetriever: ProjectRetriever = new LexicalProjectRetriever(),
-    onEmbeddingProfileChanged: () => void = () => undefined
+    onEmbeddingProfileChanged: () => void = () => undefined,
+    private readonly onConversationSessionPersisted: (
+      store: ConversationSessionStore,
+      deletedSessionId?: string
+    ) => void = () => undefined
   ) {
     this.extensionUri = extensionContext.extensionUri;
     this.workspaceContext = new WorkspaceContext(
@@ -876,7 +880,7 @@ export class DevMateChatViewProvider implements
       return;
     }
     this.sessionStore = deleteConversationSession(this.sessionStore, sessionId);
-    await this.persistSessionStore();
+    await this.persistSessionStore(sessionId);
     if (this.agentCheckpoint?.sessionId === sessionId) {
       await this.clearAgentCheckpoint();
     }
@@ -891,13 +895,12 @@ export class DevMateChatViewProvider implements
     return false;
   }
 
-  private async persistSessionStore(): Promise<boolean> {
+  private async persistSessionStore(deletedSessionId?: string): Promise<boolean> {
     try {
       await this.extensionContext.globalState.update(
         CONVERSATION_SESSIONS_STORAGE_KEY,
         this.sessionStore
       );
-      return true;
     } catch {
       this.postStatus(
         'The session is available now, but VS Code could not save it for the next restart.',
@@ -905,6 +908,18 @@ export class DevMateChatViewProvider implements
       );
       return false;
     }
+    try {
+      this.onConversationSessionPersisted(
+        this.conversationSessionSnapshot(),
+        deletedSessionId
+      );
+    } catch (error) {
+      this.backendOutput.append(
+        '[DevMate] Chat mirror: '
+        + `${error instanceof Error ? error.message : 'could not queue the local chat copy.'}\n`
+      );
+    }
+    return true;
   }
 
   private postSessionState(includeMessages: boolean, openChat = false): void {

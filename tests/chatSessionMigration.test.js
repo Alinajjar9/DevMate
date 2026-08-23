@@ -138,6 +138,28 @@ test('refreshes a marked migration when its local database copy is missing', asy
   assert.equal(state.writes.length, 2);
 });
 
+test('reconciles sessions deleted from the rollback store before advancing the marker', async () => {
+  const store = conversationStore();
+  const api = memoryApi();
+  const state = markerState();
+  const migration = new ChatSessionMigration(
+    { read: () => store },
+    state,
+    api,
+    undefined,
+    () => 500
+  );
+  await migration.synchronize(ACCESS, [CHAT_MEMORY_CAPABILITY]);
+  store.sessions = store.sessions.filter((session) => session.id !== 'session-two');
+
+  const result = await migration.synchronize(ACCESS, [CHAT_MEMORY_CAPABILITY]);
+
+  assert.deepEqual(result, { kind: 'completed', migratedSessions: 1 });
+  assert.deepEqual(api.deleteCalls.map((call) => call.request.sessionId), ['session-two']);
+  assert.equal(api.snapshots.has('session-two'), false);
+  assert.deepEqual(state.writes.at(-1).sessionIds, ['session-one']);
+});
+
 test('does not mark a migration complete when saving or read-back verification fails', async (context) => {
   const cases = [
     {
@@ -303,6 +325,7 @@ function memoryApi() {
     snapshots,
     saveCalls: [],
     loadCalls: [],
+    deleteCalls: [],
     saveFailure: undefined,
     changeLoadedSnapshot: (snapshot) => snapshot,
     save: async (access, request, signal) => {
@@ -329,6 +352,10 @@ function memoryApi() {
           data: { session: api.changeLoadedSnapshot(structuredClone(snapshot)) }
         }
         : { status: 'error', message: 'Session not found.', errorKind: 'http' };
+    },
+    delete: async (access, request, signal) => {
+      api.deleteCalls.push({ access, request, signal });
+      return { status: 'ok', data: { deleted: snapshots.delete(request.sessionId) } };
     }
   };
   return api;

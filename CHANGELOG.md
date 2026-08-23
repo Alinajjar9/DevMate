@@ -2,6 +2,26 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Keep new chat changes mirrored locally
+
+### Changed
+
+- Added a serialized session mirror that runs only after the existing VS Code session state has saved successfully.
+- Mirrors created, renamed, pending, and completed chat sessions to the authenticated SQLite API while mirroring confirmed session deletions separately.
+- Defers work while the backend is offline or lacks `chat-memory-v1`, coalesces intermediate snapshots behind an active write, and resumes after backend readiness.
+- Saves only changed sessions after the initial mirror instead of rewriting every stored chat for each new message.
+- Stops automatic retry loops after a failed local write while retaining the latest snapshot and deletions for the next session change or backend reconnect.
+- Reconciles session identifiers removed from the rollback store before advancing the verified migration marker.
+- Kept VS Code storage as the live read source and rollback fallback; SQLite reads, prompt history, summaries, and compaction remain unchanged.
+
+### Verification
+
+- Focused migration, mirror, and provider-boundary coverage — 36 tests passed.
+- `npm run verify` — 306 extension tests and 155 backend tests passed; 63 cross-language contracts and 32 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-23 — Safely copy existing chats into local storage
 
 ### Changed

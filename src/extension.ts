@@ -8,6 +8,10 @@ import {
   ChatSessionMigration,
   defaultChatSessionMigrationApi
 } from './chatSessionMigration';
+import {
+  ChatSessionMirror,
+  defaultChatSessionMirrorApi
+} from './chatSessionMirror';
 import { DevMateChatViewProvider, getBackendUrl } from './chatViewProvider';
 import { EmbeddingIndexScheduler } from './embeddingIndexScheduler';
 import {
@@ -36,6 +40,7 @@ export function activate(context: vscode.ExtensionContext): void {
   ).fsPath;
   let chatViewProvider: DevMateChatViewProvider | undefined;
   let chatSessionMigration: ChatSessionMigration | undefined;
+  let chatSessionMirror: ChatSessionMirror | undefined;
   let backendCapabilities: readonly string[] = [];
   const workspaceIndexSource = new VsCodeWorkspaceIndexSource();
   const knowledgeIndexSynchronizer = new KnowledgeIndexSynchronizer(
@@ -108,14 +113,30 @@ export function activate(context: vscode.ExtensionContext): void {
           capabilities: backendCapabilities
         });
         workspaceIndexCoordinator.setBackendAccess(access);
-        void chatSessionMigration?.synchronize(access, backendCapabilities).then((result) => {
-          if (result.kind === 'failed') {
-            backendOutput.append(`[DevMate] Chat migration: ${result.message}\n`);
-          }
-        });
+        const migration = chatSessionMigration?.synchronize(access, backendCapabilities);
+        if (migration) {
+          void migration.then((result) => {
+            if (result.kind === 'failed') {
+              backendOutput.append(`[DevMate] Chat migration: ${result.message}\n`);
+            }
+            if (backendManager.status.state === 'online'
+              && backendManager.requestToken === backendToken) {
+              chatSessionMirror?.setBackendAccess({
+                ...access,
+                capabilities: backendCapabilities
+              });
+            }
+          });
+        } else {
+          chatSessionMirror?.setBackendAccess({
+            ...access,
+            capabilities: backendCapabilities
+          });
+        }
       } else {
         embeddingIndexScheduler.setBackendAccess(undefined);
         workspaceIndexCoordinator.setBackendAccess(undefined);
+        chatSessionMirror?.setBackendAccess(undefined);
       }
     },
     onOutput: (value) => backendOutput.append(value)
@@ -140,7 +161,12 @@ export function activate(context: vscode.ExtensionContext): void {
     backendManager,
     backendOutput,
     projectRetriever,
-    () => embeddingIndexScheduler.refreshActiveProfile()
+    () => embeddingIndexScheduler.refreshActiveProfile(),
+    (store, deletedSessionId) => chatSessionMirror?.mirror(store, deletedSessionId)
+  );
+  chatSessionMirror = new ChatSessionMirror(
+    defaultChatSessionMirrorApi,
+    (message) => backendOutput.append(`${message}\n`)
   );
   const chatSessionSource = chatViewProvider;
   chatSessionMigration = new ChatSessionMigration(
@@ -205,6 +231,7 @@ export function activate(context: vscode.ExtensionContext): void {
     embeddingInvalidationSubscription,
     workspaceIndexCoordinator,
     chatSessionMigration,
+    chatSessionMirror,
     knowledgeIndexSynchronizer,
     backendManager,
     backendOutput,

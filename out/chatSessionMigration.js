@@ -12,7 +12,8 @@ exports.CHAT_SESSION_MIGRATION_STORAGE_KEY = 'devMate.chatMemoryMigration.v1';
 exports.CHAT_SESSION_MIGRATION_VERSION = 1;
 exports.defaultChatSessionMigrationApi = {
     save: (access, request, signal) => (0, client_1.saveChatMemorySessions)(access.backendUrl, request, access.backendToken, signal),
-    load: (access, request, signal) => (0, client_1.loadChatMemorySession)(access.backendUrl, request, access.backendToken, signal)
+    load: (access, request, signal) => (0, client_1.loadChatMemorySession)(access.backendUrl, request, access.backendToken, signal),
+    delete: (access, request, signal) => (0, client_1.deleteChatMemorySession)(access.backendUrl, request, access.backendToken, signal)
 };
 class ChatSessionMigration {
     source;
@@ -75,11 +76,19 @@ class ChatSessionMigration {
         }
         const sourceFingerprint = fingerprintChatMemorySnapshots(snapshots);
         const sessionIds = snapshots.map((snapshot) => snapshot.session.sessionId);
+        const sessionIdSet = new Set(sessionIds);
+        const deletedSessionIds = marker?.sessionIds.filter((id) => !sessionIdSet.has(id)) ?? [];
         const markerMatches = marker?.sourceFingerprint === sourceFingerprint
             && arraysEqual(marker.sessionIds, sessionIds);
         if (snapshots.length === 0) {
             if (markerMatches) {
                 return { kind: 'skipped', reason: 'up-to-date' };
+            }
+            const deletion = await this.deleteSessions(access, deletedSessionIds, signal);
+            if (deletion.kind !== 'verified') {
+                return deletion.kind === 'cancelled'
+                    ? { kind: 'cancelled' }
+                    : { kind: 'failed', message: deletion.message };
             }
             return this.saveMarker(sourceFingerprint, sessionIds, signal, 0);
         }
@@ -113,7 +122,29 @@ class ChatSessionMigration {
                 message: verification.message
             };
         }
+        const deletion = await this.deleteSessions(access, deletedSessionIds, signal);
+        if (deletion.kind === 'cancelled') {
+            return { kind: 'cancelled' };
+        }
+        if (deletion.kind === 'failed') {
+            return { kind: 'failed', message: deletion.message };
+        }
         return this.saveMarker(sourceFingerprint, sessionIds, signal, snapshots.length);
+    }
+    async deleteSessions(access, sessionIds, signal) {
+        for (const sessionId of sessionIds) {
+            const result = await this.api.delete(access, { sessionId }, signal);
+            if (signal.aborted || result.errorKind === 'cancelled') {
+                return { kind: 'cancelled' };
+            }
+            if (result.status !== 'ok') {
+                return {
+                    kind: 'failed',
+                    message: result.message ?? 'DevMate could not reconcile a deleted saved chat.'
+                };
+            }
+        }
+        return { kind: 'verified' };
     }
     async verifySnapshots(access, snapshots, signal) {
         for (const expected of snapshots) {
