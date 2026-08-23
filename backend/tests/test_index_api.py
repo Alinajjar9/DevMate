@@ -8,14 +8,42 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 
 from backend.app.api_models import DEVMATE_BACKEND_TOKEN_HEADER
+from backend.app.embedding_index_service import EmbeddingIndexService
+from backend.app.embedding_providers import EmbeddingBatch, EmbeddingRequest
+from backend.app.embedding_repository import EmbeddingRepository
 from backend.app.main import create_app
-from backend.app.providers import ChatCompletion, ChatCompletionRequest
+from backend.app.providers import (
+    ChatCompletion,
+    ChatCompletionRequest,
+    ProviderError,
+)
 from backend.app.knowledge_store import KnowledgeStore
 
 
 class UnusedProvider:
     async def complete(self, _request: ChatCompletionRequest) -> ChatCompletion:
         raise AssertionError("Index API tests must not call the chat provider.")
+
+
+class RecordingEmbeddingProvider:
+    def __init__(self) -> None:
+        self.requests: list[EmbeddingRequest] = []
+        self.error: ProviderError | None = None
+        self.return_malformed_batch = False
+
+    async def embed(self, request: EmbeddingRequest) -> EmbeddingBatch:
+        self.requests.append(request)
+        if self.error is not None:
+            raise self.error
+        return EmbeddingBatch(
+            model=request.model,
+            dimensions=2,
+            vectors=(
+                ()
+                if self.return_malformed_batch
+                else tuple((1.0, 0.0) for _ in request.inputs)
+            ),
+        )
 
 
 class KnowledgeIndexApiTests(unittest.TestCase):
@@ -27,10 +55,16 @@ class KnowledgeIndexApiTests(unittest.TestCase):
         self.temporary_directory.mkdir()
         self.workspace_root = self.temporary_directory / "workspace"
         self.store = KnowledgeStore(self.temporary_directory / "index-api.sqlite3")
+        self.embedding_provider = RecordingEmbeddingProvider()
+        self.embedding_service = EmbeddingIndexService(
+            self.embedding_provider,
+            EmbeddingRepository(self.store),
+        )
         self.application = create_app(
             chat_provider=UnusedProvider(),
             backend_token_provider=lambda: self.backend_token,
             knowledge_store=self.store,
+            embedding_index_service=self.embedding_service,
         )
         self.client_context = TestClient(
             self.application,
@@ -109,6 +143,7 @@ class KnowledgeIndexApiTests(unittest.TestCase):
             "/index/v1/files/apply",
             "/index/v1/metadata/update",
             "/index/v1/search",
+            "/index/v1/embeddings/synchronize",
         ):
             with self.subTest(path=path):
                 response = unauthenticated.post(path, json={"private": "workspace source"})
@@ -153,6 +188,16 @@ class KnowledgeIndexApiTests(unittest.TestCase):
             "knowledge_workspace_not_found",
         )
 
+        missing_embeddings = self.client.post(
+            "/index/v1/embeddings/synchronize",
+            json=self._embedding_request(workspace_key="missing-workspace"),
+        )
+        self.assertEqual(missing_embeddings.status_code, 404)
+        self.assertEqual(
+            missing_embeddings.json()["errorCode"],
+            "knowledge_workspace_not_found",
+        )
+
     def test_reports_when_the_optional_knowledge_store_is_unavailable(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
             application = create_app(
@@ -171,6 +216,10 @@ class KnowledgeIndexApiTests(unittest.TestCase):
                     "chunkingVersion": 1,
                 },
             )
+            embedding_response = client.post(
+                "/index/v1/embeddings/synchronize",
+                json=self._embedding_request(),
+            )
 
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json(), {
@@ -179,6 +228,135 @@ class KnowledgeIndexApiTests(unittest.TestCase):
             "message": "The local DevMate knowledge store is unavailable.",
             "issues": [],
         })
+
+        self.assertEqual(embedding_response.status_code, 503)
+        self.assertEqual(
+            embedding_response.json()["errorCode"],
+            "knowledge_store_unavailable",
+        )
+
+    def test_synchronizes_embeddings_without_echoing_provider_credentials(self) -> None:
+        self._open_workspace()
+        self._apply_indexed_file()
+
+        response = self.client.post(
+            "/index/v1/embeddings/synchronize",
+            json=self._embedding_request(batch_size=1, max_batches=1),
+            headers={"X-DevMate-Provider-Key": "embedding-secret"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {
+            "status": "ok",
+            "data": {
+                "configuration": {
+                    "profileId": "local-embedding",
+                    "provider": "ollama",
+                    "model": "nomic-embed-text",
+                    "dimensions": 2,
+                    "vectorVersion": 1,
+                },
+                "embeddedChunks": 1,
+                "processedBatches": 1,
+                "complete": True,
+            },
+        })
+        provider_request = self.embedding_provider.requests[0]
+        self.assertEqual(provider_request.api_key, "embedding-secret")
+        self.assertEqual(
+            provider_request.inputs,
+            ("def validate_login_token(token): return bool(token)",),
+        )
+        self.assertNotIn("embedding-secret", response.text)
+
+        repeated = self.client.post(
+            "/index/v1/embeddings/synchronize",
+            json=self._embedding_request(),
+        )
+        self.assertEqual(repeated.status_code, 200)
+        self.assertEqual(repeated.json()["data"]["embeddedChunks"], 0)
+        self.assertEqual(repeated.json()["data"]["processedBatches"], 0)
+        self.assertTrue(repeated.json()["data"]["complete"])
+        self.assertEqual(len(self.embedding_provider.requests), 1)
+
+    def test_rejects_invalid_embedding_contracts_before_provider_access(self) -> None:
+        self._open_workspace()
+        self._apply_indexed_file()
+        invalid_requests = (
+            {**self._embedding_request(), "apiKey": "must-not-be-in-json"},
+            {**self._embedding_request(), "provider": "unsupported"},
+            {**self._embedding_request(), "profileId": "invalid profile"},
+            {**self._embedding_request(), "batchSize": 65},
+            {**self._embedding_request(), "maxBatches": 17},
+        )
+
+        for payload in invalid_requests:
+            with self.subTest(payload=payload):
+                response = self.client.post(
+                    "/index/v1/embeddings/synchronize",
+                    json=payload,
+                )
+                self.assertEqual(response.status_code, 422)
+                self.assertEqual(
+                    response.json()["errorCode"],
+                    "request_validation_failed",
+                )
+
+        oversized_key = self.client.post(
+            "/index/v1/embeddings/synchronize",
+            json=self._embedding_request(),
+            headers={"X-DevMate-Provider-Key": "s" * 8_193},
+        )
+        self.assertEqual(oversized_key.status_code, 422)
+        self.assertEqual(
+            oversized_key.json()["errorCode"],
+            "request_validation_failed",
+        )
+        self.assertEqual(self.embedding_provider.requests, [])
+
+    def test_maps_embedding_provider_and_batch_failures_to_stable_errors(self) -> None:
+        self._open_workspace()
+        self._apply_indexed_file()
+        self.embedding_provider.error = ProviderError(
+            "The embedding provider is busy.",
+            429,
+        )
+
+        provider_failure = self.client.post(
+            "/index/v1/embeddings/synchronize",
+            json=self._embedding_request(),
+        )
+        self.assertEqual(provider_failure.status_code, 429)
+        self.assertEqual(
+            provider_failure.json()["errorCode"],
+            "provider_rate_limited",
+        )
+
+        self.embedding_provider.error = None
+        self.embedding_provider.return_malformed_batch = True
+        malformed = self.client.post(
+            "/index/v1/embeddings/synchronize",
+            json=self._embedding_request(),
+        )
+        self.assertEqual(malformed.status_code, 502)
+        self.assertEqual(
+            malformed.json()["errorCode"],
+            "provider_invalid_response",
+        )
+        self.assertNotIn("wrong number", malformed.text)
+
+    def test_composes_the_default_embedding_service_with_the_private_store(self) -> None:
+        application = create_app(
+            chat_provider=UnusedProvider(),
+            backend_token_provider=lambda: self.backend_token,
+            knowledge_store=self.store,
+        )
+
+        dependencies = application.state.devmate_dependencies
+        self.assertIsInstance(
+            dependencies.embedding_index_service,
+            EmbeddingIndexService,
+        )
 
     def _open_workspace(self):
         return self.client.post(
@@ -189,6 +367,35 @@ class KnowledgeIndexApiTests(unittest.TestCase):
                 "chunkingVersion": 1,
             },
         )
+
+    def _apply_indexed_file(self):
+        return self.client.post(
+            "/index/v1/files/apply",
+            json={
+                "workspaceKey": "workspace-one",
+                "upserts": [self._indexed_file()],
+                "deletedPaths": [],
+            },
+        )
+
+    @staticmethod
+    def _embedding_request(
+        *,
+        workspace_key: str = "workspace-one",
+        batch_size: int = 64,
+        max_batches: int = 1,
+    ) -> dict[str, object]:
+        return {
+            "workspaceKey": workspace_key,
+            "profileId": "local-embedding",
+            "provider": "ollama",
+            "model": "nomic-embed-text",
+            "baseUrl": "http://127.0.0.1:11434",
+            "remoteAllowed": False,
+            "vectorVersion": 1,
+            "batchSize": batch_size,
+            "maxBatches": max_batches,
+        }
 
     @staticmethod
     def _indexed_file() -> dict[str, object]:

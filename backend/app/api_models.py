@@ -3,6 +3,15 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .embedding_providers import (
+    MAX_EMBEDDING_BASE_URL_CHARACTERS,
+    MAX_EMBEDDING_BATCH_SIZE,
+    MAX_EMBEDDING_DIMENSIONS,
+    MAX_EMBEDDING_INDEX_BATCHES_PER_RUN,
+    MAX_EMBEDDING_MODEL_CHARACTERS,
+    MAX_EMBEDDING_PROFILE_ID_CHARACTERS,
+    EmbeddingProviderName,
+)
 from .knowledge_contracts import (
     MAX_CHUNKS_PER_FILE,
     MAX_CHUNK_CHARACTERS,
@@ -39,6 +48,7 @@ BackendCapability = Literal[
     "request-authentication",
     "strict-response-contracts",
     "knowledge-index-v1",
+    "embedding-index-v1",
 ]
 DEVMATE_BACKEND_CAPABILITIES: tuple[BackendCapability, ...] = (
     "chat",
@@ -46,6 +56,7 @@ DEVMATE_BACKEND_CAPABILITIES: tuple[BackendCapability, ...] = (
     "request-authentication",
     "strict-response-contracts",
     "knowledge-index-v1",
+    "embedding-index-v1",
 )
 BackendErrorCode = Literal[
     "backend_authentication_failed",
@@ -414,6 +425,51 @@ class KnowledgeIndexSearchData(KnowledgeIndexModel):
 class KnowledgeIndexSearchResult(KnowledgeIndexModel):
     status: Literal["ok"]
     data: KnowledgeIndexSearchData
+
+
+class KnowledgeIndexEmbeddingRequest(KnowledgeIndexWorkspaceRequest):
+    profileId: str = Field(
+        min_length=1,
+        max_length=MAX_EMBEDDING_PROFILE_ID_CHARACTERS,
+        pattern=(
+            rf"^[A-Za-z0-9][A-Za-z0-9_-]"
+            rf"{{0,{MAX_EMBEDDING_PROFILE_ID_CHARACTERS - 1}}}$"
+        ),
+    )
+    provider: EmbeddingProviderName
+    model: str = Field(min_length=1, max_length=MAX_EMBEDDING_MODEL_CHARACTERS)
+    baseUrl: str = Field(min_length=1, max_length=MAX_EMBEDDING_BASE_URL_CHARACTERS)
+    remoteAllowed: bool = False
+    vectorVersion: int = Field(ge=1, le=MAX_INDEX_INTEGER)
+    batchSize: int = Field(default=MAX_EMBEDDING_BATCH_SIZE, ge=1, le=MAX_EMBEDDING_BATCH_SIZE)
+    maxBatches: int = Field(
+        default=1,
+        ge=1,
+        le=MAX_EMBEDDING_INDEX_BATCHES_PER_RUN,
+    )
+
+
+class KnowledgeIndexEmbeddingConfigurationData(KnowledgeIndexModel):
+    profileId: str = Field(min_length=1, max_length=MAX_EMBEDDING_PROFILE_ID_CHARACTERS)
+    provider: EmbeddingProviderName
+    model: str = Field(min_length=1, max_length=MAX_EMBEDDING_MODEL_CHARACTERS)
+    dimensions: int = Field(ge=1, le=MAX_EMBEDDING_DIMENSIONS)
+    vectorVersion: int = Field(ge=1, le=MAX_INDEX_INTEGER)
+
+
+class KnowledgeIndexEmbeddingData(KnowledgeIndexModel):
+    configuration: KnowledgeIndexEmbeddingConfigurationData | None
+    embeddedChunks: int = Field(
+        ge=0,
+        le=MAX_EMBEDDING_BATCH_SIZE * MAX_EMBEDDING_INDEX_BATCHES_PER_RUN,
+    )
+    processedBatches: int = Field(ge=0, le=MAX_EMBEDDING_INDEX_BATCHES_PER_RUN)
+    complete: bool
+
+
+class KnowledgeIndexEmbeddingResult(KnowledgeIndexModel):
+    status: Literal["ok"]
+    data: KnowledgeIndexEmbeddingData
 
 
 class FileChange(BaseModel):

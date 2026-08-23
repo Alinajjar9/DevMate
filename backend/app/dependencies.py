@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from fastapi import Request
 
 from .chat_service import ChatService
+from .embedding_index_service import EmbeddingIndexService
 from .errors import BackendApiError
 from .knowledge_repository import KnowledgeRepository
 from .knowledge_store import KnowledgeStore
@@ -20,6 +21,7 @@ class BackendDependencies:
     backend_token_provider: BackendTokenProvider
     knowledge_store: KnowledgeStore | None
     knowledge_repository: KnowledgeRepository | None
+    embedding_index_service: EmbeddingIndexService | None
 
 
 def backend_dependencies(request: Request) -> BackendDependencies:
@@ -46,3 +48,14 @@ def get_knowledge_repository(request: Request) -> KnowledgeRepository:
             "The local DevMate knowledge store is unavailable.",
         )
     return repository
+
+
+def get_embedding_index_service(request: Request) -> EmbeddingIndexService:
+    service = backend_dependencies(request).embedding_index_service
+    if service is None:
+        raise BackendApiError(
+            503,
+            "knowledge_store_unavailable",
+            "The local DevMate knowledge store is unavailable.",
+        )
+    return service

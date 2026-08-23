@@ -4,6 +4,8 @@ from urllib.parse import urlunsplit
 import httpx
 
 from .embedding_providers import (
+    MAX_EMBEDDING_API_KEY_CHARACTERS,
+    MAX_EMBEDDING_BASE_URL_CHARACTERS,
     MAX_EMBEDDING_BATCH_SIZE,
     MAX_EMBEDDING_DIMENSIONS,
     MAX_EMBEDDING_INPUT_CHARACTERS,
@@ -25,8 +27,6 @@ from .providers import (
 
 
 DEFAULT_EMBEDDING_TIMEOUT_SECONDS = 120.0
-MAX_EMBEDDING_BASE_URL_CHARACTERS = 2_048
-MAX_EMBEDDING_API_KEY_CHARACTERS = 8_192
 
 
 class HttpEmbeddingProvider:

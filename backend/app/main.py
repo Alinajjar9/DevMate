@@ -27,6 +27,9 @@ from .dependencies import (
     backend_dependencies,
 )
 from .errors import BackendApiError
+from .embedding_clients import HttpEmbeddingProvider
+from .embedding_index_service import EmbeddingIndexService
+from .embedding_repository import EmbeddingRepository
 from .knowledge_contracts import DEVMATE_KNOWLEDGE_INDEX_API_VERSION
 from .knowledge_repository import KnowledgeRepository
 from .knowledge_routes import knowledge_router
@@ -182,6 +185,7 @@ def create_app(
     backend_token_provider: BackendTokenProvider | None = None,
     knowledge_store: KnowledgeStore | None = None,
     knowledge_repository: KnowledgeRepository | None = None,
+    embedding_index_service: EmbeddingIndexService | None = None,
 ) -> FastAPI:
     resolved_knowledge_store = (
         knowledge_store
@@ -191,6 +195,12 @@ def create_app(
     resolved_knowledge_repository = knowledge_repository
     if resolved_knowledge_repository is None and resolved_knowledge_store is not None:
         resolved_knowledge_repository = KnowledgeRepository(resolved_knowledge_store)
+    resolved_embedding_index_service = embedding_index_service
+    if resolved_embedding_index_service is None and resolved_knowledge_store is not None:
+        resolved_embedding_index_service = EmbeddingIndexService(
+            HttpEmbeddingProvider(),
+            EmbeddingRepository(resolved_knowledge_store),
+        )
     application = FastAPI(
         title="DevMate Backend",
         version=DEVMATE_BACKEND_VERSION,
@@ -214,6 +224,7 @@ def create_app(
         ),
         knowledge_store=resolved_knowledge_store,
         knowledge_repository=resolved_knowledge_repository,
+        embedding_index_service=resolved_embedding_index_service,
     )
     application.middleware("http")(authenticate_backend_request)
     application.add_exception_handler(BackendApiError, backend_api_error)

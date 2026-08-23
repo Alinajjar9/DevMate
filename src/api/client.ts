@@ -5,12 +5,12 @@ import { StringDecoder } from 'string_decoder';
 import { AGENT_TOOL_NAMES } from '../agentTools';
 import type { AgentToolCall } from '../agentTools';
 import {
-  DEVMATE_BACKEND_CAPABILITIES,
   DEVMATE_BACKEND_ERROR_CODES,
   DEVMATE_BACKEND_PROTOCOL_VERSION,
   DEVMATE_BACKEND_SERVICE,
   DEVMATE_BACKEND_TOKEN_HEADER,
   DEVMATE_KNOWLEDGE_INDEX_API_VERSION,
+  DEVMATE_REQUIRED_BACKEND_CAPABILITIES,
   MAX_BACKEND_TOKEN_CHARACTERS,
   MIN_BACKEND_TOKEN_CHARACTERS
 } from './types';
@@ -1066,7 +1066,9 @@ function parseCompatibleHealthResponse(value: unknown): HealthResponse | undefin
   if (capabilities.length > 32
     || !capabilities.every(isValidBackendCapability)
     || new Set(capabilities).size !== capabilities.length
-    || !DEVMATE_BACKEND_CAPABILITIES.every((capability) => capabilities.includes(capability))) {
+    || !DEVMATE_REQUIRED_BACKEND_CAPABILITIES.every(
+      (capability) => capabilities.includes(capability)
+    )) {
     return undefined;
   }
   return {

@@ -10,6 +10,14 @@ export const DEVMATE_BACKEND_CAPABILITIES = [
   'streaming',
   'request-authentication',
   'strict-response-contracts',
+  'knowledge-index-v1',
+  'embedding-index-v1'
+] as const;
+export const DEVMATE_REQUIRED_BACKEND_CAPABILITIES = [
+  'chat',
+  'streaming',
+  'request-authentication',
+  'strict-response-contracts',
   'knowledge-index-v1'
 ] as const;
 export const DEVMATE_BACKEND_ERROR_CODES = [

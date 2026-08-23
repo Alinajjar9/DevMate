@@ -99,6 +99,7 @@ class DevMateApiTests(unittest.TestCase):
                         "request-authentication",
                         "strict-response-contracts",
                         "knowledge-index-v1",
+                        "embedding-index-v1",
                     ],
                     "backend": "online",
                     "version": "1.0.0",

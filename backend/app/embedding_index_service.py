@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from .embedding_providers import (
     MAX_EMBEDDING_BATCH_SIZE,
     MAX_EMBEDDING_DIMENSIONS,
+    MAX_EMBEDDING_INDEX_BATCHES_PER_RUN,
     MAX_EMBEDDING_MODEL_CHARACTERS,
     MAX_EMBEDDING_TOTAL_INPUT_CHARACTERS,
     EmbeddingBatch,
@@ -20,9 +21,6 @@ from .embedding_repository import (
     EmbeddingConfiguration,
     EmbeddingRepository,
 )
-
-
-MAX_EMBEDDING_INDEX_BATCHES_PER_RUN = 16
 
 
 class EmbeddingIndexError(RuntimeError):

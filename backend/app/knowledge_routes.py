@@ -1,9 +1,13 @@
 from typing import Annotated, NoReturn
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header
 
 from .api_models import (
     KnowledgeIndexApplyRequest,
+    KnowledgeIndexEmbeddingConfigurationData,
+    KnowledgeIndexEmbeddingData,
+    KnowledgeIndexEmbeddingRequest,
+    KnowledgeIndexEmbeddingResult,
     KnowledgeIndexFileFingerprintData,
     KnowledgeIndexFileInput,
     KnowledgeIndexMetadataData,
@@ -20,7 +24,13 @@ from .api_models import (
     KnowledgeIndexWriteData,
     KnowledgeIndexWriteResult,
 )
-from .dependencies import get_knowledge_repository
+from .dependencies import get_embedding_index_service, get_knowledge_repository
+from .embedding_index_service import (
+    EmbeddingIndexError,
+    EmbeddingIndexProfile,
+    EmbeddingIndexService,
+)
+from .embedding_providers import MAX_EMBEDDING_API_KEY_CHARACTERS
 from .errors import BackendApiError
 from .knowledge_contracts import DEVMATE_KNOWLEDGE_INDEX_API_VERSION
 from .knowledge_repository import (
@@ -32,6 +42,7 @@ from .knowledge_repository import (
     KnowledgeRepositoryNotFoundError,
     KnowledgeRepositoryValidationError,
 )
+from .providers import ProviderError
 
 
 knowledge_router = APIRouter(
@@ -196,5 +207,72 @@ async def search_knowledge_index(
                 )
                 for result in results
             ]
+        ),
+    )
+
+
+@knowledge_router.post(
+    "/embeddings/synchronize",
+    response_model=KnowledgeIndexEmbeddingResult,
+)
+async def synchronize_knowledge_index_embeddings(
+    request: KnowledgeIndexEmbeddingRequest,
+    service: Annotated[EmbeddingIndexService, Depends(get_embedding_index_service)],
+    provider_api_key: Annotated[
+        str | None,
+        Header(
+            alias="X-DevMate-Provider-Key",
+            max_length=MAX_EMBEDDING_API_KEY_CHARACTERS,
+        ),
+    ] = None,
+) -> KnowledgeIndexEmbeddingResult:
+    try:
+        result = await service.synchronize_workspace(
+            request.workspaceKey,
+            EmbeddingIndexProfile(
+                profile_id=request.profileId,
+                provider=request.provider,
+                model=request.model,
+                base_url=request.baseUrl,
+                api_key=provider_api_key,
+                remote_allowed=request.remoteAllowed,
+                vector_version=request.vectorVersion,
+            ),
+            batch_size=request.batchSize,
+            max_batches=request.maxBatches,
+        )
+    except KnowledgeRepositoryError as error:
+        _raise_repository_error(error)
+    except ProviderError as error:
+        raise BackendApiError(
+            error.status_code,
+            error.error_code,
+            str(error),
+        ) from error
+    except EmbeddingIndexError as error:
+        raise BackendApiError(
+            502,
+            "provider_invalid_response",
+            "The embedding provider returned invalid vector data.",
+        ) from error
+
+    configuration = result.configuration
+    return KnowledgeIndexEmbeddingResult(
+        status="ok",
+        data=KnowledgeIndexEmbeddingData(
+            configuration=(
+                KnowledgeIndexEmbeddingConfigurationData(
+                    profileId=configuration.profile_id,
+                    provider=configuration.provider,
+                    model=configuration.model,
+                    dimensions=configuration.dimensions,
+                    vectorVersion=configuration.vector_version,
+                )
+                if configuration is not None
+                else None
+            ),
+            embeddedChunks=result.embedded_chunks,
+            processedBatches=result.processed_batches,
+            complete=result.complete,
         ),
     )

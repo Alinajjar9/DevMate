@@ -2,6 +2,27 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Expose authenticated embedding indexing to the extension
+
+### Changed
+
+- Added a strictly validated `POST /index/v1/embeddings/synchronize` backend route for bounded, resumable workspace embedding generation.
+- Kept provider credentials out of JSON by accepting the embedding key only through the existing bounded provider-key header and never returning it in results.
+- Reused the backend-token middleware so unauthenticated requests are rejected before profile validation, workspace lookup, source loading, or provider access.
+- Composed the safe embedding client, resumable indexing service, and SQLite embedding repository automatically when the private knowledge store is available.
+- Returned bounded progress, completion, and active vector-configuration data while mapping missing workspaces, unavailable storage, provider failures, and invalid vectors to stable existing error envelopes.
+- Advertised `embedding-index-v1` as an optional backend capability while retaining the previous required capability set until the TypeScript client begins using this route.
+- Added route coverage for authentication, strict inputs, credential handling, successful indexing, completed-index no-ops, app composition, missing storage and workspaces, provider failures, and malformed batches.
+- Kept extension-host scheduling, profile UI changes, query embeddings, semantic ranking, and user-visible project retrieval unchanged.
+
+### Verification
+
+- Focused embedding API, service, client, and backend API coverage — 71 backend tests passed.
+- `npm run verify` — 221 extension tests and 136 backend tests passed; 40 cross-language contracts and 25 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-23 — Generate code embeddings in resumable batches
 
 ### Changed

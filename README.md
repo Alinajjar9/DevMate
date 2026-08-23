@@ -163,7 +163,9 @@ This version does not use embeddings for retrieval yet. The embedding foundation
 
 The SQLite embedding repository can activate one bounded configuration per workspace, discover missing chunks, atomically store normalized float32 vectors against exact chunk hashes, page through stored vectors, and invalidate stale configurations. File replacement and deletion automatically remove associated vectors through existing foreign-key cascades.
 
-A backend embedding-index service now joins the provider and repository in bounded, resumable batches. It discovers dimensions from the first real source batch, stores each successful batch immediately, continues with only missing chunks, and rebuilds incompatible vectors when dimensions change. It is not connected to an HTTP route or extension-host scheduler yet, so DevMate still generates no vectors during normal use and project retrieval remains lexical.
+A backend embedding-index service now joins the provider and repository in bounded, resumable batches. It discovers dimensions from the first real source batch, stores each successful batch immediately, continues with only missing chunks, and rebuilds incompatible vectors when dimensions change.
+
+The authenticated `/index/v1/embeddings/synchronize` route exposes that service through strict bounded request and response models. Provider credentials use the provider-key header rather than the JSON body, and the backend advertises the optional `embedding-index-v1` capability. The TypeScript extension does not call this route yet, so DevMate still generates no vectors during normal use and project retrieval remains lexical.
 
 On the checked-in evaluation corpus, SQLite lexical retrieval produces 7 of 11 top-one hits, 7 of 11 top-three hits, and 0.6364 recall at five. Synonym-heavy conceptual searches remain the main weakness and are the target of the later semantic and hybrid retriever.
 

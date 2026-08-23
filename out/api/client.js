@@ -849,7 +849,7 @@ function parseCompatibleHealthResponse(value) {
     if (capabilities.length > 32
         || !capabilities.every(isValidBackendCapability)
         || new Set(capabilities).size !== capabilities.length
-        || !types_1.DEVMATE_BACKEND_CAPABILITIES.every((capability) => capabilities.includes(capability))) {
+        || !types_1.DEVMATE_REQUIRED_BACKEND_CAPABILITIES.every((capability) => capabilities.includes(capability))) {
         return undefined;
     }
     return {
