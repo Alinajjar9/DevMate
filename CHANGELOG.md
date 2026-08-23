@@ -2,6 +2,25 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Add the SQLite embedding repository
+
+### Changed
+
+- Added a separate workspace-isolated repository for embedding persistence without enlarging the existing file, chunk, metadata, and lexical repository.
+- Added explicit activation and reset operations for one embedding profile, provider, model, dimension, and vector version per workspace; activating a changed configuration removes incompatible cached vectors.
+- Added bounded discovery of chunks that still need vectors and retained their exact paths, source, hashes, line ranges, and stable identifiers for later provider orchestration.
+- Added atomic content-hash-checked writes that reject stale targets, duplicate chunks, invalid dimensions, non-finite values, and vectors that are not normalized.
+- Stored vectors as normalized little-endian float32 blobs and added bounded cursor-based reads for the future exact cosine-similarity stage.
+- Preserved file-replacement, deletion, and workspace cascade cleanup so changed source is automatically requeued instead of leaving orphaned vectors.
+- Kept provider execution, HTTP routes, background embedding jobs, and semantic retrieval disconnected in this step.
+
+### Verification
+
+- `npm run verify` — 221 extension tests and 123 backend tests passed; 40 cross-language contracts and 25 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-23 — Add safe embedding provider clients
 
 ### Changed

@@ -3,6 +3,15 @@ from typing import Literal, Protocol, runtime_checkable
 
 
 EmbeddingProviderName = Literal["ollama", "openai-compatible"]
+EMBEDDING_PROVIDER_NAMES: tuple[EmbeddingProviderName, ...] = (
+    "ollama",
+    "openai-compatible",
+)
+MAX_EMBEDDING_PROFILE_ID_CHARACTERS = 120
+MAX_EMBEDDING_MODEL_CHARACTERS = 120
+MAX_EMBEDDING_DIMENSIONS = 16_384
+MAX_EMBEDDING_BATCH_SIZE = 64
+MAX_EMBEDDING_READ_BATCH_SIZE = 1_000
 
 
 @dataclass(frozen=True, slots=True)

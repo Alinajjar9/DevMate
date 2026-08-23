@@ -159,7 +159,9 @@ Project scope uses the local SQLite lexical index when the authenticated managed
 
 The SQLite index is stored in VS Code's private global extension storage, not inside the repository. If authenticated SQLite search is unavailable, empty, fails, or contains no usable current chunks, DevMate falls back to the previous JSON lexical index. That fallback index is refreshed lazily only when needed; cancellation stops retrieval without starting fallback work.
 
-This version does not use embeddings for retrieval yet. The embedding foundation defines separate local-first profiles for Ollama and OpenAI-compatible providers, requires explicit consent before sending source code to a remote embedding endpoint, and keeps profile credentials out of normal extension storage. The backend has bounded clients for native Ollama `/api/embed` and OpenAI-compatible `/embeddings` requests. They reuse the existing safe provider-network boundary, strictly validate batches, and normalize accepted vectors. No backend route or indexing job invokes those clients yet, so DevMate still generates and stores no vectors during normal use.
+This version does not use embeddings for retrieval yet. The embedding foundation defines separate local-first profiles for Ollama and OpenAI-compatible providers, requires explicit consent before sending source code to a remote embedding endpoint, and keeps profile credentials out of normal extension storage. The backend has bounded clients for native Ollama `/api/embed` and OpenAI-compatible `/embeddings` requests. They reuse the existing safe provider-network boundary, strictly validate batches, and normalize accepted vectors.
+
+The SQLite embedding repository can activate one bounded configuration per workspace, discover missing chunks, atomically store normalized float32 vectors against exact chunk hashes, page through stored vectors, and invalidate stale configurations. File replacement and deletion automatically remove associated vectors through existing foreign-key cascades. No backend route or indexing job invokes the clients or repository yet, so DevMate still generates and stores no vectors during normal use.
 
 On the checked-in evaluation corpus, SQLite lexical retrieval produces 7 of 11 top-one hits, 7 of 11 top-three hits, and 0.6364 recall at five. Synonym-heavy conceptual searches remain the main weakness and are the target of the later semantic and hybrid retriever.
 
@@ -351,6 +353,7 @@ The Python backend source remains in the package as a fallback for development o
 | `backend/app/errors.py` | Shared backend application errors |
 | `backend/app/embedding_clients.py` | Safe bounded Ollama and OpenAI-compatible embedding HTTP clients |
 | `backend/app/embedding_providers.py` | Batched embedding-provider request, result, and protocol boundary |
+| `backend/app/embedding_repository.py` | Workspace-isolated normalized vector persistence and invalidation |
 | `backend/app/knowledge_contracts.py` | Shared version, states, and size limits for the knowledge-index protocol |
 | `backend/app/knowledge_routes.py` | Authenticated version-one knowledge-index HTTP routes |
 | `backend/app/knowledge_store.py` | Isolated versioned SQLite schema and transaction boundary for the code index |
