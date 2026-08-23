@@ -22,6 +22,7 @@
         commandTimeoutSeconds: 300,
         toolCallLimit: 16,
         maxTokens: 16384,
+        maxInputContextTokens: 0,
         temperature: 0.2,
         agentTools: {
           readFileMaxLines: 400,
@@ -97,6 +98,7 @@
     const llmProfileModelEl = document.getElementById('llmProfileModel');
     const llmProfileBaseUrlEl = document.getElementById('llmProfileBaseUrl');
     const llmProfileBaseUrlHelpEl = document.getElementById('llmProfileBaseUrlHelp');
+    const llmProfileContextWindowTokensEl = document.getElementById('llmProfileContextWindowTokens');
     const llmProfileApiKeyFieldEl = document.getElementById('llmProfileApiKeyField');
     const llmProfileApiKeyEl = document.getElementById('llmProfileApiKey');
     const llmProfileApiKeyHelpEl = document.getElementById('llmProfileApiKeyHelp');
@@ -134,6 +136,7 @@
     const settingsCommandTimeoutSecondsEl = document.getElementById('settingsCommandTimeoutSeconds');
     const settingsToolCallLimitEl = document.getElementById('settingsToolCallLimit');
     const settingsMaxTokensEl = document.getElementById('settingsMaxTokens');
+    const settingsMaxInputContextTokensEl = document.getElementById('settingsMaxInputContextTokens');
     const settingsTemperatureEl = document.getElementById('settingsTemperature');
     const agentToolSettingsDialogEl = document.getElementById('agentToolSettingsDialog');
     const agentToolSettingsFormEl = document.getElementById('agentToolSettingsForm');
@@ -268,6 +271,9 @@
       settingsCommandTimeoutSecondsEl.value = String(state.settings.commandTimeoutSeconds);
       settingsToolCallLimitEl.value = String(state.settings.toolCallLimit);
       settingsMaxTokensEl.value = String(state.settings.maxTokens);
+      settingsMaxInputContextTokensEl.value = state.settings.maxInputContextTokens === 0
+        ? ''
+        : String(state.settings.maxInputContextTokens);
       settingsTemperatureEl.value = String(state.settings.temperature);
       renderTimeoutApproximation();
       renderRememberedCommands();
@@ -355,6 +361,9 @@
       const commandTimeoutSeconds = Number(settingsCommandTimeoutSecondsEl.value);
       const toolCallLimit = Number(settingsToolCallLimitEl.value);
       const maxTokens = Number(settingsMaxTokensEl.value);
+      const maxInputContextTokens = settingsMaxInputContextTokensEl.value.trim()
+        ? Number(settingsMaxInputContextTokensEl.value)
+        : 0;
       const temperature = Number(settingsTemperatureEl.value);
       vscode.postMessage({
         command: 'saveSettings',
@@ -363,6 +372,7 @@
           commandTimeoutSeconds,
           toolCallLimit,
           maxTokens,
+          maxInputContextTokens,
           temperature,
           policy: {
             createFiles: permissionCreateFilesEl.value,
@@ -410,6 +420,10 @@
       const provider = llmProfileProviderEl.value;
       const model = llmProfileModelEl.value.trim();
       const baseUrl = llmProfileBaseUrlEl.value.trim();
+      const contextWindowValue = llmProfileContextWindowTokensEl.value.trim();
+      const contextWindowTokens = contextWindowValue
+        ? Number(contextWindowValue)
+        : undefined;
       const apiKey = llmProfileApiKeyEl.value.trim();
 
       if (!name) {
@@ -420,6 +434,15 @@
       if (!model) {
         setLlmProfileFormError('Enter a model ID.');
         llmProfileModelEl.focus();
+        return;
+      }
+      if (contextWindowTokens !== undefined && (
+        !Number.isInteger(contextWindowTokens)
+        || contextWindowTokens < 1024
+        || contextWindowTokens > 4000000
+      )) {
+        setLlmProfileFormError('Use a context window from 1,024 to 4,000,000 tokens, or leave it blank for Auto.');
+        llmProfileContextWindowTokensEl.focus();
         return;
       }
       if (baseUrl) {
@@ -453,6 +476,7 @@
           provider,
           model,
           baseUrl: baseUrl || undefined,
+          contextWindowTokens,
           apiKey: provider === 'openai' && apiKey ? apiKey : undefined
         }
       });
@@ -707,6 +731,9 @@
           settingsCommandTimeoutSecondsEl.value = String(state.settings.commandTimeoutSeconds);
           settingsToolCallLimitEl.value = String(state.settings.toolCallLimit);
           settingsMaxTokensEl.value = String(state.settings.maxTokens);
+          settingsMaxInputContextTokensEl.value = state.settings.maxInputContextTokens === 0
+            ? ''
+            : String(state.settings.maxInputContextTokens);
           settingsTemperatureEl.value = String(state.settings.temperature);
           renderTimeoutApproximation();
         }
@@ -2125,6 +2152,9 @@
           profile.builtIn ? 'Built-in' : undefined,
           profile.providerLabel,
           profile.model,
+          profile.contextWindowTokens
+            ? formatTokenCount(profile.contextWindowTokens) + ' context'
+            : 'Auto context',
           profile.intelligence ? 'Intelligence: ' + profile.intelligence : undefined
         ].filter(Boolean).join(' · ');
         copy.append(name, meta);
@@ -2182,11 +2212,15 @@
       llmProfileProviderEl.value = profile?.provider || 'openai';
       llmProfileModelEl.value = profile?.model || '';
       llmProfileBaseUrlEl.value = profile?.baseUrl || '';
+      llmProfileContextWindowTokensEl.value = profile?.contextWindowTokens
+        ? String(profile.contextWindowTokens)
+        : '';
       llmProfileApiKeyEl.value = '';
       llmProfileNameEl.disabled = isBuiltIn;
       llmProfileProviderEl.disabled = isBuiltIn;
       llmProfileModelEl.disabled = isBuiltIn;
       llmProfileBaseUrlEl.disabled = isBuiltIn;
+      llmProfileContextWindowTokensEl.disabled = isBuiltIn;
       llmProfileProviderEl.options[0].textContent = isBuiltIn ? 'NVIDIA' : 'OpenAI';
       llmProfileFormEl.dataset.builtIn = String(isBuiltIn);
       llmProfileDialogEl.dataset.hasApiKey = String(Boolean(hasApiKey));

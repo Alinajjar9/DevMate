@@ -7,6 +7,10 @@ const {
   createContextBudget,
   DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
   estimateContextTokens,
+  isValidMaxInputContextTokens,
+  isValidModelContextWindowTokens,
+  normalizeMaxInputContextTokens,
+  normalizeModelContextWindowTokens,
   planContextCandidates
 } = require('../out/contextPlanner');
 
@@ -48,6 +52,17 @@ test('returns no optional input capacity when output consumes the safe window', 
 
   assert.equal(budget.inputTokensBeforeSafetyMargin, 0);
   assert.equal(budget.usableInputTokens, 0);
+});
+
+test('normalizes persisted context-window and Auto input settings', () => {
+  assert.equal(normalizeModelContextWindowTokens(128_000), 128_000);
+  assert.equal(normalizeModelContextWindowTokens(500), undefined);
+  assert.equal(isValidModelContextWindowTokens(undefined), true);
+  assert.equal(isValidModelContextWindowTokens(4_000_001), false);
+  assert.equal(normalizeMaxInputContextTokens(undefined), 0);
+  assert.equal(normalizeMaxInputContextTokens(0), 0);
+  assert.equal(normalizeMaxInputContextTokens(24_000), 24_000);
+  assert.equal(isValidMaxInputContextTokens(127), false);
 });
 
 test('estimates text deterministically from UTF-16 characters', () => {

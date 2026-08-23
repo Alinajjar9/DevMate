@@ -13,6 +13,7 @@ exports.parseReasoningEffortPreferences = parseReasoningEffortPreferences;
 exports.reasoningEffortForProfile = reasoningEffortForProfile;
 exports.secretKeyForProfile = secretKeyForProfile;
 const providerUrlPolicy_1 = require("./providerUrlPolicy");
+const contextPlanner_1 = require("./contextPlanner");
 exports.LLM_PROFILES_STORAGE_KEY = 'devMate.llmProfiles.v1';
 exports.ACTIVE_LLM_PROFILE_STORAGE_KEY = 'devMate.activeLlmProfileId.v1';
 exports.LLM_REASONING_EFFORT_STORAGE_KEY = 'devMate.reasoningEffortByProfile.v1';
@@ -40,11 +41,13 @@ const supportedProviders = new Set(['openai', 'ollama']);
 const reasoningEfforts = new Set(['auto', 'low', 'medium', 'high', 'xhigh']);
 function normalizeProfileDraft(draft) {
     const baseUrl = (0, providerUrlPolicy_1.normalizeProviderBaseUrl)(draft.baseUrl);
+    const contextWindowTokens = (0, contextPlanner_1.normalizeModelContextWindowTokens)(draft.contextWindowTokens);
     return {
         name: draft.name.trim(),
         provider: draft.provider,
         model: draft.model.trim(),
-        ...(baseUrl ? { baseUrl } : {})
+        ...(baseUrl ? { baseUrl } : {}),
+        ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {})
     };
 }
 function validateProfileDraft(draft, existingProfiles, editingProfileId) {
@@ -63,6 +66,9 @@ function validateProfileDraft(draft, existingProfiles, editingProfileId) {
     }
     if (normalized.model.length > 120) {
         return 'Use a model ID with 120 characters or fewer.';
+    }
+    if (!(0, contextPlanner_1.isValidModelContextWindowTokens)(draft.contextWindowTokens)) {
+        return 'Use a context window from 1,024 to 4,000,000 tokens, or leave it blank for Auto.';
     }
     if (existingProfiles.some((profile) => profile.id !== editingProfileId
         && profile.name.localeCompare(normalized.name, undefined, { sensitivity: 'accent' }) === 0)) {
@@ -92,6 +98,7 @@ function parseStoredProfiles(value) {
         const baseUrl = typeof candidate.baseUrl === 'string'
             ? (0, providerUrlPolicy_1.normalizeProviderBaseUrl)(candidate.baseUrl)
             : undefined;
+        const contextWindowTokens = (0, contextPlanner_1.normalizeModelContextWindowTokens)(candidate.contextWindowTokens);
         const normalizedName = name.toLocaleLowerCase();
         if (!id
             || !name
@@ -106,7 +113,8 @@ function parseStoredProfiles(value) {
             name,
             provider: provider,
             model,
-            ...(baseUrl ? { baseUrl } : {})
+            ...(baseUrl ? { baseUrl } : {}),
+            ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {})
         };
         if (validateProfileDraft(profile, profiles, id)) {
             continue;

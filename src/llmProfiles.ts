@@ -2,6 +2,10 @@ import {
   normalizeProviderBaseUrl,
   validateProviderBaseUrl
 } from './providerUrlPolicy';
+import {
+  isValidModelContextWindowTokens,
+  normalizeModelContextWindowTokens
+} from './contextPlanner';
 
 export const LLM_PROFILES_STORAGE_KEY = 'devMate.llmProfiles.v1';
 export const ACTIVE_LLM_PROFILE_STORAGE_KEY = 'devMate.activeLlmProfileId.v1';
@@ -24,6 +28,7 @@ export type LlmProfile = {
   provider: LlmProvider;
   model: string;
   baseUrl?: string;
+  contextWindowTokens?: number;
   builtIn?: true;
 };
 
@@ -49,11 +54,15 @@ const reasoningEfforts = new Set<ReasoningEffort>(['auto', 'low', 'medium', 'hig
 
 export function normalizeProfileDraft(draft: LlmProfileDraft): LlmProfileDraft {
   const baseUrl = normalizeProviderBaseUrl(draft.baseUrl);
+  const contextWindowTokens = normalizeModelContextWindowTokens(
+    draft.contextWindowTokens
+  );
   return {
     name: draft.name.trim(),
     provider: draft.provider,
     model: draft.model.trim(),
-    ...(baseUrl ? { baseUrl } : {})
+    ...(baseUrl ? { baseUrl } : {}),
+    ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {})
   };
 }
 
@@ -78,6 +87,9 @@ export function validateProfileDraft(
   }
   if (normalized.model.length > 120) {
     return 'Use a model ID with 120 characters or fewer.';
+  }
+  if (!isValidModelContextWindowTokens(draft.contextWindowTokens)) {
+    return 'Use a context window from 1,024 to 4,000,000 tokens, or leave it blank for Auto.';
   }
   if (
     existingProfiles.some(
@@ -118,6 +130,9 @@ export function parseStoredProfiles(value: unknown): LlmProfile[] {
     const baseUrl = typeof candidate.baseUrl === 'string'
       ? normalizeProviderBaseUrl(candidate.baseUrl)
       : undefined;
+    const contextWindowTokens = normalizeModelContextWindowTokens(
+      candidate.contextWindowTokens
+    );
     const normalizedName = name.toLocaleLowerCase();
 
     if (
@@ -136,7 +151,8 @@ export function parseStoredProfiles(value: unknown): LlmProfile[] {
       name,
       provider: provider as LlmProvider,
       model,
-      ...(baseUrl ? { baseUrl } : {})
+      ...(baseUrl ? { baseUrl } : {}),
+      ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {})
     };
     if (validateProfileDraft(profile, profiles, id)) {
       continue;

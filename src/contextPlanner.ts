@@ -1,5 +1,8 @@
 export const DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS = 32_000;
+export const MIN_MODEL_CONTEXT_WINDOW_TOKENS = 1_024;
 export const MAX_MODEL_CONTEXT_WINDOW_TOKENS = 4_000_000;
+export const AUTO_MAX_INPUT_CONTEXT_TOKENS = 0;
+export const MIN_MAX_INPUT_CONTEXT_TOKENS = 128;
 export const CONTEXT_TOKEN_SAFETY_MARGIN = 0.1;
 export const ESTIMATED_CHARACTERS_PER_TOKEN = 4;
 
@@ -54,9 +57,8 @@ const priorityIndexes = new Map<ContextPriority, number>(
 );
 
 export function createContextBudget(options: ContextBudgetOptions): ContextBudget {
-  const configuredContextWindow = boundedPositiveInteger(
-    options.modelContextWindowTokens,
-    MAX_MODEL_CONTEXT_WINDOW_TOKENS
+  const configuredContextWindow = normalizeModelContextWindowTokens(
+    options.modelContextWindowTokens
   );
   const usedDefaultContextWindow = configuredContextWindow === undefined;
   const modelContextWindowTokens = configuredContextWindow
@@ -65,10 +67,12 @@ export function createContextBudget(options: ContextBudgetOptions): ContextBudge
     options.reservedOutputTokens,
     MAX_MODEL_CONTEXT_WINDOW_TOKENS
   ) ?? 0;
-  const configuredMaxInputTokens = boundedPositiveInteger(
-    options.maxInputContextTokens,
-    MAX_MODEL_CONTEXT_WINDOW_TOKENS
+  const normalizedMaxInputTokens = normalizeMaxInputContextTokens(
+    options.maxInputContextTokens
   );
+  const configuredMaxInputTokens = normalizedMaxInputTokens === AUTO_MAX_INPUT_CONTEXT_TOKENS
+    ? undefined
+    : normalizedMaxInputTokens;
   const availableAfterOutput = Math.max(
     0,
     modelContextWindowTokens - reservedOutputTokens
@@ -93,6 +97,30 @@ export function createContextBudget(options: ContextBudgetOptions): ContextBudge
 
 export function estimateContextTokens(value: string): number {
   return Math.ceil(value.length / ESTIMATED_CHARACTERS_PER_TOKEN);
+}
+
+export function isValidModelContextWindowTokens(value: unknown): value is number | undefined {
+  return value === undefined
+    || Number.isInteger(value)
+      && (value as number) >= MIN_MODEL_CONTEXT_WINDOW_TOKENS
+      && (value as number) <= MAX_MODEL_CONTEXT_WINDOW_TOKENS;
+}
+
+export function normalizeModelContextWindowTokens(value: unknown): number | undefined {
+  return isValidModelContextWindowTokens(value) ? value : undefined;
+}
+
+export function isValidMaxInputContextTokens(value: unknown): value is number {
+  return Number.isInteger(value)
+    && (value === AUTO_MAX_INPUT_CONTEXT_TOKENS
+      || (value as number) >= MIN_MAX_INPUT_CONTEXT_TOKENS
+        && (value as number) <= MAX_MODEL_CONTEXT_WINDOW_TOKENS);
+}
+
+export function normalizeMaxInputContextTokens(value: unknown): number {
+  return isValidMaxInputContextTokens(value)
+    ? value
+    : AUTO_MAX_INPUT_CONTEXT_TOKENS;
 }
 
 export function planContextCandidates<T>(
@@ -162,18 +190,6 @@ export function planContextCandidates<T>(
     remainingTokens: Math.max(0, budget - usedTokens),
     overflowTokens: Math.max(0, usedTokens - budget)
   };
-}
-
-function boundedPositiveInteger(
-  value: number | undefined,
-  maximum: number
-): number | undefined {
-  return value !== undefined
-    && Number.isInteger(value)
-    && value > 0
-    && value <= maximum
-    ? value
-    : undefined;
 }
 
 function boundedNonNegativeInteger(

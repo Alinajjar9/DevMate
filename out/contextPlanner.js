@@ -1,11 +1,18 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CONTEXT_PRIORITY_ORDER = exports.ESTIMATED_CHARACTERS_PER_TOKEN = exports.CONTEXT_TOKEN_SAFETY_MARGIN = exports.MAX_MODEL_CONTEXT_WINDOW_TOKENS = exports.DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS = void 0;
+exports.CONTEXT_PRIORITY_ORDER = exports.ESTIMATED_CHARACTERS_PER_TOKEN = exports.CONTEXT_TOKEN_SAFETY_MARGIN = exports.MIN_MAX_INPUT_CONTEXT_TOKENS = exports.AUTO_MAX_INPUT_CONTEXT_TOKENS = exports.MAX_MODEL_CONTEXT_WINDOW_TOKENS = exports.MIN_MODEL_CONTEXT_WINDOW_TOKENS = exports.DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS = void 0;
 exports.createContextBudget = createContextBudget;
 exports.estimateContextTokens = estimateContextTokens;
+exports.isValidModelContextWindowTokens = isValidModelContextWindowTokens;
+exports.normalizeModelContextWindowTokens = normalizeModelContextWindowTokens;
+exports.isValidMaxInputContextTokens = isValidMaxInputContextTokens;
+exports.normalizeMaxInputContextTokens = normalizeMaxInputContextTokens;
 exports.planContextCandidates = planContextCandidates;
 exports.DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS = 32_000;
+exports.MIN_MODEL_CONTEXT_WINDOW_TOKENS = 1_024;
 exports.MAX_MODEL_CONTEXT_WINDOW_TOKENS = 4_000_000;
+exports.AUTO_MAX_INPUT_CONTEXT_TOKENS = 0;
+exports.MIN_MAX_INPUT_CONTEXT_TOKENS = 128;
 exports.CONTEXT_TOKEN_SAFETY_MARGIN = 0.1;
 exports.ESTIMATED_CHARACTERS_PER_TOKEN = 4;
 exports.CONTEXT_PRIORITY_ORDER = [
@@ -21,12 +28,15 @@ exports.CONTEXT_PRIORITY_ORDER = [
 ];
 const priorityIndexes = new Map(exports.CONTEXT_PRIORITY_ORDER.map((priority, index) => [priority, index]));
 function createContextBudget(options) {
-    const configuredContextWindow = boundedPositiveInteger(options.modelContextWindowTokens, exports.MAX_MODEL_CONTEXT_WINDOW_TOKENS);
+    const configuredContextWindow = normalizeModelContextWindowTokens(options.modelContextWindowTokens);
     const usedDefaultContextWindow = configuredContextWindow === undefined;
     const modelContextWindowTokens = configuredContextWindow
         ?? exports.DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS;
     const reservedOutputTokens = boundedNonNegativeInteger(options.reservedOutputTokens, exports.MAX_MODEL_CONTEXT_WINDOW_TOKENS) ?? 0;
-    const configuredMaxInputTokens = boundedPositiveInteger(options.maxInputContextTokens, exports.MAX_MODEL_CONTEXT_WINDOW_TOKENS);
+    const normalizedMaxInputTokens = normalizeMaxInputContextTokens(options.maxInputContextTokens);
+    const configuredMaxInputTokens = normalizedMaxInputTokens === exports.AUTO_MAX_INPUT_CONTEXT_TOKENS
+        ? undefined
+        : normalizedMaxInputTokens;
     const availableAfterOutput = Math.max(0, modelContextWindowTokens - reservedOutputTokens);
     const inputTokensBeforeSafetyMargin = configuredMaxInputTokens === undefined
         ? availableAfterOutput
@@ -44,6 +54,26 @@ function createContextBudget(options) {
 }
 function estimateContextTokens(value) {
     return Math.ceil(value.length / exports.ESTIMATED_CHARACTERS_PER_TOKEN);
+}
+function isValidModelContextWindowTokens(value) {
+    return value === undefined
+        || Number.isInteger(value)
+            && value >= exports.MIN_MODEL_CONTEXT_WINDOW_TOKENS
+            && value <= exports.MAX_MODEL_CONTEXT_WINDOW_TOKENS;
+}
+function normalizeModelContextWindowTokens(value) {
+    return isValidModelContextWindowTokens(value) ? value : undefined;
+}
+function isValidMaxInputContextTokens(value) {
+    return Number.isInteger(value)
+        && (value === exports.AUTO_MAX_INPUT_CONTEXT_TOKENS
+            || value >= exports.MIN_MAX_INPUT_CONTEXT_TOKENS
+                && value <= exports.MAX_MODEL_CONTEXT_WINDOW_TOKENS);
+}
+function normalizeMaxInputContextTokens(value) {
+    return isValidMaxInputContextTokens(value)
+        ? value
+        : exports.AUTO_MAX_INPUT_CONTEXT_TOKENS;
 }
 function planContextCandidates(candidates, usableInputTokens) {
     const budget = boundedNonNegativeInteger(usableInputTokens, exports.MAX_MODEL_CONTEXT_WINDOW_TOKENS);
@@ -91,14 +121,6 @@ function planContextCandidates(candidates, usableInputTokens) {
         remainingTokens: Math.max(0, budget - usedTokens),
         overflowTokens: Math.max(0, usedTokens - budget)
     };
-}
-function boundedPositiveInteger(value, maximum) {
-    return value !== undefined
-        && Number.isInteger(value)
-        && value > 0
-        && value <= maximum
-        ? value
-        : undefined;
 }
 function boundedNonNegativeInteger(value, maximum) {
     return value !== undefined

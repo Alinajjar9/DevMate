@@ -73,6 +73,13 @@
           "maximum": 32000,
           "description": "Maximum response tokens shared by model reasoning, answers, and complete Code-mode file contents."
         },
+        "devMate.maxInputContextTokens": {
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 4000000,
+          "description": "Maximum model-input context tokens. Use 0 for Auto, which derives the limit from the selected model profile and output-token reserve."
+        },
         "devMate.temperature": {
           "type": "number",
           "default": 0.2,

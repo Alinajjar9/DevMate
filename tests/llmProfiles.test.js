@@ -22,14 +22,16 @@ test('normalizes profile labels, model IDs, and trailing URL slashes', () => {
     name: '  Local Coder  ',
     provider: 'ollama',
     model: '  qwen-coder  ',
-    baseUrl: 'http://127.0.0.1:11434///'
+    baseUrl: 'http://127.0.0.1:11434///',
+    contextWindowTokens: 128_000
   });
 
   assert.deepEqual(profile, {
     name: 'Local Coder',
     provider: 'ollama',
     model: 'qwen-coder',
-    baseUrl: 'http://127.0.0.1:11434'
+    baseUrl: 'http://127.0.0.1:11434',
+    contextWindowTokens: 128_000
   });
 });
 
@@ -142,10 +144,37 @@ test('allows an edited profile to keep its own display name', () => {
   );
 });
 
+test('validates optional model context windows without requiring one', () => {
+  assert.equal(validateProfileDraft(
+    { name: 'Auto', provider: 'ollama', model: 'model' },
+    []
+  ), undefined);
+  assert.equal(validateProfileDraft(
+    {
+      name: 'Configured',
+      provider: 'ollama',
+      model: 'model',
+      contextWindowTokens: 128_000
+    },
+    []
+  ), undefined);
+  assert.match(validateProfileDraft(
+    {
+      name: 'Invalid',
+      provider: 'ollama',
+      model: 'model',
+      contextWindowTokens: 1_000
+    },
+    []
+  ), /1,024 to 4,000,000/);
+});
+
 test('parses only complete, unique, supported stored profiles', () => {
   const parsed = parseStoredProfiles([
     profile('one', 'Cloud', 'openai', 'model-a'),
     profile('two', 'Local', 'ollama', 'model-b'),
+    { ...profile('window', 'Large context', 'ollama', 'model-window'), contextWindowTokens: 256_000 },
+    { ...profile('invalid-window', 'Invalid context', 'ollama', 'model-invalid'), contextWindowTokens: -1 },
     profile('one', 'Duplicate ID', 'openai', 'model-c'),
     profile('three', 'cloud', 'openai', 'model-d'),
     profile('four', 'Unsupported', 'unknown', 'model-e'),
@@ -167,7 +196,14 @@ test('parses only complete, unique, supported stored profiles', () => {
     null
   ]);
 
-  assert.deepEqual(parsed.map((item) => item.id), ['one', 'two']);
+  assert.deepEqual(parsed.map((item) => item.id), [
+    'one',
+    'two',
+    'window',
+    'invalid-window'
+  ]);
+  assert.equal(parsed.find((item) => item.id === 'window').contextWindowTokens, 256_000);
+  assert.equal(parsed.find((item) => item.id === 'invalid-window').contextWindowTokens, undefined);
 });
 
 test('uses a profile-specific secret-storage key', () => {

@@ -90,7 +90,7 @@ DevMate does not include provider credentials.
 3. Configure the built-in Nemotron profile or add a custom profile.
 4. Enter an API key if the selected provider requires one.
 
-Profile metadata is stored in VS Code global storage. API keys are stored separately through VS Code SecretStorage.
+Profile metadata is stored in VS Code global storage. API keys are stored separately through VS Code SecretStorage. Custom profiles may optionally declare their model's total context window; leaving it on **Auto** uses DevMate's conservative 32,000-token fallback.
 
 ### Built-in Nemotron
 
@@ -255,6 +255,7 @@ The gear button in the DevMate toolbar opens the main settings dialog.
 | Command timeout | 300 seconds | 10–1800 seconds |
 | Tool calls per request | 16 | 4–100 |
 | Maximum output tokens | 16384 | 128–32000 |
+| Maximum input context | Auto | Auto or 128–4000000 tokens |
 | Temperature | 0.2 | 0–2 |
 | Create files | Ask | Workspace-specific |
 | Update files | Ask | Workspace-specific |

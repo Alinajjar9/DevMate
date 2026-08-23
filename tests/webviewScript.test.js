@@ -232,6 +232,18 @@ test('settings expose a separate bounded agent-tool limits dialog', () => {
   assert.match(source, /agentTools: this\.getAgentToolSettings\(\)/);
 });
 
+test('model and global context limits expose validated Auto controls', () => {
+  const source = readDevMateSource();
+  assert.match(source, /id="llmProfileContextWindowTokens"/);
+  assert.match(source, /id="settingsMaxInputContextTokens"/);
+  assert.match(source, /contextWindowTokens < 1024/);
+  assert.match(source, /contextWindowTokens > 4000000/);
+  assert.match(source, /maxInputContextTokens: 0/);
+  assert.match(source, /settingsMaxInputContextTokensEl\.value\.trim\(\)/);
+  assert.match(source, /contextWindowTokens,/);
+  assert.match(source, /maxInputContextTokens,/);
+});
+
 test('settings manage separate embedding profiles with explicit remote consent', () => {
   const source = readDevMateSource();
   assert.match(source, /id="manageEmbeddingProfiles"/);

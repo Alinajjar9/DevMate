@@ -2,6 +2,25 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Configure model context limits
+
+### Changed
+
+- Added an optional validated context-window size to custom chat-model profiles, with blank values retaining the conservative Auto fallback.
+- Preserved context-window metadata through profile normalization, storage parsing, editing, and the model picker while safely ignoring malformed optional values from old or corrupted storage.
+- Added a global **Maximum input context** setting with a blank Auto state represented as `0` in VS Code configuration.
+- Bounded both controls from 1,024 to 4,000,000 tokens for model windows and from 128 to 4,000,000 tokens for explicit input caps.
+- Kept built-in provider metadata locked and kept API keys in SecretStorage; these settings introduce no new credential or provider payload fields.
+- Kept live request construction unchanged so configured limits are persisted but not enforced until the next context-planning milestone.
+
+### Verification
+
+- Focused planner, profile, settings-persistence, and webview coverage — 59 tests passed.
+- `npm run verify` — 272 extension tests and 142 backend tests passed; 49 cross-language contracts and 29 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-23 — Lay the foundation for context budgeting
 
 ### Changed

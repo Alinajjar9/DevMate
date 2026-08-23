@@ -256,6 +256,18 @@ function getChatWebviewHtml(webview, extensionUri) {
           >
           <p id="llmProfileBaseUrlHelp" class="field-help">Leave blank to use the OpenAI default.</p>
         </div>
+        <div class="profile-field">
+          <label for="llmProfileContextWindowTokens">Context window tokens <span class="field-optional">optional</span></label>
+          <input
+            id="llmProfileContextWindowTokens"
+            type="number"
+            min="1024"
+            max="4000000"
+            step="1"
+            placeholder="Auto"
+          >
+          <p class="field-help">Leave blank to use DevMate's conservative 32,000-token fallback.</p>
+        </div>
         <div id="llmProfileApiKeyField" class="profile-field">
           <label for="llmProfileApiKey">API key</label>
           <input
@@ -384,6 +396,11 @@ function getChatWebviewHtml(webview, extensionUri) {
               <label for="settingsMaxTokens">Maximum output tokens</label>
               <input id="settingsMaxTokens" type="number" min="128" max="32000" step="1" required>
               <p class="field-help">Shared by reasoning and final output.</p>
+            </div>
+            <div class="profile-field">
+              <label for="settingsMaxInputContextTokens">Maximum input context</label>
+              <input id="settingsMaxInputContextTokens" type="number" min="128" max="4000000" step="1" placeholder="Auto">
+              <p class="field-help">Leave blank for Auto, based on the selected model profile and output reserve.</p>
             </div>
             <div class="profile-field">
               <label for="settingsToolCallLimit">Tool calls per request</label>

@@ -32,6 +32,7 @@ const workspaceFolder = {
 };
 
 const vscode = {
+  ConfigurationTarget: { Global: 1 },
   Uri: {
     file: (filePath) => createUri(filePath),
     joinPath: (base, ...segments) => createUri(
@@ -46,7 +47,10 @@ const vscode = {
     isTrusted: true,
     asRelativePath: (uri) => uri.relativePath ?? path.relative(workspaceFolder.uri.fsPath, uri.fsPath),
     getConfiguration: () => ({
-      get: (key, fallback) => configuration.has(key) ? configuration.get(key) : fallback
+      get: (key, fallback) => configuration.has(key) ? configuration.get(key) : fallback,
+      update: async (key, value) => {
+        configuration.set(key, value);
+      }
     })
   },
   window: {
@@ -310,6 +314,48 @@ test('collects project context with attachments before deduplicated lexical resu
     'Indexed 2 files',
     'Retrieved 1 relevant project excerpt'
   ]);
+});
+
+test('persists explicit and Auto maximum input-context settings', async () => {
+  const provider = providerWithoutConstructor();
+  const previousConfiguration = new Map(configuration);
+  const messages = [];
+  provider.extensionContext = extensionContext();
+  provider.postPermissionPolicyState = () => undefined;
+  provider.postSettingsState = () => undefined;
+  provider.postMessage = (message) => messages.push(message);
+  provider.postStatus = (message) => assert.fail(message);
+
+  try {
+    const baseSettings = {
+      timeoutSeconds: 900,
+      commandTimeoutSeconds: 300,
+      toolCallLimit: 16,
+      maxTokens: 8_000,
+      temperature: 0.2,
+      policy: { createFiles: 'ask', updateFiles: 'ask' }
+    };
+    await provider.saveSettings({
+      ...baseSettings,
+      maxInputContextTokens: 24_000
+    });
+    assert.equal(configuration.get('maxInputContextTokens'), 24_000);
+
+    await provider.saveSettings({
+      ...baseSettings,
+      maxInputContextTokens: 0
+    });
+    assert.equal(configuration.get('maxInputContextTokens'), 0);
+    assert.equal(
+      messages.filter((message) => message.command === 'settingsSaved').length,
+      2
+    );
+  } finally {
+    configuration.clear();
+    for (const [key, value] of previousConfiguration) {
+      configuration.set(key, value);
+    }
+  }
 });
 
 test('routes asks exclusively and reconstructs resumed requests from the checkpoint', async () => {

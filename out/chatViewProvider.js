@@ -56,6 +56,7 @@ const workspaceContext_1 = require("./workspaceContext");
 const workspaceMutations_1 = require("./workspaceMutations");
 const toolExecutor_1 = require("./toolExecutor");
 const agentRunController_1 = require("./agentRunController");
+const contextPlanner_1 = require("./contextPlanner");
 class DevMateChatViewProvider {
     extensionContext;
     backendManager;
@@ -789,7 +790,7 @@ class DevMateChatViewProvider {
     }
     async migrateBuiltInNemotronProfile() {
         const storedProfiles = this.getStoredLlmProfiles();
-        const equivalentProfiles = storedProfiles.filter(llmProfiles_1.isEquivalentNemotronProfile);
+        const equivalentProfiles = storedProfiles.filter((profile) => (0, llmProfiles_1.isEquivalentNemotronProfile)(profile) && profile.contextWindowTokens === undefined);
         if (equivalentProfiles.length === 0) {
             return;
         }
@@ -843,6 +844,7 @@ class DevMateChatViewProvider {
                 providerLabel: (0, llmProfiles_1.providerLabelForProfile)(profile),
                 model: profile.model,
                 baseUrl: profile.baseUrl,
+                contextWindowTokens: profile.contextWindowTokens,
                 intelligence: (0, llmProfiles_1.reasoningEffortOptionsForProfile)(profile).length > 1
                     ? llmProfiles_1.REASONING_EFFORT_LABELS[(0, llmProfiles_1.reasoningEffortForProfile)(profile, reasoningPreferences)]
                     : undefined,
@@ -914,6 +916,7 @@ class DevMateChatViewProvider {
                     provider: profile.provider,
                     model: profile.model,
                     baseUrl: profile.baseUrl,
+                    contextWindowTokens: profile.contextWindowTokens,
                     builtIn: (0, llmProfiles_1.isBuiltInLlmProfile)(profile)
                 }
                 : undefined,
@@ -926,6 +929,7 @@ class DevMateChatViewProvider {
             || !['openai', 'ollama'].includes(submission.provider)
             || typeof submission.model !== 'string'
             || (submission.baseUrl !== undefined && typeof submission.baseUrl !== 'string')
+            || !(0, contextPlanner_1.isValidModelContextWindowTokens)(submission.contextWindowTokens)
             || (submission.apiKey !== undefined && typeof submission.apiKey !== 'string')) {
             this.postMessage({
                 command: 'llmProfileFormError',
@@ -949,17 +953,19 @@ class DevMateChatViewProvider {
             await this.saveBuiltInNemotronApiKey(submission.apiKey);
             return;
         }
-        const draft = (0, llmProfiles_1.normalizeProfileDraft)({
+        const submittedDraft = {
             name: submission.name,
             provider: submission.provider,
             model: submission.model,
-            baseUrl: submission.baseUrl
-        });
-        const validationError = (0, llmProfiles_1.validateProfileDraft)(draft, profiles, existingProfile?.id);
+            baseUrl: submission.baseUrl,
+            contextWindowTokens: submission.contextWindowTokens
+        };
+        const validationError = (0, llmProfiles_1.validateProfileDraft)(submittedDraft, profiles, existingProfile?.id);
         if (validationError) {
             this.postMessage({ command: 'llmProfileFormError', message: validationError });
             return;
         }
+        const draft = (0, llmProfiles_1.normalizeProfileDraft)(submittedDraft);
         const existingApiKey = existingProfile
             ? await this.extensionContext.secrets.get((0, llmProfiles_1.secretKeyForProfile)(existingProfile.id))
             : undefined;
@@ -1196,6 +1202,7 @@ class DevMateChatViewProvider {
             || !Number.isInteger(settings.maxTokens)
             || settings.maxTokens < 128
             || settings.maxTokens > 32_000
+            || !(0, contextPlanner_1.isValidMaxInputContextTokens)(settings.maxInputContextTokens)
             || !Number.isFinite(settings.temperature)
             || settings.temperature < 0
             || settings.temperature > 2) {
@@ -1210,6 +1217,7 @@ class DevMateChatViewProvider {
                 config.update('commandTimeoutSeconds', settings.commandTimeoutSeconds, vscode.ConfigurationTarget.Global),
                 config.update('toolCallLimit', settings.toolCallLimit, vscode.ConfigurationTarget.Global),
                 config.update('maxTokens', settings.maxTokens, vscode.ConfigurationTarget.Global),
+                config.update('maxInputContextTokens', settings.maxInputContextTokens, vscode.ConfigurationTarget.Global),
                 config.update('temperature', settings.temperature, vscode.ConfigurationTarget.Global),
                 this.extensionContext.workspaceState.update(permissions_1.FILE_PERMISSION_POLICY_STORAGE_KEY, normalizedPolicy)
             ]);
@@ -1274,6 +1282,7 @@ class DevMateChatViewProvider {
                 commandTimeoutSeconds: Math.min(commandTools_1.MAX_COMMAND_TIMEOUT_SECONDS, Math.max(commandTools_1.MIN_COMMAND_TIMEOUT_SECONDS, config.get('commandTimeoutSeconds', commandTools_1.DEFAULT_COMMAND_TIMEOUT_SECONDS))),
                 toolCallLimit: (0, agentTools_1.boundedAgentToolCallLimit)(config.get('toolCallLimit', agentTools_1.DEFAULT_AGENT_TOOL_CALL_LIMIT)),
                 maxTokens: Math.min(32_000, Math.max(128, config.get('maxTokens', 16_384))),
+                maxInputContextTokens: (0, contextPlanner_1.normalizeMaxInputContextTokens)(config.get('maxInputContextTokens', contextPlanner_1.AUTO_MAX_INPUT_CONTEXT_TOKENS)),
                 temperature: Math.min(2, Math.max(0, config.get('temperature', 0.2))),
                 agentTools: this.getAgentToolSettings(),
                 rememberedCommands: this.getRememberedCommands(),

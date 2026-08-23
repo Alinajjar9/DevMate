@@ -119,6 +119,12 @@ import type { WorkspaceMutationPermissionFile } from './workspaceMutations';
 import { ToolExecutor } from './toolExecutor';
 import { AgentRunController } from './agentRunController';
 import type { AgentRunEvent } from './agentRunController';
+import {
+  AUTO_MAX_INPUT_CONTEXT_TOKENS,
+  isValidMaxInputContextTokens,
+  isValidModelContextWindowTokens,
+  normalizeMaxInputContextTokens
+} from './contextPlanner';
 
 type AttachmentInfo = {
   id: string;
@@ -136,6 +142,7 @@ type LlmProfileFormSubmission = {
   provider: LlmProvider;
   model: string;
   baseUrl?: string;
+  contextWindowTokens?: number;
   apiKey?: string;
 };
 
@@ -144,6 +151,7 @@ type DevMateSettingsSubmission = {
   commandTimeoutSeconds: number;
   toolCallLimit: number;
   maxTokens: number;
+  maxInputContextTokens: number;
   temperature: number;
   policy: FilePermissionPolicy;
 };
@@ -1135,7 +1143,9 @@ export class DevMateChatViewProvider implements
 
   private async migrateBuiltInNemotronProfile(): Promise<void> {
     const storedProfiles = this.getStoredLlmProfiles();
-    const equivalentProfiles = storedProfiles.filter(isEquivalentNemotronProfile);
+    const equivalentProfiles = storedProfiles.filter((profile) =>
+      isEquivalentNemotronProfile(profile) && profile.contextWindowTokens === undefined
+    );
     if (equivalentProfiles.length === 0) {
       return;
     }
@@ -1214,6 +1224,7 @@ export class DevMateChatViewProvider implements
         providerLabel: providerLabelForProfile(profile),
         model: profile.model,
         baseUrl: profile.baseUrl,
+        contextWindowTokens: profile.contextWindowTokens,
         intelligence: reasoningEffortOptionsForProfile(profile).length > 1
           ? REASONING_EFFORT_LABELS[reasoningEffortForProfile(profile, reasoningPreferences)]
           : undefined,
@@ -1298,6 +1309,7 @@ export class DevMateChatViewProvider implements
             provider: profile.provider,
             model: profile.model,
             baseUrl: profile.baseUrl,
+            contextWindowTokens: profile.contextWindowTokens,
             builtIn: isBuiltInLlmProfile(profile)
           }
         : undefined,
@@ -1312,6 +1324,7 @@ export class DevMateChatViewProvider implements
       || !['openai', 'ollama'].includes(submission.provider)
       || typeof submission.model !== 'string'
       || (submission.baseUrl !== undefined && typeof submission.baseUrl !== 'string')
+      || !isValidModelContextWindowTokens(submission.contextWindowTokens)
       || (submission.apiKey !== undefined && typeof submission.apiKey !== 'string')
     ) {
       this.postMessage({
@@ -1339,17 +1352,23 @@ export class DevMateChatViewProvider implements
       return;
     }
 
-    const draft: LlmProfileDraft = normalizeProfileDraft({
+    const submittedDraft: LlmProfileDraft = {
       name: submission.name,
       provider: submission.provider,
       model: submission.model,
-      baseUrl: submission.baseUrl
-    });
-    const validationError = validateProfileDraft(draft, profiles, existingProfile?.id);
+      baseUrl: submission.baseUrl,
+      contextWindowTokens: submission.contextWindowTokens
+    };
+    const validationError = validateProfileDraft(
+      submittedDraft,
+      profiles,
+      existingProfile?.id
+    );
     if (validationError) {
       this.postMessage({ command: 'llmProfileFormError', message: validationError });
       return;
     }
+    const draft = normalizeProfileDraft(submittedDraft);
 
     const existingApiKey = existingProfile
       ? await this.extensionContext.secrets.get(secretKeyForProfile(existingProfile.id))
@@ -1636,6 +1655,7 @@ export class DevMateChatViewProvider implements
       || !Number.isInteger(settings.maxTokens)
       || settings.maxTokens < 128
       || settings.maxTokens > 32_000
+      || !isValidMaxInputContextTokens(settings.maxInputContextTokens)
       || !Number.isFinite(settings.temperature)
       || settings.temperature < 0
       || settings.temperature > 2
@@ -1664,6 +1684,11 @@ export class DevMateChatViewProvider implements
           vscode.ConfigurationTarget.Global
         ),
         config.update('maxTokens', settings.maxTokens, vscode.ConfigurationTarget.Global),
+        config.update(
+          'maxInputContextTokens',
+          settings.maxInputContextTokens,
+          vscode.ConfigurationTarget.Global
+        ),
         config.update('temperature', settings.temperature, vscode.ConfigurationTarget.Global),
         this.extensionContext.workspaceState.update(
           FILE_PERMISSION_POLICY_STORAGE_KEY,
@@ -1782,6 +1807,12 @@ export class DevMateChatViewProvider implements
         maxTokens: Math.min(
           32_000,
           Math.max(128, config.get<number>('maxTokens', 16_384))
+        ),
+        maxInputContextTokens: normalizeMaxInputContextTokens(
+          config.get<number>(
+            'maxInputContextTokens',
+            AUTO_MAX_INPUT_CONTEXT_TOKENS
+          )
         ),
         temperature: Math.min(
           2,
