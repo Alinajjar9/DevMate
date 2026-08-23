@@ -186,23 +186,8 @@ _SCHEMA_MIGRATIONS = (
             )
             """,
             """
-            CREATE TABLE pinned_memories (
-                session_id TEXT NOT NULL
-                    REFERENCES chat_sessions(session_id) ON DELETE CASCADE,
-                memory_id TEXT NOT NULL CHECK (length(memory_id) BETWEEN 1 AND 120),
-                content TEXT NOT NULL CHECK (length(content) BETWEEN 1 AND 4000),
-                created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
-                updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms),
-                PRIMARY KEY (session_id, memory_id)
-            )
-            """,
-            """
             CREATE INDEX chat_sessions_workspace_updated_index
             ON chat_sessions(workspace_identity, updated_at_ms DESC, session_id)
-            """,
-            """
-            CREATE INDEX pinned_memories_session_created_index
-            ON pinned_memories(session_id, created_at_ms, memory_id)
             """,
         ),
     ),

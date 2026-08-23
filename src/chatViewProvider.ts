@@ -73,7 +73,6 @@ import {
   BUILT_IN_NEMOTRON_PROFILE,
   BUILT_IN_NEMOTRON_PROFILE_ID,
   isBuiltInLlmProfile,
-  isEquivalentNemotronProfile,
   LLM_REASONING_EFFORT_STORAGE_KEY,
   LLM_PROFILES_STORAGE_KEY,
   normalizeProfileDraft,
@@ -112,9 +111,9 @@ import {
   MAX_ATTACHED_FILES,
   PROJECT_EXCLUDE_GLOB,
   shouldSkipProjectFile
-} from './projectIndex';
-import { LexicalProjectRetriever } from './projectRetriever';
-import type { ProjectRetriever } from './projectRetriever';
+} from './projectSearch/projectIndex';
+import { LexicalProjectRetriever } from './projectSearch/projectRetriever';
+import type { ProjectRetriever } from './projectSearch/projectRetriever';
 import {
   normalizeRelativeWorkspacePath,
   WorkspaceContext
@@ -672,7 +671,6 @@ export class DevMateChatViewProvider implements
         return;
       case 'ready':
         this.postAttachmentState();
-        await this.migrateBuiltInNemotronProfile();
         await this.postLlmProfileState();
         await this.promptForBuiltInNemotronKey();
         this.postEmbeddingProfileState();
@@ -1226,6 +1224,7 @@ export class DevMateChatViewProvider implements
   }
 
   private getLlmProfiles(): LlmProfile[] {
+    // Only custom profiles are stored. The permanent built-in profile is added when profiles are read.
     return profilesWithBuiltInNemotron(this.getStoredLlmProfiles());
   }
 
@@ -1265,64 +1264,6 @@ export class DevMateChatViewProvider implements
     );
     await this.postLlmProfileState();
     this.postStatus('Ready');
-  }
-
-  private async migrateBuiltInNemotronProfile(): Promise<void> {
-    const storedProfiles = this.getStoredLlmProfiles();
-    const equivalentProfiles = storedProfiles.filter((profile) =>
-      isEquivalentNemotronProfile(profile) && profile.contextWindowTokens === undefined
-    );
-    if (equivalentProfiles.length === 0) {
-      return;
-    }
-
-    const activeProfileId = this.extensionContext.globalState.get<string>(
-      ACTIVE_LLM_PROFILE_STORAGE_KEY
-    );
-    const preferredProfile = equivalentProfiles.find(
-      (profile) => profile.id === activeProfileId
-    );
-    const keyCandidates = preferredProfile
-      ? [preferredProfile, ...equivalentProfiles.filter((profile) => profile !== preferredProfile)]
-      : equivalentProfiles;
-
-    try {
-      const builtInSecretKey = secretKeyForProfile(BUILT_IN_NEMOTRON_PROFILE_ID);
-      const existingBuiltInKey = await this.extensionContext.secrets.get(builtInSecretKey);
-      if (!existingBuiltInKey) {
-        for (const candidate of keyCandidates) {
-          const candidateKey = await this.extensionContext.secrets.get(
-            secretKeyForProfile(candidate.id)
-          );
-          if (candidateKey) {
-            await this.extensionContext.secrets.store(builtInSecretKey, candidateKey);
-            break;
-          }
-        }
-      }
-
-      const equivalentIds = new Set(equivalentProfiles.map((profile) => profile.id));
-      await this.extensionContext.globalState.update(
-        LLM_PROFILES_STORAGE_KEY,
-        storedProfiles.filter((profile) => !equivalentIds.has(profile.id))
-      );
-      if (!activeProfileId || equivalentIds.has(activeProfileId)) {
-        await this.extensionContext.globalState.update(
-          ACTIVE_LLM_PROFILE_STORAGE_KEY,
-          BUILT_IN_NEMOTRON_PROFILE_ID
-        );
-      }
-      await Promise.all(
-        equivalentProfiles.map((profile) =>
-          this.extensionContext.secrets.delete(secretKeyForProfile(profile.id))
-        )
-      );
-    } catch {
-      this.postStatus(
-        `Could not migrate the existing ${BUILT_IN_NEMOTRON_PROFILE.name} profile.`,
-        'warning'
-      );
-    }
   }
 
   private async promptForBuiltInNemotronKey(): Promise<void> {

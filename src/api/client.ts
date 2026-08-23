@@ -2,8 +2,8 @@ import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
 import type { ClientRequest, IncomingMessage } from 'http';
 import { StringDecoder } from 'string_decoder';
-import { AGENT_TOOL_NAMES } from '../agentTools';
-import type { AgentToolCall } from '../agentTools';
+import { AGENT_TOOL_NAMES } from '../agentToolProtocol';
+import type { AgentToolCall } from '../agentToolProtocol';
 import {
   DEVMATE_BACKEND_ERROR_CODES,
   DEVMATE_BACKEND_PROTOCOL_VERSION,
@@ -30,10 +30,7 @@ import type {
   ChatMemorySaveRequest,
   ChatMemorySaveResponse,
   ChatMemorySessionRequest,
-  ChatMemorySummaryClearResponse,
   ChatMemorySummaryLoadResponse,
-  ChatMemorySummarySaveRequest,
-  ChatMemorySummarySaveResponse,
   FileChange,
   HealthResponse,
   KnowledgeIndexApplyRequest,
@@ -64,9 +61,7 @@ import {
   parseChatMemoryListResponse,
   parseChatMemoryLoadResponse,
   parseChatMemorySaveResponse,
-  parseChatMemorySummaryClearResponse,
-  parseChatMemorySummaryLoadResponse,
-  parseChatMemorySummarySaveResponse
+  parseChatMemorySummaryLoadResponse
 } from './chatMemoryProtocol';
 
 const HEALTH_TIMEOUT_MS = 2_000;
@@ -230,31 +225,6 @@ export function deleteChatMemorySession(
   );
 }
 
-export function saveChatMemorySummary(
-  backendUrl: string,
-  request: ChatMemorySummarySaveRequest,
-  backendToken: string,
-  signal?: AbortSignal
-): Promise<ApiResult<ChatMemorySummarySaveResponse>> {
-  return chatMemoryRequest(
-    backendUrl,
-    `${chatMemoryPath}/summaries/save`,
-    request,
-    backendToken,
-    (value) => {
-      const response = parseChatMemorySummarySaveResponse(value);
-      return response
-        && response.summary.sessionId === request.sessionId
-        && response.summary.lastCompactedTurn === request.lastCompactedTurn
-        && response.summary.updatedAtMs === request.updatedAtMs
-        && JSON.stringify(response.summary.content) === JSON.stringify(request.content)
-        ? response
-        : undefined;
-    },
-    signal
-  );
-}
-
 export function loadChatMemorySummary(
   backendUrl: string,
   request: ChatMemorySessionRequest,
@@ -274,22 +244,6 @@ export function loadChatMemorySummary(
         ? response
         : undefined;
     },
-    signal
-  );
-}
-
-export function clearChatMemorySummary(
-  backendUrl: string,
-  request: ChatMemorySessionRequest,
-  backendToken: string,
-  signal?: AbortSignal
-): Promise<ApiResult<ChatMemorySummaryClearResponse>> {
-  return chatMemoryRequest(
-    backendUrl,
-    `${chatMemoryPath}/summaries/clear`,
-    request,
-    backendToken,
-    parseChatMemorySummaryClearResponse,
     signal
   );
 }

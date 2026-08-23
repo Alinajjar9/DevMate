@@ -9,11 +9,11 @@ const {
   parseStoredProjectIndex,
   retrieveProjectChunks,
   splitProjectContent
-} = require('../out/projectIndex');
+} = require('../out/projectSearch/projectIndex');
 const {
   MAX_PROJECT_SYMBOL_RANGES,
   splitProjectContentWithSymbols
-} = require('../out/projectChunking');
+} = require('../out/projectSearch/projectChunking');
 
 test('splits project files into bounded overlapping line-aware chunks', () => {
   const content = Array.from(

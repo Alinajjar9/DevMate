@@ -3,12 +3,16 @@ import {
   normalizeProviderBaseUrl,
   validateProviderBaseUrl
 } from './providerUrlPolicy';
+import type { EmbeddingProviderName } from './api/types';
+
+export type { EmbeddingProviderName } from './api/types';
 
 export const EMBEDDING_PROFILES_STORAGE_KEY = 'devMate.embeddingProfiles.v1';
 export const ACTIVE_EMBEDDING_PROFILE_STORAGE_KEY = 'devMate.activeEmbeddingProfileId.v1';
-export const EMBEDDING_PROVIDER_NAMES = ['ollama', 'openai-compatible'] as const;
-
-export type EmbeddingProviderName = typeof EMBEDDING_PROVIDER_NAMES[number];
+export const EMBEDDING_PROVIDER_NAMES = [
+  'ollama',
+  'openai-compatible'
+] as const satisfies readonly EmbeddingProviderName[];
 
 export type EmbeddingProfile = {
   id: string;

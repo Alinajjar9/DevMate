@@ -43,7 +43,6 @@ class KnowledgeStoreTests(unittest.TestCase):
             "chat_sessions",
             "chat_turns",
             "chat_summaries",
-            "pinned_memories",
         }
 
         with KnowledgeStore(self.database_path) as store:

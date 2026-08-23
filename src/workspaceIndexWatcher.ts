@@ -4,7 +4,7 @@ import type {
   KnowledgeIndexAccess,
   KnowledgeIndexSynchronizationResult
 } from './indexSynchronization';
-import { shouldSkipProjectFile } from './projectIndex';
+import { shouldSkipProjectFile } from './projectSearch/projectIndex';
 
 export const DEFAULT_WORKSPACE_INDEX_DEBOUNCE_MS = 750;
 

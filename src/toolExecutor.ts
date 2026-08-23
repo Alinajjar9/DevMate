@@ -10,10 +10,10 @@ import {
   validatePythonRequirementsManifest
 } from './agentTools';
 import type {
-  AgentToolCall,
   AgentToolSettings,
   ParsedAgentToolCall
 } from './agentTools';
+import type { AgentToolCall } from './agentToolProtocol';
 import type { AgentToolStep } from './api/types';
 import {
   extractMissingPythonModule,
@@ -44,7 +44,7 @@ import {
   PROJECT_EXCLUDE_GLOB,
   containsBinaryData,
   shouldSkipProjectFile
-} from './projectIndex';
+} from './projectSearch/projectIndex';
 import {
   WorkspaceContext,
   normalizeRelativeWorkspacePath

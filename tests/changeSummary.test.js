@@ -27,7 +27,7 @@ test('collects successful file mutations into a compact net summary', () => {
   ]);
 });
 
-test('parses applied legacy changes without recording denied proposals', () => {
+test('parses applied provider changes without recording denied proposals', () => {
   assert.deepEqual(parseAppliedFileChangeOutcome([
     'Applied file changes:',
     '- Created index.html',

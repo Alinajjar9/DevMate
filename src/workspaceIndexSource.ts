@@ -12,8 +12,8 @@ import type {
   WorkspaceIndexSource,
   WorkspaceIndexSourceFile
 } from './indexSynchronization';
-import { MAX_PROJECT_SYMBOL_RANGES } from './projectChunking';
-import type { ProjectSymbolRange } from './projectChunking';
+import { MAX_PROJECT_SYMBOL_RANGES } from './projectSearch/projectChunking';
+import type { ProjectSymbolRange } from './projectSearch/projectChunking';
 import {
   containsBinaryData,
   languageIdForPath,
@@ -21,7 +21,7 @@ import {
   MAX_PROJECT_INDEX_FILES,
   PROJECT_EXCLUDE_GLOB,
   shouldSkipProjectFile
-} from './projectIndex';
+} from './projectSearch/projectIndex';
 import { normalizeRelativeWorkspacePath } from './workspaceContext';
 
 export type CurrentWorkspaceIndexFile = {

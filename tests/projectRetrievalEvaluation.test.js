@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { LexicalProjectRetriever } = require('../out/projectRetriever');
+const { LexicalProjectRetriever } = require('../out/projectSearch/projectRetriever');
 const {
   evaluateProjectRetriever,
   loadProjectRetrievalFixture

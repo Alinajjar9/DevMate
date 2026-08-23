@@ -5,7 +5,6 @@ const {
   BUILT_IN_NEMOTRON_PROFILE,
   BUILT_IN_NEMOTRON_PROFILE_ID,
   isBuiltInLlmProfile,
-  isEquivalentNemotronProfile,
   normalizeProfileDraft,
   parseStoredProfiles,
   parseReasoningEffortPreferences,
@@ -225,23 +224,6 @@ test('provides Nemotron as the permanent built-in default profile', () => {
   assert.equal(profiles[0].baseUrl, 'https://integrate.api.nvidia.com/v1');
   assert.equal(isBuiltInLlmProfile(profiles[0]), true);
   assert.equal(providerLabelForProfile(profiles[0]), 'NVIDIA');
-});
-
-test('recognizes a manually configured profile equivalent to built-in Nemotron', () => {
-  assert.equal(
-    isEquivalentNemotronProfile({
-      id: 'legacy',
-      name: 'My Nemotron',
-      provider: 'openai',
-      model: 'nvidia/nemotron-3-ultra-550b-a55b',
-      baseUrl: 'https://integrate.api.nvidia.com/v1'
-    }),
-    true
-  );
-  assert.equal(
-    isEquivalentNemotronProfile(profile('other', 'Other', 'openai', 'gpt-4.1-mini')),
-    false
-  );
 });
 
 test('exposes intelligence levels only for recognized reasoning models', () => {

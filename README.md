@@ -70,6 +70,14 @@ Compile the extension:
 npm run compile
 ```
 
+### Readability and comments
+
+- Keep related behavior together. Do not create a separate file for every small helper.
+- Use short comments in simple English when the reason behind the code is not obvious.
+- Comment security checks, asynchronous state changes, algorithms, provider-specific behavior, and intentional fallbacks.
+- Do not comment obvious assignments or repeat what a well-named function already says.
+- Update or remove a comment when the behavior it describes changes.
+
 ## Running DevMate from source
 
 1. Open the repository folder in VS Code.
@@ -182,15 +190,15 @@ The current question and explicit selections, active files, and attachments are 
 
 ## Chat memory storage
 
-The private SQLite store now includes versioned foundations for chat sessions, raw turns, structured summaries, and pinned memories. Chat records use the same private database file as the project index but have an independent lifecycle, so rebuilding or deleting a code index does not delete conversation history. Deleting a chat does cascade only its turns, summary, and pinned memories.
+The private SQLite store now includes versioned foundations for chat sessions, raw turns, and structured summaries. Chat records use the same private database file as the project index but have an independent lifecycle, so rebuilding or deleting a code index does not delete conversation history. Deleting a chat also deletes its turns and summary.
 
 SQLite is the live persistent source for the current workspace's sessions. The extension loads recent sessions after the managed backend is authenticated, writes pending and completed turns directly through a focused session repository, and keeps unsaved changes in memory if local storage is temporarily unavailable. Pre-release VS Code chat state is intentionally not migrated or maintained as a second copy.
 
-The managed backend advertises the optional `chat-memory-v1` capability and exposes authenticated versioned operations to atomically save bounded session batches, load one complete raw transcript, list recent sessions for one workspace, and delete one session. It also provides strict save, load, clear, and on-demand generation operations for one validated structured summary without removing raw turns. Generation uses the active chat model to merge the previous summary with only the newly eligible completed turns. The generated JSON is strictly validated and redacted before it atomically replaces the previous summary; provider or validation failures preserve both the previous summary and every raw turn.
+The managed backend advertises the optional `chat-memory-v1` capability and exposes authenticated versioned operations to atomically save bounded session batches, load one complete raw transcript, list recent sessions for one workspace, and delete one session. It also provides strict load and on-demand generation operations for one validated structured summary without removing raw turns. Generation uses the active chat model to merge the previous summary with only the newly eligible completed turns. The generated JSON is strictly validated and redacted before it atomically replaces the previous summary; provider or validation failures preserve both the previous summary and every raw turn.
 
 The TypeScript client sends chat data only to a verified loopback backend, forwards provider credentials only for a compaction request, and validates every response against that request. Before a model request, DevMate loads the current summary and estimates the planned input from the current question, collected code context, that summary, and all completed turns newer than its boundary. At 75% of usable input capacity it automatically compacts only the eligible older turns, always leaving the latest four completed turns verbatim. Up-to-date summaries are not regenerated, cancellation stops the maintenance request, and storage or provider failures are logged without blocking the user's main request.
 
-A validated summary is sent as a delimited untrusted memory block together with bounded recent exact turns after its compaction boundary. The context planner keeps current operation state and recent exact conversation ahead of the summary, while keeping the summary ahead of retrieved project chunks. If summary loading fails, DevMate continues with its existing bounded raw-history fallback. Manual compaction, summary inspection, reset, and pinned-memory controls are intentionally not included.
+A validated summary is sent as a delimited untrusted memory block together with bounded recent exact turns after its compaction boundary. The context planner keeps current operation state and recent exact conversation ahead of the summary, while keeping the summary ahead of retrieved project chunks. If summary loading fails, DevMate continues with its existing bounded raw-history fallback. Manual memory controls are intentionally not included; summaries are maintained automatically.
 
 ## Agent tools
 
@@ -290,7 +298,7 @@ Type-check the extension without writing output:
 npm run check
 ```
 
-Run the complete clean verification suite (TypeScript compilation, extension tests, backend tests, cross-language contracts, and emitted-file integrity):
+Run the complete clean verification suite (TypeScript compilation, import-cycle checks, extension tests, backend tests, cross-language contracts, and emitted-file integrity):
 
 ```powershell
 npm run verify
@@ -360,12 +368,17 @@ The Python backend source remains in the package as a fallback for development o
 | `src/embeddingIndexScheduler.ts` | Capability-gated background generation of missing workspace embeddings |
 | `src/workspaceIndexSource.ts` | Safe, bounded VS Code workspace scanning and file revalidation for indexing |
 | `src/workspaceIndexWatcher.ts` | Debounced workspace-change monitoring and authenticated synchronization scheduling |
-| `src/projectChunking.ts` | Validated document-symbol chunk boundaries with bounded line-based fallback |
+| `src/projectSearch/` | Cohesive project chunking, local index, ranking, and retrieval feature |
+| `src/projectSearch/projectChunking.ts` | Validated document-symbol chunk boundaries with bounded line-based fallback |
+| `src/projectSearch/projectIndex.ts` | Local index representation, chunking, and lexical scoring |
+| `src/projectSearch/projectRetriever.ts` | Capability-gated project retrieval, exact-source validation, and lexical fallback |
+| `src/projectSearch/projectSearchRanking.ts` | Reciprocal Rank Fusion plus bounded filename, path, and exact-identifier boosts |
 | `src/workspaceMutations.ts` | File writes, trust checks, symlink protection, and pre-apply revalidation |
 | `src/webview.ts` | CSP-protected webview shell and packaged asset URLs |
 | `media/webview.css` | Sidebar layout and visual styles |
 | `media/webview.js` | Browser-side chat state, rendering, and interactions |
-| `src/agentTools.ts` | Tool names, argument parsing, limits, and history compaction |
+| `src/agentToolProtocol.ts` | Dependency-free tool names, groups, and shared call types |
+| `src/agentTools.ts` | Tool argument parsing, limits, retry policy, and history compaction |
 | `src/api/` | Extension-to-backend HTTP transport, request types, and strict knowledge-index response decoding |
 | `src/api/knowledgeIndexProtocol.ts` | Runtime validation for versioned knowledge-index responses |
 | `src/backendManager.ts` | Local backend startup, monitoring, and restart logic |
@@ -373,9 +386,6 @@ The Python backend source remains in the package as a fallback for development o
 | `src/embeddingProfileController.ts` | Validated embedding-profile persistence and UI-facing operations |
 | `src/providerUrlPolicy.ts` | Shared chat and embedding provider URL security policy |
 | `src/contextPlanner.ts` | Token-budget calculation and deterministic context-priority policy |
-| `src/projectIndex.ts` | Local index representation, chunking, and lexical scoring |
-| `src/projectRetriever.ts` | Capability-gated project retrieval, exact-source validation, and lexical fallback |
-| `src/projectSearchRanking.ts` | Reciprocal Rank Fusion plus bounded filename, path, and exact-identifier boosts |
 | `src/sessions.ts` | Project-bound conversation storage |
 | `src/permissions.ts` | File and command permission storage |
 | `backend/app/api_models.py` | Backend protocol constants and validated request/response contracts |

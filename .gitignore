@@ -1,3 +1,4 @@
+# Installed dependencies and local environments.
 node_modules/
 .venv/
 /docs/
@@ -6,6 +7,9 @@ node_modules/
 !.env.example
 __pycache__/
 *.py[cod]
+
+# Generated build and test output. These files are recreated by the build.
+/out/
 .pyinstaller-build/
 backend-runtime/
 .vscode-test/
@@ -13,4 +17,5 @@ backend-runtime/
 *.vsix
 *.zip
 
+# Personal planning notes are not part of the product source.
 IMPLEMENTATION_PLAN.local.md

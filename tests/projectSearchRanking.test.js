@@ -5,7 +5,7 @@ const test = require('node:test');
 const {
   MAX_PROJECT_SEARCH_QUERY_BOOST,
   rankProjectSearchResults
-} = require('../out/projectSearchRanking');
+} = require('../out/projectSearch/projectSearchRanking');
 
 test('exact code identifiers can outrank a nearby conceptual-only match', () => {
   const conceptual = searchItem(

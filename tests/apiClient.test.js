@@ -6,7 +6,6 @@ const {
   applyKnowledgeIndexChanges,
   ask,
   askStream,
-  clearChatMemorySummary,
   compactChatMemorySummary,
   DEFAULT_CHAT_COMPACTION_TIMEOUT_MS,
   deleteChatMemorySession,
@@ -22,7 +21,6 @@ const {
   searchKnowledgeIndex,
   searchKnowledgeIndexSemantically,
   saveChatMemorySessions,
-  saveChatMemorySummary,
   synchronizeKnowledgeIndexEmbeddings,
   updateKnowledgeIndexMetadata
 } = require('../out/api/client');
@@ -253,8 +251,7 @@ test('sends authenticated versioned chat-memory requests and strictly decodes th
       });
       return;
     }
-    if (request.url === '/memory/v1/summaries/save'
-      || request.url === '/memory/v1/summaries/load') {
+    if (request.url === '/memory/v1/summaries/load') {
       sendJson(response, 200, {
         status: 'ok',
         data: { summary: chatMemorySummary() }
@@ -266,10 +263,6 @@ test('sends authenticated versioned chat-memory requests and strictly decodes th
         status: 'ok',
         data: { summary: chatMemorySummary(), compactedTurns: 1 }
       });
-      return;
-    }
-    if (request.url === '/memory/v1/summaries/clear') {
-      sendJson(response, 200, { status: 'ok', data: { cleared: true } });
       return;
     }
     sendJson(response, 200, { status: 'ok', data: { deleted: true } });
@@ -294,17 +287,7 @@ test('sends authenticated versioned chat-memory requests and strictly decodes th
       { sessionId: 'session-one' },
       TEST_BACKEND_TOKEN
     );
-    const summarySaved = await saveChatMemorySummary(
-      backendUrl,
-      chatMemorySummarySaveRequest(),
-      TEST_BACKEND_TOKEN
-    );
     const summaryLoaded = await loadChatMemorySummary(
-      backendUrl,
-      { sessionId: 'session-one' },
-      TEST_BACKEND_TOKEN
-    );
-    const summaryCleared = await clearChatMemorySummary(
       backendUrl,
       { sessionId: 'session-one' },
       TEST_BACKEND_TOKEN
@@ -319,9 +302,7 @@ test('sends authenticated versioned chat-memory requests and strictly decodes th
     assert.deepEqual(loaded.data, { session: chatMemorySnapshot() });
     assert.deepEqual(listed.data, { sessions: [chatMemorySnapshot().session] });
     assert.deepEqual(deleted.data, { deleted: true });
-    assert.deepEqual(summarySaved.data, { summary: chatMemorySummary() });
     assert.deepEqual(summaryLoaded.data, { summary: chatMemorySummary() });
-    assert.deepEqual(summaryCleared.data, { cleared: true });
     assert.deepEqual(compacted.data, {
       summary: chatMemorySummary(),
       compactedTurns: 1
@@ -333,9 +314,7 @@ test('sends authenticated versioned chat-memory requests and strictly decodes th
     '/memory/v1/sessions/load',
     '/memory/v1/sessions/list',
     '/memory/v1/sessions/delete',
-    '/memory/v1/summaries/save',
     '/memory/v1/summaries/load',
-    '/memory/v1/summaries/clear',
     '/memory/v1/summaries/compact'
   ]);
   assert.ok(received.every((request) => request.token === TEST_BACKEND_TOKEN));
@@ -344,14 +323,10 @@ test('sends authenticated versioned chat-memory requests and strictly decodes th
     { sessionId: 'session-one' },
     chatMemoryListRequest(),
     { sessionId: 'session-one' },
-    chatMemorySummarySaveRequest(),
-    { sessionId: 'session-one' },
     { sessionId: 'session-one' },
     chatMemoryCompactionRequest()
   ]);
   assert.deepEqual(received.map((request) => request.providerKey), [
-    undefined,
-    undefined,
     undefined,
     undefined,
     undefined,
@@ -406,16 +381,6 @@ test('rejects malformed or request-mismatched chat-memory responses', async (con
       data: { deleted: true, unexpected: true }
     },
     {
-      call: (backendUrl) => saveChatMemorySummary(
-        backendUrl,
-        chatMemorySummarySaveRequest(),
-        TEST_BACKEND_TOKEN
-      ),
-      data: {
-        summary: { ...chatMemorySummary(), lastCompactedTurn: 1 }
-      }
-    },
-    {
       call: (backendUrl) => loadChatMemorySummary(
         backendUrl,
         { sessionId: 'session-one' },
@@ -437,14 +402,6 @@ test('rejects malformed or request-mismatched chat-memory responses', async (con
           content: { ...chatMemorySummaryContent(), goal: '' }
         }
       }
-    },
-    {
-      call: (backendUrl) => clearChatMemorySummary(
-        backendUrl,
-        { sessionId: 'session-one' },
-        TEST_BACKEND_TOKEN
-      ),
-      data: { cleared: true, unexpected: true }
     },
     {
       call: (backendUrl) => compactChatMemorySummary(
@@ -1107,15 +1064,6 @@ function chatMemorySaveRequest() {
 
 function chatMemoryListRequest() {
   return { workspaceIdentity: 'file:///workspace-one', limit: 20 };
-}
-
-function chatMemorySummarySaveRequest() {
-  return {
-    sessionId: 'session-one',
-    content: chatMemorySummaryContent(),
-    lastCompactedTurn: 0,
-    updatedAtMs: 300
-  };
 }
 
 function chatMemoryCompactionRequest() {

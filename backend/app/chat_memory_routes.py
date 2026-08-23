@@ -21,15 +21,10 @@ from .api_models import (
     ChatMemorySessionData,
     ChatMemorySessionRequest,
     ChatMemorySnapshotData,
-    ChatMemorySummaryClearData,
-    ChatMemorySummaryClearResult,
     ChatMemorySummaryContentData,
     ChatMemorySummaryData,
     ChatMemorySummaryLoadData,
     ChatMemorySummaryLoadResult,
-    ChatMemorySummarySaveData,
-    ChatMemorySummarySaveRequest,
-    ChatMemorySummarySaveResult,
     ChatMemoryTurnData,
 )
 from .chat_compaction_service import (
@@ -39,14 +34,12 @@ from .chat_compaction_service import (
 )
 from .chat_memory_contracts import CHAT_SUMMARY_VERSION, DEVMATE_CHAT_MEMORY_API_VERSION
 from .chat_memory_repository import (
-    ChatDecision,
     ChatMemoryNotFoundError,
     ChatMemoryRepository,
     ChatMemoryRepositoryError,
     ChatMemoryValidationError,
     ChatSessionRecord,
     ChatSessionSnapshot,
-    ChatSummaryContent,
     ChatSummaryRecord,
     ChatTurnRecord,
 )
@@ -141,21 +134,6 @@ def _snapshot_data(value: ChatSessionSnapshot) -> ChatMemorySnapshotData:
         raise ChatMemoryRepositoryError(
             "The stored chat session does not match the API contract."
         ) from error
-
-
-def _summary_content_record(value: ChatMemorySummaryContentData) -> ChatSummaryContent:
-    return ChatSummaryContent(
-        goal=value.goal,
-        constraints=tuple(value.constraints),
-        decisions=tuple(
-            ChatDecision(decision=item.decision, reason=item.reason)
-            for item in value.decisions
-        ),
-        important_files=tuple(value.importantFiles),
-        completed_work=tuple(value.completedWork),
-        open_tasks=tuple(value.openTasks),
-        unresolved_questions=tuple(value.unresolvedQuestions),
-    )
 
 
 def _summary_data(value: ChatSummaryRecord) -> ChatMemorySummaryData:
@@ -266,30 +244,6 @@ async def delete_chat_memory_session(
 
 
 @chat_memory_router.post(
-    "/summaries/save",
-    response_model=ChatMemorySummarySaveResult,
-    response_model_exclude_none=True,
-)
-async def save_chat_memory_summary(
-    request: ChatMemorySummarySaveRequest,
-    repository: Annotated[ChatMemoryRepository, Depends(get_chat_memory_repository)],
-) -> ChatMemorySummarySaveResult:
-    try:
-        summary = repository.save_summary(
-            request.sessionId,
-            _summary_content_record(request.content),
-            last_compacted_turn=request.lastCompactedTurn,
-            updated_at_ms=request.updatedAtMs,
-        )
-    except ChatMemoryRepositoryError as error:
-        _raise_repository_error(error)
-    return ChatMemorySummarySaveResult(
-        status="ok",
-        data=ChatMemorySummarySaveData(summary=_summary_data(summary)),
-    )
-
-
-@chat_memory_router.post(
     "/summaries/load",
     response_model=ChatMemorySummaryLoadResult,
 )
@@ -306,25 +260,6 @@ async def load_chat_memory_summary(
         data=ChatMemorySummaryLoadData(
             summary=_summary_data(summary) if summary is not None else None,
         ),
-    )
-
-
-@chat_memory_router.post(
-    "/summaries/clear",
-    response_model=ChatMemorySummaryClearResult,
-    response_model_exclude_none=True,
-)
-async def clear_chat_memory_summary(
-    request: ChatMemorySessionRequest,
-    repository: Annotated[ChatMemoryRepository, Depends(get_chat_memory_repository)],
-) -> ChatMemorySummaryClearResult:
-    try:
-        cleared = repository.clear_summary(request.sessionId)
-    except ChatMemoryRepositoryError as error:
-        _raise_repository_error(error)
-    return ChatMemorySummaryClearResult(
-        status="ok",
-        data=ChatMemorySummaryClearData(cleared=cleared),
     )
 
 

@@ -90,7 +90,6 @@ test('selects optional context by the declared priority order', () => {
     'question',
     'explicit-context',
     'operation-state',
-    'pinned-memory',
     'recent-conversation',
     'compacted-summary',
     'project-result',

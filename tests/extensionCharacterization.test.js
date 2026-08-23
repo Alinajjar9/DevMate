@@ -77,7 +77,7 @@ const {
 } = require('../out/toolExecutor');
 const { WorkspaceContext } = require('../out/workspaceContext');
 const { WorkspaceMutations } = require('../out/workspaceMutations');
-const { LexicalProjectRetriever } = require('../out/projectRetriever');
+const { LexicalProjectRetriever } = require('../out/projectSearch/projectRetriever');
 Module._load = originalModuleLoad;
 
 const {
@@ -88,7 +88,7 @@ const { parseAgentToolCall } = require('../out/agentTools');
 const {
   createEmptyProjectIndex,
   createIndexedProjectFile
-} = require('../out/projectIndex');
+} = require('../out/projectSearch/projectIndex');
 
 const workspace = {
   id: workspaceFolder.uri.toString().toLocaleLowerCase('en-US'),

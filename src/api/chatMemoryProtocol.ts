@@ -25,10 +25,8 @@ import type {
   ChatMemorySaveResponse,
   ChatMemorySession,
   ChatMemorySummary,
-  ChatMemorySummaryClearResponse,
   ChatMemorySummaryContent,
   ChatMemorySummaryLoadResponse,
-  ChatMemorySummarySaveResponse,
   ChatMemorySnapshot,
   ChatMemoryTurn
 } from './types';
@@ -104,16 +102,6 @@ export function parseChatMemoryDeleteResponse(
   return { deleted: value.deleted };
 }
 
-export function parseChatMemorySummarySaveResponse(
-  value: unknown
-): ChatMemorySummarySaveResponse | undefined {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['summary'])) {
-    return undefined;
-  }
-  const summary = parseChatMemorySummary(value.summary);
-  return summary ? { summary } : undefined;
-}
-
 export function parseChatMemorySummaryLoadResponse(
   value: unknown
 ): ChatMemorySummaryLoadResponse | undefined {
@@ -125,17 +113,6 @@ export function parseChatMemorySummaryLoadResponse(
   }
   const summary = parseChatMemorySummary(value.summary);
   return summary ? { summary } : undefined;
-}
-
-export function parseChatMemorySummaryClearResponse(
-  value: unknown
-): ChatMemorySummaryClearResponse | undefined {
-  if (!isRecord(value)
-    || !hasOnlyKeys(value, ['cleared'])
-    || typeof value.cleared !== 'boolean') {
-    return undefined;
-  }
-  return { cleared: value.cleared };
 }
 
 export function parseChatMemoryCompactionResponse(

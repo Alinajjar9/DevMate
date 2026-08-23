@@ -20,14 +20,14 @@ import {
   PROJECT_INDEX_FILE_NAME,
   selectProjectContext,
   shouldSkipProjectFile
-} from './projectIndex';
+} from './projectSearch/projectIndex';
 import type {
   ProjectFileCandidate,
   ProjectIndex,
   RetrievedProjectChunk
-} from './projectIndex';
-import { LexicalProjectRetriever } from './projectRetriever';
-import type { ProjectRetriever } from './projectRetriever';
+} from './projectSearch/projectIndex';
+import { LexicalProjectRetriever } from './projectSearch/projectRetriever';
+import type { ProjectRetriever } from './projectSearch/projectRetriever';
 import type { ConversationWorkspace } from './sessions';
 
 export type ScopeKind = 'project' | 'activeFile' | 'selection';

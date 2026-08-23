@@ -9,7 +9,7 @@ const {
   MAX_PROJECT_FILES,
   selectProjectContext,
   shouldSkipProjectFile
-} = require('../out/projectIndex');
+} = require('../out/projectSearch/projectIndex');
 
 test('filters dependency, generated, lock, and binary files', () => {
   assert.equal(shouldSkipProjectFile('node_modules/pkg/index.js'), true);

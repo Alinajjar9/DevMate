@@ -1,4 +1,4 @@
-import { shouldSkipProjectFile } from './projectIndex';
+import { shouldSkipProjectFile } from './projectSearch/projectIndex';
 
 export const MAX_EDIT_REPLACEMENTS = 20;
 export const MAX_FILE_CHANGES = 10;

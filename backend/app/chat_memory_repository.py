@@ -20,8 +20,6 @@ from .chat_memory_contracts import (
     MAX_CHAT_TURN_CHARACTERS,
     MAX_CHAT_WORKSPACE_IDENTITY_CHARACTERS,
     MAX_CHAT_WORKSPACE_NAME_CHARACTERS,
-    MAX_PINNED_MEMORIES,
-    MAX_PINNED_MEMORY_CHARACTERS,
 )
 from .knowledge_store import KnowledgeStore
 
@@ -94,15 +92,6 @@ class ChatSummaryRecord:
     session_id: str
     content: ChatSummaryContent
     last_compacted_turn: int
-    created_at_ms: int
-    updated_at_ms: int
-
-
-@dataclass(frozen=True, slots=True)
-class PinnedMemoryRecord:
-    session_id: str
-    memory_id: str
-    content: str
     created_at_ms: int
     updated_at_ms: int
 
@@ -455,130 +444,6 @@ class ChatMemoryRepository:
             created_at_ms=int(row["created_at_ms"]),
             updated_at_ms=int(row["updated_at_ms"]),
         )
-
-    def clear_summary(self, session_id: str) -> bool:
-        validated_id = _identifier(session_id, "session identifier")
-        try:
-            with self._store.transaction() as connection:
-                deleted = connection.execute(
-                    "DELETE FROM chat_summaries WHERE session_id = ?",
-                    (validated_id,),
-                ).rowcount
-        except sqlite3.Error as error:
-            raise ChatMemoryRepositoryError("The chat summary could not be cleared.") from error
-        return deleted > 0
-
-    def pin_memory(
-        self,
-        session_id: str,
-        memory_id: str,
-        content: str,
-        *,
-        updated_at_ms: int,
-    ) -> PinnedMemoryRecord:
-        validated_session_id = _identifier(session_id, "session identifier")
-        validated_memory_id = _identifier(memory_id, "memory identifier")
-        validated_content = _bounded_content(
-            content,
-            "pinned memory",
-            MAX_PINNED_MEMORY_CHARACTERS,
-        )
-        validated_updated_at = _timestamp(updated_at_ms, "memory update time")
-        try:
-            with self._store.transaction() as connection:
-                self._required_session(connection, validated_session_id)
-                existing = connection.execute(
-                    """
-                    SELECT created_at_ms, updated_at_ms
-                    FROM pinned_memories
-                    WHERE session_id = ? AND memory_id = ?
-                    """,
-                    (validated_session_id, validated_memory_id),
-                ).fetchone()
-                if existing is None:
-                    count = int(connection.execute(
-                        "SELECT COUNT(*) FROM pinned_memories WHERE session_id = ?",
-                        (validated_session_id,),
-                    ).fetchone()[0])
-                    if count >= MAX_PINNED_MEMORIES:
-                        raise ChatMemoryValidationError(
-                            "The chat has reached its pinned-memory limit."
-                        )
-                    created_at_ms = validated_updated_at
-                else:
-                    if validated_updated_at < int(existing["updated_at_ms"]):
-                        raise ChatMemoryValidationError(
-                            "The memory update time cannot move backwards."
-                        )
-                    created_at_ms = int(existing["created_at_ms"])
-                connection.execute(
-                    """
-                    INSERT INTO pinned_memories(
-                        session_id,
-                        memory_id,
-                        content,
-                        created_at_ms,
-                        updated_at_ms
-                    ) VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(session_id, memory_id) DO UPDATE SET
-                        content = excluded.content,
-                        updated_at_ms = excluded.updated_at_ms
-                    """,
-                    (
-                        validated_session_id,
-                        validated_memory_id,
-                        validated_content,
-                        created_at_ms,
-                        validated_updated_at,
-                    ),
-                )
-        except sqlite3.Error as error:
-            raise ChatMemoryRepositoryError("The memory could not be pinned.") from error
-        return PinnedMemoryRecord(
-            session_id=validated_session_id,
-            memory_id=validated_memory_id,
-            content=validated_content,
-            created_at_ms=created_at_ms,
-            updated_at_ms=validated_updated_at,
-        )
-
-    def list_pinned_memories(self, session_id: str) -> tuple[PinnedMemoryRecord, ...]:
-        validated_id = _identifier(session_id, "session identifier")
-        rows = self._store.connection.execute(
-            """
-            SELECT memory_id, content, created_at_ms, updated_at_ms
-            FROM pinned_memories
-            WHERE session_id = ?
-            ORDER BY created_at_ms, memory_id
-            """,
-            (validated_id,),
-        ).fetchall()
-        return tuple(
-            PinnedMemoryRecord(
-                session_id=validated_id,
-                memory_id=str(row["memory_id"]),
-                content=str(row["content"]),
-                created_at_ms=int(row["created_at_ms"]),
-                updated_at_ms=int(row["updated_at_ms"]),
-            )
-            for row in rows
-        )
-
-    def unpin_memory(self, session_id: str, memory_id: str) -> bool:
-        validated_session_id = _identifier(session_id, "session identifier")
-        validated_memory_id = _identifier(memory_id, "memory identifier")
-        try:
-            with self._store.transaction() as connection:
-                deleted = connection.execute(
-                    """
-                    DELETE FROM pinned_memories
-                    WHERE session_id = ? AND memory_id = ?
-                    """,
-                    (validated_session_id, validated_memory_id),
-                ).rowcount
-        except sqlite3.Error as error:
-            raise ChatMemoryRepositoryError("The pinned memory could not be removed.") from error
-        return deleted > 0
 
     def delete_session(self, session_id: str) -> bool:
         validated_id = _identifier(session_id, "session identifier")

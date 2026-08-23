@@ -2,6 +2,107 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Group the project search code
+
+### Changed
+
+- Grouped project chunking, the local project index, result ranking, and retrieval under `src/projectSearch/`.
+- Updated extension consumers, tests, and the cross-language contract checker to use the new explicit module paths.
+- Kept indexing synchronization, workspace scanning, scheduling, and file watching outside the folder because they manage extension lifecycle rather than search algorithms.
+- Avoided adding a barrel or controller file, so each import still shows the exact search responsibility it uses.
+- Changed only file organization and import paths; search, indexing, and fallback behavior remain the same.
+
+### Verification
+
+- `npm run verify` — 306 extension tests and 164 backend tests passed; 67 cross-language contracts, 33 cycle-free TypeScript modules, and 33 emitted JavaScript modules verified.
+- `git diff --check`
+
+---
+
+## 2026-08-23 — Remove the TypeScript import cycle
+
+### Changed
+
+- Moved shared agent tool names, groups, and call types into a small dependency-free protocol module.
+- Kept `agentTools.ts` as a compatibility façade so existing callers and tests do not need a risky all-at-once migration.
+- Made the API contract layer own its simple reasoning and embedding-provider types instead of importing feature modules back into the API layer.
+- Updated direct protocol consumers and the TypeScript/Python contract checker to use the new boundary.
+- Added an import-cycle check to the normal verification command so future circular dependencies fail early.
+- Removed the only TypeScript dependency cycle without changing tool behavior, profile behavior, or backend requests.
+
+### Verification
+
+- `npm run verify` — 306 extension tests and 164 backend tests passed; 67 cross-language contracts, 33 cycle-free TypeScript modules, and 33 emitted JavaScript modules verified.
+- `git diff --check`
+
+---
+
+## 2026-08-23 — Require structured verification commands
+
+### Changed
+
+- Removed the old mini parser for free-form `run_command` strings and string-based argument lists.
+- Made the extension accept only the current `{ executable, args, cwd, timeoutSeconds }` command shape already declared by the backend tool schema.
+- Rejects unknown command fields instead of silently accepting compatibility aliases.
+- Added a simple comment explaining why commands stay structured and renamed one misleading legacy-labelled test.
+- Audited agent checkpoints and tool-history omission markers but kept them because checkpoint resume is current behavior and marker rejection protects file writes.
+
+### Verification
+
+- `npm run verify` — 306 extension tests and 164 backend tests passed; 67 cross-language contracts and 32 emitted JavaScript modules verified.
+- `git diff --check`
+
+---
+
+## 2026-08-23 — Remove the old Nemotron profile migration
+
+### Changed
+
+- Removed the startup migration that searched for pre-release custom Nemotron profiles, copied their API keys, rewrote the active profile, and deleted the old entries.
+- Removed the profile-equivalence helper and test that existed only for that migration.
+- Added a simple comment explaining that only custom profiles are stored and the permanent built-in profile is added when profiles are read.
+- Kept the built-in Nemotron profile, its API-key setup, reasoning controls, and deletion protection unchanged.
+- Kept the JSON project index because it is still used when authenticated SQLite retrieval is unavailable or stale.
+
+### Verification
+
+- `npm run verify` — 306 extension tests and 164 backend tests passed; 67 cross-language contracts and 32 emitted JavaScript modules verified.
+- `git diff --check`
+
+---
+
+## 2026-08-23 — Remove unused manual memory code
+
+### Changed
+
+- Removed the manual summary save and clear API routes, TypeScript client functions, response parsers, and request types because the extension never called them.
+- Removed the unfinished pinned-memory table, repository methods, limits, and unused context priority because no production feature supplied or read pinned memories.
+- Kept automatic summary generation, summary loading, raw chat turns, and prompt compaction unchanged.
+- Simplified the affected API, repository, schema, and context-planner tests to cover only behavior the application uses.
+
+### Verification
+
+- `npm run verify` — 307 extension tests and 164 backend tests passed; 67 cross-language contracts and 32 emitted JavaScript modules verified.
+- `git diff --check`
+
+---
+
+## 2026-08-23 — Keep compiled extension output out of source control
+
+### Changed
+
+- Added the generated `out` directory to `.gitignore` and documented the main ignore groups in simple English.
+- Removed compiled JavaScript and source maps from the tracked project files. Development, tests, and VSIX packaging continue to generate them when needed.
+- Kept clean-output verification in place so stale or missing emitted modules are still detected during a full verification run.
+- Added a short readability guideline for focused modules and useful plain-English comments.
+
+### Verification
+
+- `npm run verify` — 309 extension tests and 166 backend tests passed; 67 cross-language contracts and 32 emitted JavaScript modules verified.
+- `npm run clean`
+
+---
+
 ## 2026-08-23 — Use compact chat memory in agent requests
 
 ### Changed

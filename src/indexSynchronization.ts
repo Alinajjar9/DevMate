@@ -20,9 +20,9 @@ import type {
 } from './api/types';
 import {
   splitProjectContentWithSymbols
-} from './projectChunking';
-import type { ProjectSymbolRange } from './projectChunking';
-import { containsBinaryData, splitProjectContent } from './projectIndex';
+} from './projectSearch/projectChunking';
+import type { ProjectSymbolRange } from './projectSearch/projectChunking';
+import { containsBinaryData, splitProjectContent } from './projectSearch/projectIndex';
 
 export const KNOWLEDGE_INDEX_CHUNKING_VERSION = 2;
 

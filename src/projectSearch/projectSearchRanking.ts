@@ -1,4 +1,4 @@
-import type { KnowledgeIndexSearchItem } from './api/types';
+import type { KnowledgeIndexSearchItem } from '../api/types';
 
 export const RECIPROCAL_RANK_FUSION_CONSTANT = 60;
 export const MAX_PROJECT_SEARCH_QUERY_BOOST = 0.01;

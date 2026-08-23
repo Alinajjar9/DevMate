@@ -31,6 +31,7 @@ const blockedWorkingDirectories = new Set([
   '.git', 'node_modules', '.venv', 'venv', 'out', 'dist', 'build', 'coverage',
   '.cache', '__pycache__', '.next', 'target', 'vendor'
 ]);
+const runCommandArgumentFields = new Set(['executable', 'args', 'cwd', 'timeoutSeconds']);
 
 export function sanitizeCapturedTerminalText(value: string): string {
   const sanitized = sanitizeCommandOutput(value)
@@ -92,29 +93,16 @@ function tailError(value: string, maximum: number): string {
 }
 
 export function parseRunCommandArguments(value: Record<string, unknown>): ValidatedCommand {
-  let executableValue = value.executable;
-  let argumentsValue = value.args ?? value.arguments;
-  if ((typeof executableValue !== 'string' || !executableValue.trim()) && typeof value.command === 'string') {
-    const commandTokens = parseSimpleCommandText(value.command);
-    executableValue = commandTokens.shift();
-    if (argumentsValue === undefined) {
-      argumentsValue = commandTokens;
-    } else if (commandTokens.length > 0) {
-      throw new Error('run_command cannot combine a full command string with separate arguments.');
-    }
+  // Commands stay structured so DevMate never has to interpret a shell command string.
+  if (Object.keys(value).some((field) => !runCommandArgumentFields.has(field))) {
+    throw new Error('run_command contains unsupported fields.');
   }
+  const executableValue = value.executable;
   if (typeof executableValue !== 'string' || !executableValue.trim()) {
     throw new Error('run_command requires an executable.');
   }
   const executable = normalizeExecutable(executableValue);
-  if (typeof argumentsValue === 'string') {
-    const parsedArguments = parseSimpleCommandText(argumentsValue);
-    if (sameCommandName(parsedArguments[0], executable)) {
-      parsedArguments.shift();
-    }
-    argumentsValue = parsedArguments;
-  }
-  const args = parseArguments(argumentsValue);
+  const args = parseArguments(value.args);
   const cwd = normalizeCommandCwd(typeof value.cwd === 'string' ? value.cwd : '');
   const timeoutSeconds = boundedTimeout(value.timeoutSeconds);
   validateVerificationCommand(executable, args);
@@ -316,54 +304,6 @@ function parseArguments(value: unknown): string[] {
     }
     return argument;
   });
-}
-
-function parseSimpleCommandText(value: string): string[] {
-  if (!value.trim() || value.length > 2_000 || /[\0\r\n]/.test(value)) {
-    throw new Error('The command text is empty or exceeds the safe size limit.');
-  }
-  const tokens: string[] = [];
-  let current = '';
-  let quote: '"' | "'" | undefined;
-  let tokenStarted = false;
-  for (const character of value.trim()) {
-    if (quote) {
-      if (character === quote) {
-        quote = undefined;
-      } else {
-        current += character;
-      }
-      tokenStarted = true;
-      continue;
-    }
-    if (character === '"' || character === "'") {
-      quote = character;
-      tokenStarted = true;
-      continue;
-    }
-    if (/\s/.test(character)) {
-      if (tokenStarted) {
-        tokens.push(current);
-        current = '';
-        tokenStarted = false;
-      }
-      continue;
-    }
-    current += character;
-    tokenStarted = true;
-  }
-  if (quote) {
-    throw new Error('The command text contains an unterminated quote.');
-  }
-  if (tokenStarted) {
-    tokens.push(current);
-  }
-  return tokens;
-}
-
-function sameCommandName(candidate: unknown, executable: string): boolean {
-  return typeof candidate === 'string'
-    && commandName(candidate) === commandName(executable);
 }
 
 function normalizeCommandCwd(value: string): string {

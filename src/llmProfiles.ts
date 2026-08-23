@@ -6,13 +6,15 @@ import {
   isValidModelContextWindowTokens,
   normalizeModelContextWindowTokens
 } from './contextPlanner';
+import type { ReasoningEffort } from './api/types';
+
+export type { ReasoningEffort } from './api/types';
 
 export const LLM_PROFILES_STORAGE_KEY = 'devMate.llmProfiles.v1';
 export const ACTIVE_LLM_PROFILE_STORAGE_KEY = 'devMate.activeLlmProfileId.v1';
 export const LLM_REASONING_EFFORT_STORAGE_KEY = 'devMate.reasoningEffortByProfile.v1';
 
 export type LlmProvider = 'openai' | 'ollama';
-export type ReasoningEffort = 'auto' | 'low' | 'medium' | 'high' | 'xhigh';
 
 export const REASONING_EFFORT_LABELS: Record<ReasoningEffort, string> = {
   auto: 'Auto',
@@ -175,12 +177,6 @@ export function profilesWithBuiltInNemotron(profiles: LlmProfile[]): LlmProfile[
 
 export function isBuiltInLlmProfile(profile: LlmProfile): boolean {
   return profile.id === BUILT_IN_NEMOTRON_PROFILE_ID;
-}
-
-export function isEquivalentNemotronProfile(profile: LlmProfile): boolean {
-  return profile.provider === BUILT_IN_NEMOTRON_PROFILE.provider
-    && profile.model.toLocaleLowerCase() === BUILT_IN_NEMOTRON_PROFILE.model.toLocaleLowerCase()
-    && profile.baseUrl?.toLocaleLowerCase() === BUILT_IN_NEMOTRON_PROFILE.baseUrl?.toLocaleLowerCase();
 }
 
 export function providerLabelForProfile(profile: LlmProfile): string {

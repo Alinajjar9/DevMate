@@ -4,7 +4,7 @@ const path = require('node:path');
 const {
   createEmptyProjectIndex,
   createIndexedProjectFile
-} = require('../../out/projectIndex');
+} = require('../../out/projectSearch/projectIndex');
 
 const DEFAULT_EVALUATION_LIMITS = Object.freeze({
   maxChunks: 5,

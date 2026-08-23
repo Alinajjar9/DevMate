@@ -25,7 +25,6 @@ export const CONTEXT_PRIORITY_ORDER = [
   'question',
   'explicit-context',
   'operation-state',
-  'pinned-memory',
   'recent-conversation',
   'compacted-summary',
   'project-result',

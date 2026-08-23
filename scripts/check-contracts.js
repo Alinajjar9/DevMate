@@ -47,8 +47,9 @@ function stringConstant(source, name, language) {
 }
 
 const apiTypes = read('src/api/types.ts');
+const agentToolProtocol = read('src/agentToolProtocol.ts');
 const agentTools = read('src/agentTools.ts');
-const projectIndex = read('src/projectIndex.ts');
+const projectIndex = read('src/projectSearch/projectIndex.ts');
 const sessions = read('src/sessions.ts');
 const backendApiModels = read('backend/app/api_models.py');
 const embeddingProfiles = read('src/embeddingProfiles.ts');
@@ -75,7 +76,7 @@ const literalContracts = [
   },
   {
     label: 'AgentToolName',
-    typeScript: quotedValues(capture(agentTools, /export const AGENT_TOOL_NAMES\s*=\s*\[([\s\S]*?)\]\s*as const;/, 'TypeScript agent tools')),
+    typeScript: quotedValues(capture(agentToolProtocol, /export const AGENT_TOOL_NAMES\s*=\s*\[([\s\S]*?)\]\s*as const;/, 'TypeScript agent tools')),
     python: quotedValues(capture(backendApiModels, /AgentToolName\s*=\s*Literal\[([\s\S]*?)\]/, 'Python agent tools'))
   },
   {
@@ -90,7 +91,7 @@ const literalContracts = [
   },
   {
     label: 'EmbeddingProviderName',
-    typeScript: quotedValues(capture(embeddingProfiles, /export const EMBEDDING_PROVIDER_NAMES\s*=\s*\[([^\]]+)\]\s*as const;/, 'TypeScript embedding providers')),
+    typeScript: quotedValues(capture(embeddingProfiles, /export const EMBEDDING_PROVIDER_NAMES\s*=\s*\[([^\]]+)\]\s*as const(?:\s+satisfies[^;]+)?;/, 'TypeScript embedding providers')),
     python: quotedValues(capture(backendEmbeddingProviders, /EmbeddingProviderName\s*=\s*Literal\[([^\]]+)\]/, 'Python embedding providers'))
   },
   {

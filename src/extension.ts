@@ -15,7 +15,7 @@ import {
   KnowledgeIndexSynchronizer,
   defaultKnowledgeIndexApi
 } from './indexSynchronization';
-import { SqliteProjectRetriever } from './projectRetriever';
+import { SqliteProjectRetriever } from './projectSearch/projectRetriever';
 import { SqliteSessionRepository } from './sessionRepository';
 import { VsCodeWorkspaceIndexSource } from './workspaceIndexSource';
 import {

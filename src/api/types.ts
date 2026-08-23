@@ -1,10 +1,12 @@
-import type { EmbeddingProviderName } from '../embeddingProfiles';
+import type { AgentToolCall, AgentToolName } from '../agentToolProtocol';
 
 export type AssistantMode = 'ideas' | 'code' | 'debug';
 export type ScopeType = 'project' | 'file' | 'selection';
 export type ContextSource = 'file' | 'selection' | 'attachment';
 export type ApiStatus = 'ok' | 'error';
 export type BackendState = 'online' | 'offline' | 'mock';
+export type EmbeddingProviderName = 'ollama' | 'openai-compatible';
+export type ReasoningEffort = 'auto' | 'low' | 'medium' | 'high' | 'xhigh';
 export const DEVMATE_BACKEND_SERVICE = 'devmate-backend';
 export const DEVMATE_BACKEND_PROTOCOL_VERSION = 2;
 export const DEVMATE_BACKEND_CAPABILITIES = [
@@ -340,23 +342,8 @@ export type ChatMemorySummary = {
   updatedAtMs: number;
 };
 
-export type ChatMemorySummarySaveRequest = {
-  sessionId: string;
-  content: ChatMemorySummaryContent;
-  lastCompactedTurn: number;
-  updatedAtMs: number;
-};
-
-export type ChatMemorySummarySaveResponse = {
-  summary: ChatMemorySummary;
-};
-
 export type ChatMemorySummaryLoadResponse = {
   summary: ChatMemorySummary | null;
-};
-
-export type ChatMemorySummaryClearResponse = {
-  cleared: boolean;
 };
 
 export type ChatMemoryCompactionRequest = {
@@ -443,5 +430,3 @@ export type FileChange = {
   path: string;
   content: string;
 };
-import type { AgentToolCall, AgentToolName } from '../agentTools';
-import type { ReasoningEffort } from '../llmProfiles';

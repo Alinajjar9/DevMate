@@ -1,20 +1,16 @@
 import * as vscode from 'vscode';
 import {
-  FILE_MUTATION_AGENT_TOOL_NAMES,
   MAX_AGENT_COMMAND_CALLS,
   MAX_AGENT_CONSECUTIVE_INSPECTIONS,
   MAX_AGENT_DEPENDENCY_INSTALLS,
   MAX_AGENT_FILE_MUTATIONS,
   PROVIDER_RETRY_DELAYS_MS,
-  READ_ONLY_AGENT_TOOL_NAMES,
   agentToolCallSignature,
   boundedAgentToolHistoryArguments,
   compactAgentToolHistory,
   consecutiveAgentInspectionCalls,
   emptyResponseRecoveryAction,
   isDeferredAgentPlanAnswer,
-  isFileMutationAgentTool,
-  isReadOnlyAgentTool,
   isRetryableProviderFailure,
   normalizeAgentToolCallForWorkspace,
   parseAgentToolCall,
@@ -22,7 +18,13 @@ import {
   summarizedAgentToolArguments,
   summarizeAgentToolHistory
 } from './agentTools';
-import type { AgentToolCall, AgentToolName } from './agentTools';
+import {
+  FILE_MUTATION_AGENT_TOOL_NAMES,
+  READ_ONLY_AGENT_TOOL_NAMES,
+  isFileMutationAgentTool,
+  isReadOnlyAgentTool
+} from './agentToolProtocol';
+import type { AgentToolCall, AgentToolName } from './agentToolProtocol';
 import { ask, askStream } from './api/client';
 import type {
   AgentToolStep,

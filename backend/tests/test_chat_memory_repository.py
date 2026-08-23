@@ -14,7 +14,6 @@ from backend.app.chat_memory_repository import (
     ChatSummaryContent,
     ChatTurnRecord,
 )
-from backend.app.chat_memory_contracts import MAX_PINNED_MEMORIES
 from backend.app.knowledge_repository import KnowledgeRepository
 from backend.app.knowledge_store import KnowledgeStore
 
@@ -137,40 +136,6 @@ class ChatMemoryRepositoryTests(unittest.TestCase):
                 last_compacted_turn=0,
                 updated_at_ms=299,
             )
-        self.assertTrue(self.repository.clear_summary("session-one"))
-        self.assertIsNone(self.repository.load_summary("session-one"))
-
-    def test_keeps_pinned_memories_isolated_per_chat(self) -> None:
-        self.repository.save_session(self._snapshot("session-one"))
-        self.repository.save_session(self._snapshot("session-two"))
-
-        first = self.repository.pin_memory(
-            "session-one",
-            "memory-one",
-            "Never change the public API.",
-            updated_at_ms=200,
-        )
-        self.repository.pin_memory(
-            "session-two",
-            "memory-one",
-            "Prefer the local model.",
-            updated_at_ms=200,
-        )
-        updated = self.repository.pin_memory(
-            "session-one",
-            "memory-one",
-            "Keep the public API compatible.",
-            updated_at_ms=300,
-        )
-
-        self.assertEqual(updated.created_at_ms, first.created_at_ms)
-        self.assertEqual(
-            [item.content for item in self.repository.list_pinned_memories("session-one")],
-            ["Keep the public API compatible."],
-        )
-        self.assertTrue(self.repository.unpin_memory("session-one", "memory-one"))
-        self.assertEqual(self.repository.list_pinned_memories("session-one"), ())
-        self.assertEqual(len(self.repository.list_pinned_memories("session-two")), 1)
 
     def test_chat_and_code_index_lifecycles_are_independent(self) -> None:
         knowledge_repository = KnowledgeRepository(self.store)
@@ -190,18 +155,11 @@ class ChatMemoryRepositoryTests(unittest.TestCase):
             last_compacted_turn=0,
             updated_at_ms=300,
         )
-        self.repository.pin_memory(
-            "session-one",
-            "memory-one",
-            "Pinned constraint",
-            updated_at_ms=300,
-        )
-
         self.assertTrue(knowledge_repository.delete_workspace("workspace-one"))
         self.assertIsNotNone(self.repository.load_session("session-one"))
         self.assertTrue(self.repository.delete_session("session-one"))
         self.assertIsNone(self.repository.load_session("session-one"))
-        for table in ("chat_turns", "chat_summaries", "pinned_memories"):
+        for table in ("chat_turns", "chat_summaries"):
             self.assertEqual(
                 self.store.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0],
                 0,
@@ -267,21 +225,6 @@ class ChatMemoryRepositoryTests(unittest.TestCase):
                 "missing-session",
                 user="Question",
                 updated_at_ms=300,
-            )
-
-        for index in range(MAX_PINNED_MEMORIES):
-            self.repository.pin_memory(
-                "session-one",
-                f"memory-{index}",
-                f"Memory {index}",
-                updated_at_ms=300 + index,
-            )
-        with self.assertRaisesRegex(ChatMemoryValidationError, "pinned-memory limit"):
-            self.repository.pin_memory(
-                "session-one",
-                "memory-overflow",
-                "One too many",
-                updated_at_ms=400,
             )
 
     @staticmethod

@@ -57,9 +57,7 @@ class ChatMemoryApiTests(unittest.TestCase):
             "/memory/v1/sessions/load",
             "/memory/v1/sessions/list",
             "/memory/v1/sessions/delete",
-            "/memory/v1/summaries/save",
             "/memory/v1/summaries/load",
-            "/memory/v1/summaries/clear",
             "/memory/v1/summaries/compact",
         ):
             with self.subTest(path=path):
@@ -179,7 +177,7 @@ class ChatMemoryApiTests(unittest.TestCase):
                 0,
             )
 
-    def test_round_trips_and_clears_a_strict_summary_without_removing_turns(self) -> None:
+    def test_loads_a_generated_summary_without_removing_raw_turns(self) -> None:
         snapshot = self._snapshot("session-one")
         self.client.post("/memory/v1/sessions/save", json={"sessions": [snapshot]})
         missing = self.client.post(
@@ -187,21 +185,24 @@ class ChatMemoryApiTests(unittest.TestCase):
             json={"sessionId": "session-one"},
         )
 
-        saved = self.client.post(
-            "/memory/v1/summaries/save",
+        self.provider.enabled = True
+        self.provider.answer = json.dumps(self._summary_content())
+        compacted = self.client.post(
+            "/memory/v1/summaries/compact",
             json={
                 "sessionId": "session-one",
-                "content": self._summary_content(),
-                "lastCompactedTurn": 0,
-                "updatedAtMs": 300,
+                "throughTurn": 0,
+                "settings": {
+                    "provider": "ollama",
+                    "model": "local-model",
+                    "maxTokens": 2_000,
+                    "temperature": 0.2,
+                    "timeoutSeconds": 120,
+                },
             },
         )
         loaded = self.client.post(
             "/memory/v1/summaries/load",
-            json={"sessionId": "session-one"},
-        )
-        cleared = self.client.post(
-            "/memory/v1/summaries/clear",
             json={"sessionId": "session-one"},
         )
         session = self.client.post(
@@ -210,53 +211,12 @@ class ChatMemoryApiTests(unittest.TestCase):
         )
 
         self.assertEqual(missing.json()["data"], {"summary": None})
-        self.assertEqual(saved.status_code, 200)
-        self.assertEqual(saved.json()["data"]["summary"], {
-            "sessionId": "session-one",
-            "summaryVersion": 1,
-            "content": self._summary_content(),
-            "lastCompactedTurn": 0,
-            "createdAtMs": 300,
-            "updatedAtMs": 300,
-        })
-        self.assertEqual(loaded.json(), saved.json())
-        self.assertEqual(cleared.json()["data"], {"cleared": True})
+        self.assertEqual(compacted.status_code, 200)
+        self.assertEqual(
+            loaded.json()["data"]["summary"],
+            compacted.json()["data"]["summary"],
+        )
         self.assertEqual(session.json()["data"]["session"]["turns"], snapshot["turns"])
-
-    def test_rejects_invalid_summary_content_and_non_completed_boundaries(self) -> None:
-        snapshot = self._snapshot("session-one")
-        self.client.post("/memory/v1/sessions/save", json={"sessions": [snapshot]})
-        invalid_requests = (
-            {
-                "sessionId": "session-one",
-                "content": {**self._summary_content(), "unexpected": True},
-                "lastCompactedTurn": 0,
-                "updatedAtMs": 300,
-            },
-            {
-                "sessionId": "session-one",
-                "content": {**self._summary_content(), "goal": ""},
-                "lastCompactedTurn": 0,
-                "updatedAtMs": 300,
-            },
-            {
-                "sessionId": "session-one",
-                "content": self._summary_content(),
-                "lastCompactedTurn": 1,
-                "updatedAtMs": 300,
-            },
-        )
-        for request in invalid_requests:
-            with self.subTest(request=request):
-                response = self.client.post("/memory/v1/summaries/save", json=request)
-                self.assertEqual(response.status_code, 422)
-                self.assertEqual(response.json()["errorCode"], "request_validation_failed")
-
-        loaded = self.client.post(
-            "/memory/v1/summaries/load",
-            json={"sessionId": "session-one"},
-        )
-        self.assertEqual(loaded.json()["data"], {"summary": None})
 
     def test_compacts_with_the_active_provider_and_strict_summary_contract(self) -> None:
         self.client.post(
@@ -309,16 +269,22 @@ class ChatMemoryApiTests(unittest.TestCase):
             "/memory/v1/sessions/save",
             json={"sessions": [snapshot]},
         )
+        self.provider.enabled = True
+        self.provider.answer = json.dumps(self._summary_content())
         existing = self.client.post(
-            "/memory/v1/summaries/save",
+            "/memory/v1/summaries/compact",
             json={
                 "sessionId": "session-one",
-                "content": self._summary_content(),
-                "lastCompactedTurn": 0,
-                "updatedAtMs": 300,
+                "throughTurn": 0,
+                "settings": {
+                    "provider": "ollama",
+                    "model": "local-model",
+                    "maxTokens": 2_000,
+                    "temperature": 0.2,
+                    "timeoutSeconds": 120,
+                },
             },
         ).json()["data"]["summary"]
-        self.provider.enabled = True
         self.provider.answer = '{"goal":"missing fields"}'
 
         response = self.client.post(

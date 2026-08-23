@@ -1,5 +1,5 @@
 import * as path from 'path';
-import type { AskContextItem, ContextSource } from './api/types';
+import type { AskContextItem, ContextSource } from '../api/types';
 
 export const PROJECT_INDEX_VERSION = 1;
 export const PROJECT_INDEX_FILE_NAME = 'project-index-v1.json';

@@ -6,7 +6,7 @@ import type { ValidatedFileChange } from './fileTools';
 import {
   containsBinaryData,
   MAX_PROJECT_FILE_BYTES
-} from './projectIndex';
+} from './projectSearch/projectIndex';
 import { permissionBehaviorForAction } from './permissions';
 import type {
   FilePermissionAction,

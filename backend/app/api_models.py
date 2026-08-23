@@ -819,26 +819,6 @@ class ChatMemorySummaryData(ChatMemoryModel):
         return self
 
 
-class ChatMemorySummarySaveRequest(ChatMemoryModel):
-    sessionId: str = Field(
-        min_length=1,
-        max_length=MAX_CHAT_SESSION_ID_CHARACTERS,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$",
-    )
-    content: ChatMemorySummaryContentData
-    lastCompactedTurn: int = Field(ge=0, le=MAX_CHAT_INTEGER)
-    updatedAtMs: int = Field(ge=0, le=MAX_CHAT_INTEGER)
-
-
-class ChatMemorySummarySaveData(ChatMemoryModel):
-    summary: ChatMemorySummaryData
-
-
-class ChatMemorySummarySaveResult(ChatMemoryModel):
-    status: Literal["ok"]
-    data: ChatMemorySummarySaveData
-
-
 class ChatMemorySummaryLoadData(ChatMemoryModel):
     summary: ChatMemorySummaryData | None
 
@@ -846,15 +826,6 @@ class ChatMemorySummaryLoadData(ChatMemoryModel):
 class ChatMemorySummaryLoadResult(ChatMemoryModel):
     status: Literal["ok"]
     data: ChatMemorySummaryLoadData
-
-
-class ChatMemorySummaryClearData(ChatMemoryModel):
-    cleared: bool
-
-
-class ChatMemorySummaryClearResult(ChatMemoryModel):
-    status: Literal["ok"]
-    data: ChatMemorySummaryClearData
 
 
 class ChatMemoryCompactionRequest(ChatMemoryModel):

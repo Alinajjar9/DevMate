@@ -6,15 +6,15 @@ const {
   createEmptyProjectIndex,
   createIndexedProjectFile,
   retrieveProjectChunks
-} = require('../out/projectIndex');
+} = require('../out/projectSearch/projectIndex');
 const {
   LexicalProjectRetriever,
   SqliteProjectRetriever
-} = require('../out/projectRetriever');
+} = require('../out/projectSearch/projectRetriever');
 const {
   fuseProjectSearchResults,
   RECIPROCAL_RANK_FUSION_CONSTANT
-} = require('../out/projectSearchRanking');
+} = require('../out/projectSearch/projectSearchRanking');
 
 const ACCESS = {
   backendUrl: 'http://127.0.0.1:8000',

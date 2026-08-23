@@ -2,13 +2,13 @@ import { createHash } from 'crypto';
 import {
   searchKnowledgeIndex,
   searchKnowledgeIndexSemantically
-} from './api/client';
+} from '../api/client';
 import {
   MAX_LEXICAL_QUERY_CHARACTERS,
   MAX_LEXICAL_RESULTS,
   MAX_SEMANTIC_QUERY_CHARACTERS,
   MAX_SEMANTIC_RESULTS
-} from './api/types';
+} from '../api/types';
 import type {
   ApiResult,
   KnowledgeIndexSearchRequest,
@@ -16,9 +16,9 @@ import type {
   KnowledgeIndexSearchResponse,
   KnowledgeIndexSemanticSearchRequest,
   KnowledgeIndexSemanticSearchResponse
-} from './api/types';
-import type { ResolvedEmbeddingProfile } from './embeddingProfiles';
-import type { KnowledgeIndexAccess } from './indexSynchronization';
+} from '../api/types';
+import type { ResolvedEmbeddingProfile } from '../embeddingProfiles';
+import type { KnowledgeIndexAccess } from '../indexSynchronization';
 import { retrieveProjectChunks } from './projectIndex';
 import type {
   ProjectChunkRetrievalLimits,
