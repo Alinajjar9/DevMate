@@ -54,6 +54,7 @@ class ChatService:
             disable_thinking=request.disableThinking,
             agent_edits_enabled=request.agentEditsEnabled,
             conversation_turns=request.conversationHistory,
+            conversation_summary=request.conversationSummary,
         )
         return ChatCompletionRequest(
             provider=request.settings.provider,

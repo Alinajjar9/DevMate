@@ -15,6 +15,7 @@ exports.appendConversationSessionTurn = appendConversationSessionTurn;
 exports.appendConversationSessionUserMessage = appendConversationSessionUserMessage;
 exports.activeConversationSession = activeConversationSession;
 exports.activeSessionModelHistory = activeSessionModelHistory;
+exports.sessionModelHistoryAfter = sessionModelHistoryAfter;
 exports.sessionBelongsToWorkspace = sessionBelongsToWorkspace;
 exports.sessionTitleFromQuestion = sessionTitleFromQuestion;
 const fileTools_1 = require("./fileTools");
@@ -306,7 +307,14 @@ function activeConversationSession(store) {
     return store.sessions.find((session) => session.id === store.activeSessionId);
 }
 function activeSessionModelHistory(store) {
-    return boundConversationHistory((activeConversationSession(store)?.turns ?? []).map((turn) => ({
+    const session = activeConversationSession(store);
+    return session ? sessionModelHistoryAfter(session) : [];
+}
+function sessionModelHistoryAfter(session, lastIncludedOrdinal = -1) {
+    const firstOrdinal = Number.isInteger(lastIncludedOrdinal) && lastIncludedOrdinal >= -1
+        ? lastIncludedOrdinal + 1
+        : 0;
+    return boundConversationHistory(session.turns.slice(firstOrdinal).map((turn) => ({
         user: turn.user,
         assistant: turn.assistant
     })));

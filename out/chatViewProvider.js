@@ -1626,6 +1626,7 @@ class DevMateChatViewProvider {
         const temperature = config.get('temperature', 0.2);
         const toolCallLimit = (0, agentTools_1.boundedAgentToolCallLimit)(config.get('toolCallLimit', agentTools_1.DEFAULT_AGENT_TOOL_CALL_LIMIT));
         const modelTimeoutSeconds = Math.min(1800, Math.max(10, config.get('requestTimeoutSeconds', 900)));
+        const maxInputContextTokens = (0, contextPlanner_1.normalizeMaxInputContextTokens)(config.get('maxInputContextTokens', contextPlanner_1.AUTO_MAX_INPUT_CONTEXT_TOKENS));
         const settings = {
             provider: activeProfile.provider,
             model: activeProfile.model,
@@ -1646,28 +1647,32 @@ class DevMateChatViewProvider {
             await this.showLlmProfileForm(activeProfile);
             return;
         }
-        if (!resumedCheckpoint) {
-            const currentSession = (0, sessions_2.activeConversationSession)(this.sessionStore);
-            if (currentSession) {
-                const compaction = await this.chatCompactionController.compactIfNeeded({
-                    session: currentSession,
-                    question,
-                    scope: collectedScope.apiScope,
-                    modelContextWindowTokens: activeProfile.contextWindowTokens,
-                    maxInputContextTokens: (0, contextPlanner_1.normalizeMaxInputContextTokens)(config.get('maxInputContextTokens', contextPlanner_1.AUTO_MAX_INPUT_CONTEXT_TOKENS)),
-                    settings,
-                    access: {
-                        backendUrl: getBackendUrl(),
-                        backendToken,
-                        providerApiKey
-                    }
-                }, signal, () => this.postStatus('Compacting earlier chat context'));
-                if (compaction.kind === 'cancelled' || this.finishCancelledRequest(signal)) {
-                    return;
+        let conversationHistory = (0, sessions_2.activeSessionModelHistory)(this.sessionStore);
+        let conversationSummary;
+        const currentSession = (0, sessions_2.activeConversationSession)(this.sessionStore);
+        if (currentSession) {
+            const compaction = await this.chatCompactionController.compactIfNeeded({
+                session: currentSession,
+                question,
+                scope: collectedScope.apiScope,
+                modelContextWindowTokens: activeProfile.contextWindowTokens,
+                maxInputContextTokens,
+                settings,
+                access: {
+                    backendUrl: getBackendUrl(),
+                    backendToken,
+                    providerApiKey
                 }
-                if (compaction.kind === 'failed') {
-                    this.backendOutput.append(`[DevMate] Chat compaction: ${compaction.message}\n`);
-                }
+            }, signal, () => this.postStatus('Compacting earlier chat context'));
+            if (compaction.kind === 'cancelled' || this.finishCancelledRequest(signal)) {
+                return;
+            }
+            if (compaction.kind === 'failed') {
+                this.backendOutput.append(`[DevMate] Chat compaction: ${compaction.message}\n`);
+            }
+            if (compaction.summary) {
+                conversationSummary = compaction.summary.content;
+                conversationHistory = (0, sessions_2.sessionModelHistoryAfter)(currentSession, compaction.summary.lastCompactedTurn);
             }
         }
         const outcome = await this.agentRunController.run({
@@ -1675,9 +1680,10 @@ class DevMateChatViewProvider {
             mode: message.mode,
             scopeKind: message.scope.kind,
             scope: collectedScope.apiScope,
-            conversationHistory: (0, sessions_2.activeSessionModelHistory)(this.sessionStore),
+            conversationHistory,
+            conversationSummary,
             modelContextWindowTokens: activeProfile.contextWindowTokens,
-            maxInputContextTokens: (0, contextPlanner_1.normalizeMaxInputContextTokens)(config.get('maxInputContextTokens', contextPlanner_1.AUTO_MAX_INPUT_CONTEXT_TOKENS)),
+            maxInputContextTokens,
             settings,
             backendUrl: getBackendUrl(),
             backendToken,

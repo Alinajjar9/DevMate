@@ -837,6 +837,32 @@ class DevMateApiTests(unittest.TestCase):
         response = self.client.post("/ask", json=payload)
         self.assertEqual(response.status_code, 422)
 
+    def test_ask_accepts_only_valid_structured_conversation_memory(self) -> None:
+        payload = self._ask_payload(scope_type="project", items=[], mode="debug")
+        payload["conversationSummary"] = {
+            "goal": "Finish the authentication fix.",
+            "constraints": ["Keep raw turns recoverable."],
+            "decisions": [{
+                "decision": "Use compact structured memory.",
+                "reason": "It can be validated before use.",
+            }],
+            "importantFiles": ["src/auth.ts"],
+            "completedWork": ["Added local chat storage."],
+            "openTasks": ["Verify the fix."],
+            "unresolvedQuestions": [],
+        }
+
+        response = self.client.post("/ask", json=payload)
+
+        self.assertEqual(response.status_code, 200)
+        current_message = self.provider.requests[-1].messages[-1].content
+        self.assertIn("BEGIN COMPACTED CONVERSATION MEMORY", current_message)
+        self.assertIn("Finish the authentication fix", current_message)
+
+        payload["conversationSummary"]["unexpected"] = True
+        response = self.client.post("/ask", json=payload)
+        self.assertEqual(response.status_code, 422)
+
     def test_ask_accepts_six_conversation_turns_and_rejects_the_seventh(self) -> None:
         payload = self._ask_payload(scope_type="project", items=[], mode="debug")
         payload["conversationHistory"] = [

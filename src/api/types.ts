@@ -408,6 +408,7 @@ export type AskRequest = {
   disableThinking?: boolean;
   toolHistory?: AgentToolStep[];
   conversationHistory?: ConversationTurn[];
+  conversationSummary?: ChatMemorySummaryContent;
 };
 
 export type ConversationTurn = {

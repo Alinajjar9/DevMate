@@ -6,7 +6,6 @@ const client_1 = require("./api/client");
 const contextPlanner_1 = require("./contextPlanner");
 exports.CHAT_COMPACTION_TRIGGER_RATIO = 0.75;
 exports.CHAT_COMPACTION_RECENT_TURNS = 4;
-const COMPACTED_SUMMARY_OVERHEAD_TOKENS = 48;
 exports.defaultChatCompactionApi = {
     load: (access, request, signal) => (0, client_1.loadChatMemorySummary)(access.backendUrl, request, access.backendToken, signal),
     compact: (access, request, signal) => (0, client_1.compactChatMemorySummary)(access.backendUrl, request, {
@@ -25,9 +24,6 @@ class ChatCompactionController {
         }
         const completedTurnCount = completedTurnPrefixLength(input.session);
         const throughTurn = chatCompactionBoundary(completedTurnCount);
-        if (throughTurn === undefined) {
-            return { kind: 'not-needed', reason: 'too-few-turns' };
-        }
         let loaded;
         try {
             loaded = await this.api.load(input.access, { sessionId: input.session.id }, signal);
@@ -45,9 +41,20 @@ class ChatCompactionController {
             };
         }
         const previousSummary = loaded.data.summary;
+        if (throughTurn === undefined) {
+            return {
+                kind: 'not-needed',
+                reason: 'too-few-turns',
+                summary: previousSummary
+            };
+        }
         const lastCompactedTurn = previousSummary?.lastCompactedTurn ?? -1;
         if (throughTurn <= lastCompactedTurn) {
-            return { kind: 'not-needed', reason: 'already-compacted' };
+            return {
+                kind: 'not-needed',
+                reason: 'already-compacted',
+                summary: previousSummary
+            };
         }
         const uncompactedHistory = input.session.turns
             .slice(lastCompactedTurn + 1, completedTurnCount)
@@ -56,19 +63,20 @@ class ChatCompactionController {
             question: input.question,
             scope: input.scope,
             conversationHistory: uncompactedHistory,
+            compactedSummary: previousSummary?.content,
             toolHistory: [],
             modelContextWindowTokens: input.modelContextWindowTokens,
             maxInputContextTokens: input.maxInputContextTokens,
             reservedOutputTokens: input.settings.maxTokens
         });
-        const summaryTokens = previousSummary
-            ? (0, contextPlanner_1.estimateContextTokens)(JSON.stringify(previousSummary.content))
-                + COMPACTED_SUMMARY_OVERHEAD_TOKENS
-            : 0;
-        const requestedTokens = contextPlan.requestedTokens + summaryTokens;
+        const requestedTokens = contextPlan.requestedTokens;
         const usableInputTokens = contextPlan.budget.usableInputTokens;
         if (usableInputTokens <= 0) {
-            return { kind: 'not-needed', reason: 'no-input-capacity' };
+            return {
+                kind: 'not-needed',
+                reason: 'no-input-capacity',
+                summary: previousSummary
+            };
         }
         const triggerTokens = Math.ceil(usableInputTokens * exports.CHAT_COMPACTION_TRIGGER_RATIO);
         if (requestedTokens < triggerTokens) {
@@ -76,7 +84,8 @@ class ChatCompactionController {
                 kind: 'not-needed',
                 reason: 'below-threshold',
                 requestedTokens,
-                triggerTokens
+                triggerTokens,
+                summary: previousSummary
             };
         }
         onCompactionStarted();
@@ -89,7 +98,7 @@ class ChatCompactionController {
             }, signal);
         }
         catch (error) {
-            return failedOutcome(error, 'DevMate could not compact the earlier chat context.');
+            return failedOutcome(error, 'DevMate could not compact the earlier chat context.', previousSummary);
         }
         if (signal?.aborted || compacted.errorKind === 'cancelled') {
             return { kind: 'cancelled' };
@@ -97,7 +106,8 @@ class ChatCompactionController {
         if (compacted.status !== 'ok' || !compacted.data) {
             return {
                 kind: 'failed',
-                message: compacted.message ?? 'DevMate could not compact the earlier chat context.'
+                message: compacted.message ?? 'DevMate could not compact the earlier chat context.',
+                summary: previousSummary
             };
         }
         return {
@@ -105,7 +115,8 @@ class ChatCompactionController {
             throughTurn,
             compactedTurns: compacted.data.compactedTurns,
             requestedTokens,
-            triggerTokens
+            triggerTokens,
+            summary: compacted.data.summary
         };
     }
 }
@@ -121,10 +132,11 @@ function completedTurnPrefixLength(session) {
     const pendingIndex = session.turns.findIndex((turn) => !turn.assistant.trim());
     return pendingIndex < 0 ? session.turns.length : pendingIndex;
 }
-function failedOutcome(error, fallback) {
+function failedOutcome(error, fallback, summary) {
     return {
         kind: 'failed',
-        message: error instanceof Error ? error.message : fallback
+        message: error instanceof Error ? error.message : fallback,
+        ...(summary !== undefined ? { summary } : {})
     };
 }
 //# sourceMappingURL=chatCompaction.js.map

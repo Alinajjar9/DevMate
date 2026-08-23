@@ -158,6 +158,31 @@ test('keeps explicit attachments and recent chat ahead of project retrieval', ()
   assert.equal(plan.overflowTokens, 0);
 });
 
+test('budgets recent exact chat before a compacted summary and project results', () => {
+  const recentTurn = { user: 'u'.repeat(2_000), assistant: 'a'.repeat(2_000) };
+  const summary = compactedSummary('s'.repeat(4_000));
+  const projectResult = contextItem('file', 'src/project.ts', 'p'.repeat(8_000));
+
+  const plan = planAskRequestContext({
+    question: 'Continue',
+    scope: {
+      type: 'project',
+      workspacePath: 'C:/repo',
+      items: [projectResult]
+    },
+    conversationHistory: [recentTurn],
+    compactedSummary: summary,
+    toolHistory: [],
+    modelContextWindowTokens: 20_000,
+    maxInputContextTokens: 8_000,
+    reservedOutputTokens: 0
+  });
+
+  assert.deepEqual(plan.conversationHistory, [recentTurn]);
+  assert.deepEqual(plan.compactedSummary, summary);
+  assert.deepEqual(plan.scope.items, []);
+});
+
 test('keeps tool-call shells while compacting older results before the newest result', () => {
   const older = toolStep('older', 'o'.repeat(4_000));
   const newest = toolStep('newest', 'n'.repeat(4_000));
@@ -230,6 +255,18 @@ function contextItem(source, filePath, content) {
     includedCharacters: content.length,
     totalCharacters: content.length,
     truncated: false
+  };
+}
+
+function compactedSummary(goal) {
+  return {
+    goal,
+    constraints: [],
+    decisions: [],
+    importantFiles: [],
+    completedWork: [],
+    openTasks: [],
+    unresolvedQuestions: []
   };
 }
 

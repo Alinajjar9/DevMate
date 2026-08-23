@@ -284,6 +284,7 @@ class AskRequest(BaseModel):
         default_factory=list,
         max_length=MAX_CONVERSATION_TURNS,
     )
+    conversationSummary: "ChatMemorySummaryContentData | None" = None
 
     @model_validator(mode="after")
     def validate_tool_history(self) -> "AskRequest":
@@ -874,6 +875,9 @@ class ChatMemoryCompactionData(ChatMemoryModel):
 class ChatMemoryCompactionResult(ChatMemoryModel):
     status: Literal["ok"]
     data: ChatMemoryCompactionData
+
+
+AskRequest.model_rebuild()
 
 
 class FileChange(BaseModel):

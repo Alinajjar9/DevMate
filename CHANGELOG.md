@@ -2,6 +2,26 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Use compact chat memory in agent requests
+
+### Changed
+
+- Loads the current validated summary before every fresh or resumed agent run and reuses the summary returned by automatic compaction without an extra backend request.
+- Sends bounded recent exact turns after the stored compaction boundary while retaining the previous raw-history fallback when summary loading fails.
+- Added compacted summaries to the context planner below current operation state and recent exact conversation but above retrieved project chunks.
+- Added a strict optional structured-memory field to the TypeScript and Python ask contracts.
+- Renders compacted memory as a delimited untrusted-data block in the current user context rather than as system instructions.
+- Preserves cancellation behavior and lets the main request continue with raw history when local memory is unavailable.
+- Intentionally omitted manual Compact, View Summary, Reset Summary, and Pin Memory controls for the university-project scope.
+
+### Verification
+
+- Focused memory loading, context planning, session-boundary, prompt, API, and extension integration coverage passed.
+- `npm run verify` — 309 extension tests and 166 backend tests passed; 67 cross-language contracts and 32 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-23 — Compact long chats automatically
 
 ### Changed

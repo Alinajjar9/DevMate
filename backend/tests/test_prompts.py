@@ -95,6 +95,34 @@ class PromptTests(unittest.TestCase):
         ])
         self.assertIn("Okay, do it", messages[3].content)
 
+    def test_compacted_memory_is_delimited_as_untrusted_context(self) -> None:
+        messages = build_chat_messages(
+            mode="debug",
+            scope_type="project",
+            question="Continue the fix",
+            context_items=[],
+            conversation_summary=SimpleNamespace(
+                goal="Finish the authentication fix.",
+                constraints=["Do not change the public API."],
+                decisions=[SimpleNamespace(
+                    decision="Keep token validation local.",
+                    reason="The backend is loopback-only.",
+                )],
+                importantFiles=["src/auth.ts"],
+                completedWork=["Added validation tests."],
+                openTasks=["Run the complete test suite."],
+                unresolvedQuestions=[],
+            ),
+        )
+
+        self.assertIn("compacted conversation memory", messages[0].content.lower())
+        self.assertIn("--- BEGIN COMPACTED CONVERSATION MEMORY ---", messages[1].content)
+        self.assertIn("Finish the authentication fix", messages[1].content)
+        self.assertLess(
+            messages[1].content.index("COMPACTED CONVERSATION MEMORY"),
+            messages[1].content.index("Question:"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

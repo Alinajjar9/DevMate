@@ -406,8 +406,19 @@ export function activeConversationSession(
 }
 
 export function activeSessionModelHistory(store: ConversationSessionStore): ConversationTurn[] {
+  const session = activeConversationSession(store);
+  return session ? sessionModelHistoryAfter(session) : [];
+}
+
+export function sessionModelHistoryAfter(
+  session: ConversationSession,
+  lastIncludedOrdinal = -1
+): ConversationTurn[] {
+  const firstOrdinal = Number.isInteger(lastIncludedOrdinal) && lastIncludedOrdinal >= -1
+    ? lastIncludedOrdinal + 1
+    : 0;
   return boundConversationHistory(
-    (activeConversationSession(store)?.turns ?? []).map((turn) => ({
+    session.turns.slice(firstOrdinal).map((turn) => ({
       user: turn.user,
       assistant: turn.assistant
     }))

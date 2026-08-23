@@ -1,6 +1,7 @@
 import type {
   AgentToolStep,
   AskScope,
+  ChatMemorySummaryContent,
   ConversationTurn
 } from './api/types';
 
@@ -69,6 +70,7 @@ export type AskRequestContextPlanOptions = ContextBudgetOptions & {
   question: string;
   scope: AskScope;
   conversationHistory: readonly ConversationTurn[];
+  compactedSummary?: ChatMemorySummaryContent;
   toolHistory: readonly AgentToolStep[];
 };
 
@@ -76,6 +78,7 @@ export type AskRequestContextPlan = {
   budget: ContextBudget;
   scope: AskScope;
   conversationHistory: ConversationTurn[];
+  compactedSummary?: ChatMemorySummaryContent;
   toolHistory: AgentToolStep[];
   requestedTokens: number;
   usedTokens: number;
@@ -273,6 +276,16 @@ export function planAskRequestContext(
     });
   }
 
+  if (options.compactedSummary) {
+    candidates.push({
+      id: 'compacted-summary',
+      priority: 'compacted-summary',
+      estimatedTokens: estimateContextTokens(JSON.stringify(options.compactedSummary))
+        + CONTEXT_ITEM_OVERHEAD_TOKENS,
+      value: 'compacted-summary'
+    });
+  }
+
   if (options.toolHistory.length > 0) {
     candidates.push({
       id: 'tool-history-shells',
@@ -338,6 +351,9 @@ export function planAskRequestContext(
     budget,
     scope: { ...options.scope, items: scopeItems },
     conversationHistory,
+    ...(options.compactedSummary && selectedIds.has('compacted-summary')
+      ? { compactedSummary: options.compactedSummary }
+      : {}),
     toolHistory,
     requestedTokens,
     usedTokens,

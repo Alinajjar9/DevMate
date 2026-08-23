@@ -32,7 +32,11 @@ import type {
   EmbeddingProfileFormSubmission
 } from './embeddingProfileController';
 import { getChatWebviewHtml } from './webview';
-import type { AssistantMode, LlmSettings } from './api/types';
+import type {
+  AssistantMode,
+  ChatMemorySummaryContent,
+  LlmSettings
+} from './api/types';
 import {
   collectFileChangeSummary,
   parseAppliedFileChangeOutcome
@@ -46,6 +50,7 @@ import {
   createEmptyConversationSessionStore,
   deleteConversationSession,
   renameConversationSession,
+  sessionModelHistoryAfter,
   sessionBelongsToWorkspace,
   selectConversationSession
 } from './sessions';
@@ -2271,6 +2276,12 @@ export class DevMateChatViewProvider implements
       1800,
       Math.max(10, config.get<number>('requestTimeoutSeconds', 900))
     );
+    const maxInputContextTokens = normalizeMaxInputContextTokens(
+      config.get<number>(
+        'maxInputContextTokens',
+        AUTO_MAX_INPUT_CONTEXT_TOKENS
+      )
+    );
     const settings: LlmSettings = {
       provider: activeProfile.provider,
       model: activeProfile.model,
@@ -2296,35 +2307,37 @@ export class DevMateChatViewProvider implements
       return;
     }
 
-    if (!resumedCheckpoint) {
-      const currentSession = activeConversationSession(this.sessionStore);
-      if (currentSession) {
-        const compaction = await this.chatCompactionController.compactIfNeeded({
-          session: currentSession,
-          question,
-          scope: collectedScope.apiScope,
-          modelContextWindowTokens: activeProfile.contextWindowTokens,
-          maxInputContextTokens: normalizeMaxInputContextTokens(
-            config.get<number>(
-              'maxInputContextTokens',
-              AUTO_MAX_INPUT_CONTEXT_TOKENS
-            )
-          ),
-          settings,
-          access: {
-            backendUrl: getBackendUrl(),
-            backendToken,
-            providerApiKey
-          }
-        }, signal, () => this.postStatus('Compacting earlier chat context'));
-        if (compaction.kind === 'cancelled' || this.finishCancelledRequest(signal)) {
-          return;
+    let conversationHistory = activeSessionModelHistory(this.sessionStore);
+    let conversationSummary: ChatMemorySummaryContent | undefined;
+    const currentSession = activeConversationSession(this.sessionStore);
+    if (currentSession) {
+      const compaction = await this.chatCompactionController.compactIfNeeded({
+        session: currentSession,
+        question,
+        scope: collectedScope.apiScope,
+        modelContextWindowTokens: activeProfile.contextWindowTokens,
+        maxInputContextTokens,
+        settings,
+        access: {
+          backendUrl: getBackendUrl(),
+          backendToken,
+          providerApiKey
         }
-        if (compaction.kind === 'failed') {
-          this.backendOutput.append(
-            `[DevMate] Chat compaction: ${compaction.message}\n`
-          );
-        }
+      }, signal, () => this.postStatus('Compacting earlier chat context'));
+      if (compaction.kind === 'cancelled' || this.finishCancelledRequest(signal)) {
+        return;
+      }
+      if (compaction.kind === 'failed') {
+        this.backendOutput.append(
+          `[DevMate] Chat compaction: ${compaction.message}\n`
+        );
+      }
+      if (compaction.summary) {
+        conversationSummary = compaction.summary.content;
+        conversationHistory = sessionModelHistoryAfter(
+          currentSession,
+          compaction.summary.lastCompactedTurn
+        );
       }
     }
 
@@ -2333,14 +2346,10 @@ export class DevMateChatViewProvider implements
       mode: message.mode,
       scopeKind: message.scope.kind,
       scope: collectedScope.apiScope,
-      conversationHistory: activeSessionModelHistory(this.sessionStore),
+      conversationHistory,
+      conversationSummary,
       modelContextWindowTokens: activeProfile.contextWindowTokens,
-      maxInputContextTokens: normalizeMaxInputContextTokens(
-        config.get<number>(
-          'maxInputContextTokens',
-          AUTO_MAX_INPUT_CONTEXT_TOKENS
-        )
-      ),
+      maxInputContextTokens,
       settings,
       backendUrl: getBackendUrl(),
       backendToken,

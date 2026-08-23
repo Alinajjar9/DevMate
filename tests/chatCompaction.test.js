@@ -33,15 +33,20 @@ test('derives a compaction boundary that leaves the latest four completed turns 
   assert.equal(chatCompactionBoundary(5.5), undefined);
 });
 
-test('does not inspect summary storage until more than four completed turns exist', async () => {
+test('loads an existing summary even when too few turns exist for new compaction', async () => {
+  const storedSummary = summaryThrough(0);
   const controller = new ChatCompactionController({
-    load: async () => assert.fail('summary storage should not be read'),
+    load: async () => ok({ summary: storedSummary }),
     compact: async () => assert.fail('the model should not be called')
   });
 
   const result = await controller.compactIfNeeded(inputWithTurns(4, 'short'));
 
-  assert.deepEqual(result, { kind: 'not-needed', reason: 'too-few-turns' });
+  assert.deepEqual(result, {
+    kind: 'not-needed',
+    reason: 'too-few-turns',
+    summary: storedSummary
+  });
 });
 
 test('does not compact a short chat below seventy-five percent of usable input', async () => {
@@ -58,6 +63,7 @@ test('does not compact a short chat below seventy-five percent of usable input',
 
   assert.equal(result.kind, 'not-needed');
   assert.equal(result.reason, 'below-threshold');
+  assert.equal(result.summary, null);
   assert.ok(result.requestedTokens < result.triggerTokens);
   assert.equal(compactCalls, 0);
 });
@@ -93,6 +99,7 @@ test('compacts only older completed turns after the planned context reaches the 
   assert.equal(result.kind, 'completed');
   assert.equal(result.throughTurn, 3);
   assert.equal(result.compactedTurns, 4);
+  assert.equal(result.summary.lastCompactedTurn, 3);
   assert.ok(result.requestedTokens >= result.triggerTokens);
   assert.equal(started, 1);
   assert.deepEqual(compactAccess, ACCESS);
@@ -131,7 +138,11 @@ test('avoids repeated model calls when the eligible boundary is already summariz
 
   const result = await controller.compactIfNeeded(inputWithTurns(8, 'large'));
 
-  assert.deepEqual(result, { kind: 'not-needed', reason: 'already-compacted' });
+  assert.deepEqual(result, {
+    kind: 'not-needed',
+    reason: 'already-compacted',
+    summary: summaryThrough(3)
+  });
 });
 
 test('treats storage and provider failures as non-throwing maintenance failures', async () => {
@@ -152,7 +163,8 @@ test('treats storage and provider failures as non-throwing maintenance failures'
   });
   assert.deepEqual(await providerFailure.compactIfNeeded(inputWithTurns(8, 'large')), {
     kind: 'failed',
-    message: 'Provider unavailable.'
+    message: 'Provider unavailable.',
+    summary: null
   });
 });
 

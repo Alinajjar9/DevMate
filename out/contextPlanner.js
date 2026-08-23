@@ -170,6 +170,15 @@ function planAskRequestContext(options) {
             value: `conversation:${index}`
         });
     }
+    if (options.compactedSummary) {
+        candidates.push({
+            id: 'compacted-summary',
+            priority: 'compacted-summary',
+            estimatedTokens: estimateContextTokens(JSON.stringify(options.compactedSummary))
+                + CONTEXT_ITEM_OVERHEAD_TOKENS,
+            value: 'compacted-summary'
+        });
+    }
     if (options.toolHistory.length > 0) {
         candidates.push({
             id: 'tool-history-shells',
@@ -219,6 +228,9 @@ function planAskRequestContext(options) {
         budget,
         scope: { ...options.scope, items: scopeItems },
         conversationHistory,
+        ...(options.compactedSummary && selectedIds.has('compacted-summary')
+            ? { compactedSummary: options.compactedSummary }
+            : {}),
         toolHistory,
         requestedTokens,
         usedTokens,

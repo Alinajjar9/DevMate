@@ -16,6 +16,7 @@ const {
   renameConversationSession,
   selectConversationSession,
   sessionBelongsToWorkspace,
+  sessionModelHistoryAfter,
   sessionTitleFromQuestion
 } = require('../out/sessions');
 
@@ -162,4 +163,25 @@ test('parses bounded in-memory sessions and rejects invalid project metadata', (
   assert.equal(parsed.activeSessionId, parsed.sessions[0].id);
   assert.equal(parsed.sessions.some((session) => session.id === '../unsafe'), false);
   assert.equal(parseConversationSessionStore({ version: 1, sessions: [] }), undefined);
+});
+
+test('builds exact model history only after a compacted turn boundary', () => {
+  let store = createConversationSessionStore('session-one', 1, workspaceA);
+  for (let index = 0; index < 5; index += 1) {
+    store = appendConversationSessionTurn(
+      store,
+      `Question ${index}`,
+      `Answer ${index}`,
+      index + 2
+    );
+  }
+
+  assert.deepEqual(
+    sessionModelHistoryAfter(activeConversationSession(store), 1),
+    [
+      { user: 'Question 2', assistant: 'Answer 2' },
+      { user: 'Question 3', assistant: 'Answer 3' },
+      { user: 'Question 4', assistant: 'Answer 4' }
+    ]
+  );
 });

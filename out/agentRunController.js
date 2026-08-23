@@ -54,7 +54,7 @@ class AgentRunController {
         this.transport = transport;
     }
     async run(input, signal) {
-        const { question, mode, scopeKind, scope, conversationHistory, modelContextWindowTokens, maxInputContextTokens, settings, backendUrl, backendToken, providerApiKey, toolCallLimit, workspaceId, sessionId, resumedCheckpoint } = input;
+        const { question, mode, scopeKind, scope, conversationHistory, conversationSummary, modelContextWindowTokens, maxInputContextTokens, settings, backendUrl, backendToken, providerApiKey, toolCallLimit, workspaceId, sessionId, resumedCheckpoint } = input;
         const toolHistory = resumedCheckpoint
             ? [...resumedCheckpoint.toolHistory]
             : [];
@@ -131,6 +131,7 @@ class AgentRunController {
                 question,
                 scope,
                 conversationHistory,
+                compactedSummary: conversationSummary,
                 toolHistory: (0, agentTools_1.compactAgentToolHistory)(toolHistory),
                 modelContextWindowTokens,
                 maxInputContextTokens,
@@ -152,7 +153,8 @@ class AgentRunController {
                 forceFinalAnswer: forceFinalThisTurn,
                 disableThinking: disableThinking || forceFinalThisTurn,
                 toolHistory: contextPlan.toolHistory,
-                conversationHistory: contextPlan.conversationHistory
+                conversationHistory: contextPlan.conversationHistory,
+                conversationSummary: contextPlan.compactedSummary
             };
             this.reportStatus(forceFinalThisTurn
                 ? 'Requesting concise final answer'

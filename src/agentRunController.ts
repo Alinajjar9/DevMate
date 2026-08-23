@@ -31,6 +31,7 @@ import type {
   AskResponse,
   AskScope,
   AssistantMode,
+  ChatMemorySummaryContent,
   ConversationTurn,
   LlmSettings,
   TokenUsage
@@ -47,6 +48,7 @@ export type AgentRunInput = {
   scopeKind: ScopeKind;
   scope: AskScope;
   conversationHistory: ConversationTurn[];
+  conversationSummary?: ChatMemorySummaryContent;
   modelContextWindowTokens?: number;
   maxInputContextTokens?: number;
   settings: LlmSettings;
@@ -125,6 +127,7 @@ export class AgentRunController {
       scopeKind,
       scope,
       conversationHistory,
+      conversationSummary,
       modelContextWindowTokens,
       maxInputContextTokens,
       settings,
@@ -221,6 +224,7 @@ export class AgentRunController {
         question,
         scope,
         conversationHistory,
+        compactedSummary: conversationSummary,
         toolHistory: compactAgentToolHistory(toolHistory),
         modelContextWindowTokens,
         maxInputContextTokens,
@@ -242,7 +246,8 @@ export class AgentRunController {
         forceFinalAnswer: forceFinalThisTurn,
         disableThinking: disableThinking || forceFinalThisTurn,
         toolHistory: contextPlan.toolHistory,
-        conversationHistory: contextPlan.conversationHistory
+        conversationHistory: contextPlan.conversationHistory,
+        conversationSummary: contextPlan.compactedSummary
       };
       this.reportStatus(forceFinalThisTurn
         ? 'Requesting concise final answer'

@@ -562,6 +562,29 @@ test('prepares a resumed agent run and persists its completed outcome', async ()
       };
     }
   };
+  const compactedSummaryContent = {
+    goal: 'Finish the existing fix.',
+    constraints: ['Keep the change focused.'],
+    decisions: [],
+    importantFiles: ['src/app.ts'],
+    completedWork: [],
+    openTasks: ['Verify the fix.'],
+    unresolvedQuestions: []
+  };
+  provider.chatCompactionController = {
+    compactIfNeeded: async () => ({
+      kind: 'not-needed',
+      reason: 'too-few-turns',
+      summary: {
+        sessionId: 'session',
+        summaryVersion: 1,
+        content: compactedSummaryContent,
+        lastCompactedTurn: 0,
+        createdAtMs: 100,
+        updatedAtMs: 100
+      }
+    })
+  };
 
   const signal = new AbortController().signal;
   await withoutDelays(() => provider.answerQuestion({
@@ -587,10 +610,8 @@ test('prepares a resumed agent run and persists its completed outcome', async ()
   assert.equal(capturedInput.workspaceId, workspace.id);
   assert.equal(capturedInput.sessionId, 'session');
   assert.equal(capturedInput.resumedCheckpoint, checkpoint);
-  assert.deepEqual(capturedInput.conversationHistory, [{
-    user: 'Earlier question',
-    assistant: 'Earlier answer'
-  }]);
+  assert.deepEqual(capturedInput.conversationHistory, []);
+  assert.deepEqual(capturedInput.conversationSummary, compactedSummaryContent);
   assert.equal(clearedCheckpoints, 1);
   assert.equal(persistedSessions, 1);
   assert.equal(
@@ -649,7 +670,13 @@ test('keeps a fresh pending user turn when the agent run fails', async () => {
   const backendOutput = [];
   let persistedSessions = 0;
   let compactionInput;
-  provider.sessionStore = createConversationSessionStore('session', 1, workspace);
+  let agentInput;
+  provider.sessionStore = appendConversationSessionTurn(
+    createConversationSessionStore('session', 1, workspace),
+    'Earlier request',
+    'Earlier answer',
+    2
+  );
   provider.activeRequestDiffs = new Map([['stale', 'diff']]);
   provider.backendManager = {
     start: async () => true,
@@ -681,7 +708,10 @@ test('keeps a fresh pending user turn when the agent run fails', async () => {
   provider.postMessage = (message) => messages.push(message);
   provider.postStatus = (text, level) => messages.push({ command: 'status', text, level });
   provider.agentRunController = {
-    run: async () => ({ kind: 'failed', message: 'Provider unavailable.', retryable: true })
+    run: async (input) => {
+      agentInput = input;
+      return { kind: 'failed', message: 'Provider unavailable.', retryable: true };
+    }
   };
   provider.chatCompactionController = {
     compactIfNeeded: async (input) => {
@@ -707,6 +737,11 @@ test('keeps a fresh pending user turn when the agent run fails', async () => {
   assert.equal(compactionInput.access.backendToken, TEST_BACKEND_TOKEN);
   assert.equal(compactionInput.settings.model, 'qwen3-coder');
   assert.match(backendOutput.join(''), /Summary provider unavailable/);
+  assert.deepEqual(agentInput.conversationHistory, [{
+    user: 'Earlier request',
+    assistant: 'Earlier answer'
+  }]);
+  assert.equal(agentInput.conversationSummary, undefined);
   assert.deepEqual(provider.sessionStore.sessions[0].turns.at(-1), {
     user: 'New request',
     assistant: ''
@@ -877,6 +912,15 @@ test('agent run applies the context budget before sending a provider request', a
     user: 'u'.repeat(2_000),
     assistant: 'a'.repeat(2_000)
   };
+  const conversationSummary = {
+    goal: 'Keep the requested change focused.',
+    constraints: [],
+    decisions: [],
+    importantFiles: [],
+    completedWork: [],
+    openTasks: [],
+    unresolvedQuestions: []
+  };
 
   const outcome = await controller.run({
     question: 'Current question',
@@ -896,6 +940,7 @@ test('agent run applies the context budget before sending a provider request', a
       }]
     },
     conversationHistory: [recentTurn],
+    conversationSummary,
     modelContextWindowTokens: 10_000,
     maxInputContextTokens: 6_000,
     settings: {
@@ -916,6 +961,7 @@ test('agent run applies the context budget before sending a provider request', a
   assert.equal(outcome.kind, 'completed');
   assert.deepEqual(capturedRequest.scope.items, []);
   assert.deepEqual(capturedRequest.conversationHistory, [recentTurn]);
+  assert.deepEqual(capturedRequest.conversationSummary, conversationSummary);
 });
 
 test('agent run reports required-context overflow before contacting the provider', async () => {

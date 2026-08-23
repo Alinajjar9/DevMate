@@ -188,7 +188,9 @@ SQLite is the live persistent source for the current workspace's sessions. The e
 
 The managed backend advertises the optional `chat-memory-v1` capability and exposes authenticated versioned operations to atomically save bounded session batches, load one complete raw transcript, list recent sessions for one workspace, and delete one session. It also provides strict save, load, clear, and on-demand generation operations for one validated structured summary without removing raw turns. Generation uses the active chat model to merge the previous summary with only the newly eligible completed turns. The generated JSON is strictly validated and redacted before it atomically replaces the previous summary; provider or validation failures preserve both the previous summary and every raw turn.
 
-The TypeScript client sends chat data only to a verified loopback backend, forwards provider credentials only for a compaction request, and validates every response against that request. Before a new model request, DevMate estimates the planned input from the current question, collected code context, the previous summary, and all completed turns newer than that summary. At 75% of usable input capacity it automatically compacts only the eligible older turns, always leaving the latest four completed turns verbatim. Up-to-date summaries are not regenerated, cancellation stops the maintenance request, and storage or provider failures are logged without blocking the user's main request. Summary prompt inclusion and pinned-memory API operations are not connected yet.
+The TypeScript client sends chat data only to a verified loopback backend, forwards provider credentials only for a compaction request, and validates every response against that request. Before a model request, DevMate loads the current summary and estimates the planned input from the current question, collected code context, that summary, and all completed turns newer than its boundary. At 75% of usable input capacity it automatically compacts only the eligible older turns, always leaving the latest four completed turns verbatim. Up-to-date summaries are not regenerated, cancellation stops the maintenance request, and storage or provider failures are logged without blocking the user's main request.
+
+A validated summary is sent as a delimited untrusted memory block together with bounded recent exact turns after its compaction boundary. The context planner keeps current operation state and recent exact conversation ahead of the summary, while keeping the summary ahead of retrieved project chunks. If summary loading fails, DevMate continues with its existing bounded raw-history fallback. Manual compaction, summary inspection, reset, and pinned-memory controls are intentionally not included.
 
 ## Agent tools
 
@@ -432,7 +434,7 @@ The workspace must be trusted and VS Code Terminal Shell Integration must be ava
 
 - Only the first folder in a multi-root workspace is used.
 - Hybrid retrieval currently uses fixed equal weights and fixed bounded query-signal boosts; it does not yet expose diagnostic retrieval modes or language-server symbol-graph ranking.
-- Token counts use a conservative character estimate and fixed prompt reserve rather than each provider's exact tokenizer; compacted-summary prompt inclusion and manual memory controls are not implemented yet.
+- Token counts use a conservative character estimate and fixed prompt reserve rather than each provider's exact tokenizer.
 - Code navigation depends on installed VS Code language providers.
 - Completed change snapshots are kept in memory, so an old native diff may be unavailable after reloading VS Code.
 - Standalone backend builds are platform-specific and currently prepared for Windows x64.
