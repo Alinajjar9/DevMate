@@ -2,6 +2,26 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Compact long chats automatically
+
+### Changed
+
+- Added a focused automatic compaction controller that measures the full un-compacted chat, current question, collected code context, and previous summary against the selected model's usable input budget.
+- Starts compaction at 75% of usable input capacity and selects a completed-turn boundary that always leaves the latest four completed turns verbatim.
+- Loads the existing summary before generation so an up-to-date boundary is never regenerated and later compactions include only newly eligible turns.
+- Runs compaction before a new agent request with the active model settings and authenticated provider access.
+- Treats cancellation as cancellation of the active request while logging storage or provider failures and allowing the main request to continue.
+- Exposed the context planner's full pre-trimming estimate for threshold decisions without changing which context is currently sent to the model.
+- Kept compacted-summary prompt inclusion out of this step so its ordering and budgeting can be reviewed independently.
+
+### Verification
+
+- Focused compaction, context-planning, and extension integration coverage — 37 tests passed.
+- `npm run verify` — 307 extension tests and 164 backend tests passed; 67 cross-language contracts and 32 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-23 — Generate safe compact chat summaries
 
 ### Changed

@@ -646,7 +646,9 @@ test('does not collect or send workspace context without an authenticated backen
 test('keeps a fresh pending user turn when the agent run fails', async () => {
   const provider = providerWithoutConstructor();
   const messages = [];
+  const backendOutput = [];
   let persistedSessions = 0;
+  let compactionInput;
   provider.sessionStore = createConversationSessionStore('session', 1, workspace);
   provider.activeRequestDiffs = new Map([['stale', 'diff']]);
   provider.backendManager = {
@@ -654,6 +656,7 @@ test('keeps a fresh pending user turn when the agent run fails', async () => {
     requestToken: TEST_BACKEND_TOKEN,
     status: { detail: 'online' }
   };
+  provider.backendOutput = { append: (value) => backendOutput.push(value) };
   provider.extensionContext = { secrets: { get: async () => undefined } };
   provider.getConversationWorkspace = () => workspace;
   provider.persistSession = async () => {
@@ -680,6 +683,12 @@ test('keeps a fresh pending user turn when the agent run fails', async () => {
   provider.agentRunController = {
     run: async () => ({ kind: 'failed', message: 'Provider unavailable.', retryable: true })
   };
+  provider.chatCompactionController = {
+    compactIfNeeded: async (input) => {
+      compactionInput = input;
+      return { kind: 'failed', message: 'Summary provider unavailable.' };
+    }
+  };
 
   await withoutDelays(() => provider.answerQuestion({
     command: 'ask',
@@ -690,6 +699,14 @@ test('keeps a fresh pending user turn when the agent run fails', async () => {
 
   assert.equal(provider.activeRequestDiffs.size, 0);
   assert.equal(persistedSessions, 1);
+  assert.equal(compactionInput.session.id, 'session');
+  assert.deepEqual(compactionInput.session.turns.at(-1), {
+    user: 'New request',
+    assistant: ''
+  });
+  assert.equal(compactionInput.access.backendToken, TEST_BACKEND_TOKEN);
+  assert.equal(compactionInput.settings.model, 'qwen3-coder');
+  assert.match(backendOutput.join(''), /Summary provider unavailable/);
   assert.deepEqual(provider.sessionStore.sessions[0].turns.at(-1), {
     user: 'New request',
     assistant: ''

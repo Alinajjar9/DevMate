@@ -214,11 +214,13 @@ function planAskRequestContext(options) {
         return { ...step, result: omittedAgentToolResult(step.name) };
     });
     const usedTokens = candidates.reduce((total, candidate) => total + (selectedIds.has(candidate.id) ? candidate.estimatedTokens : 0), 0);
+    const requestedTokens = candidates.reduce((total, candidate) => total + candidate.estimatedTokens, 0);
     return {
         budget,
         scope: { ...options.scope, items: scopeItems },
         conversationHistory,
         toolHistory,
+        requestedTokens,
         usedTokens,
         remainingTokens: Math.max(0, budget.usableInputTokens - usedTokens),
         overflowTokens: Math.max(0, usedTokens - budget.usableInputTokens),

@@ -32,7 +32,7 @@ import type {
   EmbeddingProfileFormSubmission
 } from './embeddingProfileController';
 import { getChatWebviewHtml } from './webview';
-import type { AssistantMode } from './api/types';
+import type { AssistantMode, LlmSettings } from './api/types';
 import {
   collectFileChangeSummary,
   parseAppliedFileChangeOutcome
@@ -120,6 +120,7 @@ import type { WorkspaceMutationPermissionFile } from './workspaceMutations';
 import { ToolExecutor } from './toolExecutor';
 import { AgentRunController } from './agentRunController';
 import type { AgentRunEvent } from './agentRunController';
+import { ChatCompactionController } from './chatCompaction';
 import {
   AUTO_MAX_INPUT_CONTEXT_TOKENS,
   isValidMaxInputContextTokens,
@@ -262,6 +263,7 @@ export class DevMateChatViewProvider implements
   private readonly workspaceMutations: WorkspaceMutations;
   private readonly toolExecutor: ToolExecutor;
   private readonly agentRunController: AgentRunController;
+  private readonly chatCompactionController: Pick<ChatCompactionController, 'compactIfNeeded'>;
   private readonly embeddingProfiles: EmbeddingProfileController;
   private pendingPermission?: PendingPermissionRequest;
   private pendingCommandPermission?: PendingCommandPermission;
@@ -285,7 +287,9 @@ export class DevMateChatViewProvider implements
     projectRetriever: ProjectRetriever = new LexicalProjectRetriever(),
     onEmbeddingProfileChanged: () => void = () => undefined,
     private readonly sessionRepository: ConversationSessionRepository =
-      new SqliteSessionRepository()
+      new SqliteSessionRepository(),
+    chatCompactionController: Pick<ChatCompactionController, 'compactIfNeeded'> =
+      new ChatCompactionController()
   ) {
     this.extensionUri = extensionContext.extensionUri;
     this.workspaceContext = new WorkspaceContext(
@@ -333,6 +337,7 @@ export class DevMateChatViewProvider implements
       recoverBackend: () => this.backendManager.start(),
       emit: (event) => this.handleAgentRunEvent(event)
     });
+    this.chatCompactionController = chatCompactionController;
     this.embeddingProfiles = new EmbeddingProfileController({
       readState: (key) => this.extensionContext.globalState.get<unknown>(key),
       writeState: (key, value) => this.extensionContext.globalState.update(key, value),
@@ -2266,6 +2271,18 @@ export class DevMateChatViewProvider implements
       1800,
       Math.max(10, config.get<number>('requestTimeoutSeconds', 900))
     );
+    const settings: LlmSettings = {
+      provider: activeProfile.provider,
+      model: activeProfile.model,
+      baseUrl: activeProfile.baseUrl,
+      maxTokens,
+      temperature,
+      reasoningEffort: reasoningEffortForProfile(
+        activeProfile,
+        this.getReasoningEffortPreferences()
+      ),
+      timeoutSeconds: modelTimeoutSeconds
+    };
 
     const providerApiKey = activeProfile.provider === 'openai'
       ? await this.extensionContext.secrets.get(secretKeyForProfile(activeProfile.id))
@@ -2277,6 +2294,38 @@ export class DevMateChatViewProvider implements
       });
       await this.showLlmProfileForm(activeProfile);
       return;
+    }
+
+    if (!resumedCheckpoint) {
+      const currentSession = activeConversationSession(this.sessionStore);
+      if (currentSession) {
+        const compaction = await this.chatCompactionController.compactIfNeeded({
+          session: currentSession,
+          question,
+          scope: collectedScope.apiScope,
+          modelContextWindowTokens: activeProfile.contextWindowTokens,
+          maxInputContextTokens: normalizeMaxInputContextTokens(
+            config.get<number>(
+              'maxInputContextTokens',
+              AUTO_MAX_INPUT_CONTEXT_TOKENS
+            )
+          ),
+          settings,
+          access: {
+            backendUrl: getBackendUrl(),
+            backendToken,
+            providerApiKey
+          }
+        }, signal, () => this.postStatus('Compacting earlier chat context'));
+        if (compaction.kind === 'cancelled' || this.finishCancelledRequest(signal)) {
+          return;
+        }
+        if (compaction.kind === 'failed') {
+          this.backendOutput.append(
+            `[DevMate] Chat compaction: ${compaction.message}\n`
+          );
+        }
+      }
     }
 
     const outcome = await this.agentRunController.run({
@@ -2292,18 +2341,7 @@ export class DevMateChatViewProvider implements
           AUTO_MAX_INPUT_CONTEXT_TOKENS
         )
       ),
-      settings: {
-        provider: activeProfile.provider,
-        model: activeProfile.model,
-        baseUrl: activeProfile.baseUrl,
-        maxTokens,
-        temperature,
-        reasoningEffort: reasoningEffortForProfile(
-          activeProfile,
-          this.getReasoningEffortPreferences()
-        ),
-        timeoutSeconds: modelTimeoutSeconds
-      },
+      settings,
       backendUrl: getBackendUrl(),
       backendToken,
       providerApiKey,

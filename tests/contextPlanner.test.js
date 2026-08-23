@@ -152,6 +152,7 @@ test('keeps explicit attachments and recent chat ahead of project retrieval', ()
 
   assert.deepEqual(plan.scope.items, [attachment]);
   assert.deepEqual(plan.conversationHistory, [recentTurn]);
+  assert.ok(plan.requestedTokens > plan.usedTokens);
   assert.equal(plan.omittedContextItems, 1);
   assert.equal(plan.omittedConversationTurns, 0);
   assert.equal(plan.overflowTokens, 0);
