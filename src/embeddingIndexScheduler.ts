@@ -4,10 +4,8 @@ import type {
   KnowledgeIndexEmbeddingRequest,
   KnowledgeIndexEmbeddingResponse
 } from './api/types';
-import {
-  parseStoredEmbeddingProfiles,
-  preferredEmbeddingProfile
-} from './embeddingProfiles';
+import { readPreferredEmbeddingProfile } from './embeddingProfiles';
+import type { EmbeddingProfileReader } from './embeddingProfiles';
 
 export const EMBEDDING_INDEX_CAPABILITY = 'embedding-index-v1';
 export const EMBEDDING_INDEX_VECTOR_VERSION = 1;
@@ -20,11 +18,7 @@ export type EmbeddingIndexBackendAccess = {
   capabilities: readonly string[];
 };
 
-export interface EmbeddingIndexProfileStore {
-  readProfiles(): unknown;
-  readActiveProfileId(): unknown;
-  readSecret(profileId: string): PromiseLike<string | undefined>;
-}
+export type EmbeddingIndexProfileStore = EmbeddingProfileReader;
 
 export type EmbeddingIndexApi = {
   synchronize: (
@@ -177,16 +171,12 @@ export class EmbeddingIndexScheduler {
     this.activeController = controller;
 
     try {
-      const profile = preferredEmbeddingProfile(
-        parseStoredEmbeddingProfiles(this.profiles.readProfiles()),
-        this.profiles.readActiveProfileId()
-      );
+      const profile = await readPreferredEmbeddingProfile(this.profiles);
       if (!profile) {
         this.report('Skipped because no embedding profile is configured.');
         return;
       }
 
-      const providerApiKey = await this.profiles.readSecret(profile.id);
       if (!this.isCurrent(access, workspaceKey, controller)) {
         return;
       }
@@ -203,7 +193,7 @@ export class EmbeddingIndexScheduler {
           batchSize: DEFAULT_EMBEDDING_INDEX_BATCH_SIZE,
           maxBatches: 1
         },
-        providerApiKey,
+        profile.apiKey,
         controller.signal
       );
       if (!this.isCurrent(access, workspaceKey, controller)) {

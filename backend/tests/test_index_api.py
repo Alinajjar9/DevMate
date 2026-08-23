@@ -17,6 +17,7 @@ from backend.app.providers import (
     ChatCompletionRequest,
     ProviderError,
 )
+from backend.app.semantic_search_service import SemanticSearchService
 from backend.app.knowledge_store import KnowledgeStore
 
 
@@ -60,11 +61,16 @@ class KnowledgeIndexApiTests(unittest.TestCase):
             self.embedding_provider,
             EmbeddingRepository(self.store),
         )
+        self.semantic_service = SemanticSearchService(
+            self.embedding_provider,
+            EmbeddingRepository(self.store),
+        )
         self.application = create_app(
             chat_provider=UnusedProvider(),
             backend_token_provider=lambda: self.backend_token,
             knowledge_store=self.store,
             embedding_index_service=self.embedding_service,
+            semantic_search_service=self.semantic_service,
         )
         self.client_context = TestClient(
             self.application,
@@ -144,6 +150,7 @@ class KnowledgeIndexApiTests(unittest.TestCase):
             "/index/v1/metadata/update",
             "/index/v1/search",
             "/index/v1/embeddings/synchronize",
+            "/index/v1/embeddings/search",
         ):
             with self.subTest(path=path):
                 response = unauthenticated.post(path, json={"private": "workspace source"})
@@ -220,6 +227,10 @@ class KnowledgeIndexApiTests(unittest.TestCase):
                 "/index/v1/embeddings/synchronize",
                 json=self._embedding_request(),
             )
+            semantic_response = client.post(
+                "/index/v1/embeddings/search",
+                json=self._semantic_search_request(),
+            )
 
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json(), {
@@ -232,6 +243,11 @@ class KnowledgeIndexApiTests(unittest.TestCase):
         self.assertEqual(embedding_response.status_code, 503)
         self.assertEqual(
             embedding_response.json()["errorCode"],
+            "knowledge_store_unavailable",
+        )
+        self.assertEqual(semantic_response.status_code, 503)
+        self.assertEqual(
+            semantic_response.json()["errorCode"],
             "knowledge_store_unavailable",
         )
 
@@ -279,6 +295,66 @@ class KnowledgeIndexApiTests(unittest.TestCase):
         self.assertTrue(repeated.json()["data"]["complete"])
         self.assertEqual(len(self.embedding_provider.requests), 1)
 
+    def test_semantically_searches_cached_vectors_without_echoing_credentials(self) -> None:
+        self._open_workspace()
+        self._apply_indexed_file()
+        synchronized = self.client.post(
+            "/index/v1/embeddings/synchronize",
+            json=self._embedding_request(),
+        )
+        self.assertEqual(synchronized.status_code, 200)
+
+        response = self.client.post(
+            "/index/v1/embeddings/search",
+            json=self._semantic_search_request(),
+            headers={"X-DevMate-Provider-Key": "semantic-query-secret"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {
+            "status": "ok",
+            "data": {
+                "configuration": {
+                    "profileId": "local-embedding",
+                    "provider": "ollama",
+                    "model": "nomic-embed-text",
+                    "dimensions": 2,
+                    "vectorVersion": 1,
+                },
+                "results": [{
+                    "relativePath": "src/auth.py",
+                    "languageId": "python",
+                    "stableId": "src/auth.py:1-2",
+                    "ordinal": 0,
+                    "startLine": 1,
+                    "endLine": 2,
+                    "content": "def validate_login_token(token): return bool(token)",
+                    "contentHash": "chunk-auth-hash",
+                    "score": 1.0,
+                }],
+            },
+        })
+        query_request = self.embedding_provider.requests[-1]
+        self.assertEqual(query_request.inputs, ("session credential checks",))
+        self.assertEqual(query_request.api_key, "semantic-query-secret")
+        self.assertNotIn("semantic-query-secret", response.text)
+
+    def test_semantic_search_returns_empty_before_vectors_are_available(self) -> None:
+        self._open_workspace()
+        self._apply_indexed_file()
+
+        response = self.client.post(
+            "/index/v1/embeddings/search",
+            json=self._semantic_search_request(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"], {
+            "configuration": None,
+            "results": [],
+        })
+        self.assertEqual(self.embedding_provider.requests, [])
+
     def test_rejects_invalid_embedding_contracts_before_provider_access(self) -> None:
         self._open_workspace()
         self._apply_indexed_file()
@@ -312,6 +388,24 @@ class KnowledgeIndexApiTests(unittest.TestCase):
             oversized_key.json()["errorCode"],
             "request_validation_failed",
         )
+        self.assertEqual(self.embedding_provider.requests, [])
+
+        invalid_semantic_requests = (
+            {**self._semantic_search_request(), "apiKey": "must-not-be-in-json"},
+            {**self._semantic_search_request(), "query": ""},
+            {**self._semantic_search_request(), "limit": 101},
+        )
+        for payload in invalid_semantic_requests:
+            with self.subTest(payload=payload):
+                response = self.client.post(
+                    "/index/v1/embeddings/search",
+                    json=payload,
+                )
+                self.assertEqual(response.status_code, 422)
+                self.assertEqual(
+                    response.json()["errorCode"],
+                    "request_validation_failed",
+                )
         self.assertEqual(self.embedding_provider.requests, [])
 
     def test_maps_embedding_provider_and_batch_failures_to_stable_errors(self) -> None:
@@ -357,6 +451,10 @@ class KnowledgeIndexApiTests(unittest.TestCase):
             dependencies.embedding_index_service,
             EmbeddingIndexService,
         )
+        self.assertIsInstance(
+            dependencies.semantic_search_service,
+            SemanticSearchService,
+        )
 
     def _open_workspace(self):
         return self.client.post(
@@ -395,6 +493,20 @@ class KnowledgeIndexApiTests(unittest.TestCase):
             "vectorVersion": 1,
             "batchSize": batch_size,
             "maxBatches": max_batches,
+        }
+
+    @staticmethod
+    def _semantic_search_request() -> dict[str, object]:
+        return {
+            "workspaceKey": "workspace-one",
+            "query": "session credential checks",
+            "profileId": "local-embedding",
+            "provider": "ollama",
+            "model": "nomic-embed-text",
+            "baseUrl": "http://127.0.0.1:11434",
+            "remoteAllowed": False,
+            "vectorVersion": 1,
+            "limit": 5,
         }
 
     @staticmethod

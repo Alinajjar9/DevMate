@@ -5,6 +5,7 @@ exports.parseKnowledgeIndexMetadata = parseKnowledgeIndexMetadata;
 exports.parseKnowledgeIndexWriteResponse = parseKnowledgeIndexWriteResponse;
 exports.parseKnowledgeIndexSearchResponse = parseKnowledgeIndexSearchResponse;
 exports.parseKnowledgeIndexEmbeddingResponse = parseKnowledgeIndexEmbeddingResponse;
+exports.parseKnowledgeIndexSemanticSearchResponse = parseKnowledgeIndexSemanticSearchResponse;
 const embeddingProfiles_1 = require("../embeddingProfiles");
 const types_1 = require("./types");
 const knowledgeIndexStates = new Set([
@@ -140,6 +141,34 @@ function parseKnowledgeIndexEmbeddingResponse(value) {
         complete: value.complete
     };
 }
+function parseKnowledgeIndexSemanticSearchResponse(value) {
+    if (!isRecord(value)
+        || !hasOnlyKeys(value, ['configuration', 'results'])
+        || !Array.isArray(value.results)
+        || value.results.length > types_1.MAX_SEMANTIC_RESULTS) {
+        return undefined;
+    }
+    const configuration = value.configuration === null
+        ? null
+        : parseKnowledgeIndexEmbeddingConfiguration(value.configuration);
+    if (configuration === undefined || (configuration === null && value.results.length > 0)) {
+        return undefined;
+    }
+    const results = [];
+    for (const candidate of value.results) {
+        const result = parseKnowledgeIndexSearchItem(candidate, -1, 1);
+        if (!result) {
+            return undefined;
+        }
+        results.push(result);
+    }
+    const signatures = results.map((result) => `${result.relativePath}\0${result.stableId}`);
+    if (new Set(signatures).size !== signatures.length
+        || results.some((result, index) => index > 0 && results[index - 1].score < result.score)) {
+        return undefined;
+    }
+    return { configuration, results };
+}
 function parseKnowledgeIndexEmbeddingConfiguration(value) {
     if (!isRecord(value)
         || !hasOnlyKeys(value, [
@@ -182,7 +211,7 @@ function parseKnowledgeIndexFileFingerprint(value) {
         modifiedAt: value.modifiedAt
     };
 }
-function parseKnowledgeIndexSearchItem(value) {
+function parseKnowledgeIndexSearchItem(value, minimumScore = 0, maximumScore = Number.POSITIVE_INFINITY) {
     if (!isRecord(value)
         || !hasOnlyKeys(value, [
             'relativePath',
@@ -208,7 +237,8 @@ function parseKnowledgeIndexSearchItem(value) {
         || !isIndexText(value.contentHash, types_1.MAX_CONTENT_HASH_CHARACTERS)
         || typeof value.score !== 'number'
         || !Number.isFinite(value.score)
-        || value.score < 0) {
+        || value.score < minimumScore
+        || value.score > maximumScore) {
         return undefined;
     }
     return {

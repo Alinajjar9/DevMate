@@ -8,10 +8,12 @@ const {
   askStream,
   DEFAULT_ASK_TIMEOUT_MS,
   DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS,
+  DEFAULT_SEMANTIC_SEARCH_TIMEOUT_MS,
   health,
   isLoopbackBackendUrl,
   openKnowledgeIndex,
   searchKnowledgeIndex,
+  searchKnowledgeIndexSemantically,
   synchronizeKnowledgeIndexEmbeddings,
   updateKnowledgeIndexMetadata
 } = require('../out/api/client');
@@ -21,6 +23,7 @@ const TEST_BACKEND_TOKEN = 'test-backend-token-that-is-long-enough';
 test('keeps the extension timeout above the fifteen-minute provider limit', () => {
   assert.equal(DEFAULT_ASK_TIMEOUT_MS, 930_000);
   assert.equal(DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS, 150_000);
+  assert.equal(DEFAULT_SEMANTIC_SEARCH_TIMEOUT_MS, 60_000);
 });
 
 test('recognizes only loopback backend URLs for provider-key handoff', () => {
@@ -129,6 +132,13 @@ test('sends authenticated versioned knowledge-index requests and strictly decode
       });
       return;
     }
+    if (request.url === '/index/v1/embeddings/search') {
+      sendJson(response, 200, {
+        status: 'ok',
+        data: knowledgeIndexSemanticSearchData()
+      });
+      return;
+    }
     sendJson(response, 200, { status: 'ok', data: knowledgeIndexSearchData() });
   }, async (backendUrl) => {
     const opened = await openKnowledgeIndex(
@@ -156,12 +166,18 @@ test('sends authenticated versioned knowledge-index requests and strictly decode
       knowledgeIndexEmbeddingRequest(),
       backendSecrets('embedding-provider-key')
     );
+    const semantic = await searchKnowledgeIndexSemantically(
+      backendUrl,
+      knowledgeIndexSemanticSearchRequest(),
+      backendSecrets('semantic-provider-key')
+    );
 
     assert.deepEqual(opened.data, knowledgeIndexOpenData());
     assert.deepEqual(applied.data, { upsertedFiles: 1, deletedFiles: 0 });
     assert.deepEqual(metadata.data, knowledgeIndexMetadata());
     assert.deepEqual(searched.data, knowledgeIndexSearchData());
     assert.deepEqual(embedded.data, knowledgeIndexEmbeddingData());
+    assert.deepEqual(semantic.data, knowledgeIndexSemanticSearchData());
   });
 
   assert.deepEqual(
@@ -171,20 +187,29 @@ test('sends authenticated versioned knowledge-index requests and strictly decode
       '/index/v1/files/apply',
       '/index/v1/metadata/update',
       '/index/v1/search',
-      '/index/v1/embeddings/synchronize'
+      '/index/v1/embeddings/synchronize',
+      '/index/v1/embeddings/search'
     ]
   );
   assert.ok(received.every((request) => request.token === TEST_BACKEND_TOKEN));
   assert.deepEqual(
     received.map((request) => request.providerKey),
-    [undefined, undefined, undefined, undefined, 'embedding-provider-key']
+    [
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'embedding-provider-key',
+      'semantic-provider-key'
+    ]
   );
   assert.deepEqual(received.map((request) => request.body), [
     knowledgeIndexOpenRequest(),
     knowledgeIndexApplyRequest(),
     knowledgeIndexMetadataRequest(),
     knowledgeIndexSearchRequest(),
-    knowledgeIndexEmbeddingRequest()
+    knowledgeIndexEmbeddingRequest(),
+    knowledgeIndexSemanticSearchRequest()
   ]);
 });
 
@@ -272,6 +297,45 @@ test('rejects malformed or mismatched embedding-index responses', async (context
           backendUrl,
           knowledgeIndexEmbeddingRequest(),
           backendSecrets('embedding-provider-key')
+        );
+        assert.equal(result.status, 'error');
+        assert.equal(result.errorKind, 'invalid-response');
+      });
+    });
+  }
+});
+
+test('rejects malformed, unsorted, or mismatched semantic-search responses', async (context) => {
+  const first = knowledgeIndexSemanticSearchData().results[0];
+  const cases = [
+    { ...knowledgeIndexSemanticSearchData(), unexpected: true },
+    { configuration: null, results: [first] },
+    { ...knowledgeIndexSemanticSearchData(), results: [{ ...first, score: 1.01 }] },
+    {
+      ...knowledgeIndexSemanticSearchData(),
+      results: [
+        { ...first, score: 0.2 },
+        { ...first, relativePath: 'src/other.ts', stableId: 'other', score: 0.8 }
+      ]
+    },
+    {
+      ...knowledgeIndexSemanticSearchData(),
+      configuration: {
+        ...knowledgeIndexSemanticSearchData().configuration,
+        model: 'another-model'
+      }
+    }
+  ];
+
+  for (const data of cases) {
+    await context.test(JSON.stringify(data), async () => {
+      await withServer((_request, response) => {
+        sendJson(response, 200, { status: 'ok', data });
+      }, async (backendUrl) => {
+        const result = await searchKnowledgeIndexSemantically(
+          backendUrl,
+          knowledgeIndexSemanticSearchRequest(),
+          backendSecrets('semantic-provider-key')
         );
         assert.equal(result.status, 'error');
         assert.equal(result.errorKind, 'invalid-response');
@@ -795,6 +859,31 @@ function knowledgeIndexEmbeddingData() {
     embeddedChunks: 1,
     processedBatches: 1,
     complete: true
+  };
+}
+
+function knowledgeIndexSemanticSearchRequest() {
+  const profile = knowledgeIndexEmbeddingRequest();
+  return {
+    workspaceKey: profile.workspaceKey,
+    query: 'session credential checks',
+    profileId: profile.profileId,
+    provider: profile.provider,
+    model: profile.model,
+    baseUrl: profile.baseUrl,
+    remoteAllowed: profile.remoteAllowed,
+    vectorVersion: profile.vectorVersion,
+    limit: 5
+  };
+}
+
+function knowledgeIndexSemanticSearchData() {
+  return {
+    configuration: knowledgeIndexEmbeddingData().configuration,
+    results: [{
+      ...knowledgeIndexSearchData().results[0],
+      score: 0.8
+    }]
   };
 }
 

@@ -346,7 +346,7 @@ function getChatWebviewHtml(webview, extensionUri) {
         <label id="embeddingRemoteConsentField" class="embedding-remote-consent" for="embeddingProfileRemoteAllowed" hidden>
           <input id="embeddingProfileRemoteAllowed" type="checkbox">
           <span>
-            <strong>Allow this remote provider to receive project source code</strong>
+            <strong>Allow this remote provider to receive project source code and search queries</strong>
             <small>DevMate sends bounded code chunks to create embeddings. This permission is required for non-loopback endpoints.</small>
           </span>
         </label>

@@ -238,7 +238,10 @@ test('settings manage separate embedding profiles with explicit remote consent',
   assert.match(source, /id="embeddingProfilePickerDialog"/);
   assert.match(source, /id="embeddingProfileDialog"/);
   assert.match(source, /id="embeddingProfileRemoteAllowed"/);
-  assert.match(source, /Allow this remote provider to receive project source code/);
+  assert.match(
+    source,
+    /Allow this remote provider to receive project source code and search queries/
+  );
   assert.match(source, /command: 'saveEmbeddingProfile'/);
   assert.match(source, /remoteAllowed: remote && embeddingProfileRemoteAllowedEl\.checked/);
   assert.match(source, /embeddingSecretKeyForProfile/);

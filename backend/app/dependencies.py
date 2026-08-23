@@ -9,6 +9,7 @@ from .errors import BackendApiError
 from .knowledge_repository import KnowledgeRepository
 from .knowledge_store import KnowledgeStore
 from .providers import ChatProvider
+from .semantic_search_service import SemanticSearchService
 
 
 BackendTokenProvider = Callable[[], str | None]
@@ -22,6 +23,7 @@ class BackendDependencies:
     knowledge_store: KnowledgeStore | None
     knowledge_repository: KnowledgeRepository | None
     embedding_index_service: EmbeddingIndexService | None
+    semantic_search_service: SemanticSearchService | None
 
 
 def backend_dependencies(request: Request) -> BackendDependencies:
@@ -52,6 +54,17 @@ def get_knowledge_repository(request: Request) -> KnowledgeRepository:
 
 def get_embedding_index_service(request: Request) -> EmbeddingIndexService:
     service = backend_dependencies(request).embedding_index_service
+    if service is None:
+        raise BackendApiError(
+            503,
+            "knowledge_store_unavailable",
+            "The local DevMate knowledge store is unavailable.",
+        )
+    return service
+
+
+def get_semantic_search_service(request: Request) -> SemanticSearchService:
+    service = backend_dependencies(request).semantic_search_service
     if service is None:
         raise BackendApiError(
             503,

@@ -31,6 +31,8 @@ import type {
   KnowledgeIndexOpenResponse,
   KnowledgeIndexSearchRequest,
   KnowledgeIndexSearchResponse,
+  KnowledgeIndexSemanticSearchRequest,
+  KnowledgeIndexSemanticSearchResponse,
   KnowledgeIndexWriteResponse,
   TokenUsage
 } from './types';
@@ -39,12 +41,14 @@ import {
   parseKnowledgeIndexEmbeddingResponse,
   parseKnowledgeIndexOpenResponse,
   parseKnowledgeIndexSearchResponse,
+  parseKnowledgeIndexSemanticSearchResponse,
   parseKnowledgeIndexWriteResponse
 } from './knowledgeIndexProtocol';
 
 const HEALTH_TIMEOUT_MS = 2_000;
 const KNOWLEDGE_INDEX_TIMEOUT_MS = 30_000;
 export const DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS = 150_000;
+export const DEFAULT_SEMANTIC_SEARCH_TIMEOUT_MS = 60_000;
 export const DEFAULT_ASK_TIMEOUT_MS = 930_000;
 const PROVIDER_KEY_HEADER = 'X-DevMate-Provider-Key';
 const MAX_BACKEND_RESPONSE_BYTES = 4_000_000;
@@ -191,6 +195,42 @@ export function synchronizeKnowledgeIndexEmbeddings(
     secrets.backendToken,
     (value) => {
       const response = parseKnowledgeIndexEmbeddingResponse(value);
+      if (!response) {
+        return undefined;
+      }
+      const configuration = response.configuration;
+      if (configuration !== null && (
+        configuration.profileId !== request.profileId
+        || configuration.provider !== request.provider
+        || configuration.model !== request.model
+        || configuration.vectorVersion !== request.vectorVersion
+      )) {
+        return undefined;
+      }
+      return response;
+    },
+    signal,
+    {
+      providerApiKey: secrets.providerApiKey,
+      timeoutMilliseconds
+    }
+  );
+}
+
+export function searchKnowledgeIndexSemantically(
+  backendUrl: string,
+  request: KnowledgeIndexSemanticSearchRequest,
+  secrets: BackendRequestSecrets,
+  timeoutMilliseconds = DEFAULT_SEMANTIC_SEARCH_TIMEOUT_MS,
+  signal?: AbortSignal
+): Promise<ApiResult<KnowledgeIndexSemanticSearchResponse>> {
+  return knowledgeIndexRequest(
+    backendUrl,
+    `${knowledgeIndexPath}/embeddings/search`,
+    request,
+    secrets.backendToken,
+    (value) => {
+      const response = parseKnowledgeIndexSemanticSearchResponse(value);
       if (!response) {
         return undefined;
       }

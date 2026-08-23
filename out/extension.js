@@ -54,11 +54,12 @@ function activate(context) {
     let backendCapabilities = [];
     const workspaceIndexSource = new workspaceIndexSource_1.VsCodeWorkspaceIndexSource();
     const knowledgeIndexSynchronizer = new indexSynchronization_1.KnowledgeIndexSynchronizer(workspaceIndexSource, indexSynchronization_1.defaultKnowledgeIndexApi, (message) => backendOutput.append(`[DevMate] Knowledge index: ${message}\n`));
-    const embeddingIndexScheduler = new embeddingIndexScheduler_1.EmbeddingIndexScheduler({
+    const embeddingProfileReader = {
         readProfiles: () => context.globalState.get(embeddingProfiles_1.EMBEDDING_PROFILES_STORAGE_KEY),
         readActiveProfileId: () => context.globalState.get(embeddingProfiles_1.ACTIVE_EMBEDDING_PROFILE_STORAGE_KEY),
         readSecret: (profileId) => context.secrets.get((0, embeddingProfiles_1.embeddingSecretKeyForProfile)(profileId))
-    }, undefined, (message) => backendOutput.append(`[DevMate] Embedding index: ${message}\n`));
+    };
+    const embeddingIndexScheduler = new embeddingIndexScheduler_1.EmbeddingIndexScheduler(embeddingProfileReader, undefined, (message) => backendOutput.append(`[DevMate] Embedding index: ${message}\n`));
     const workspaceIndexChangeSource = new workspaceIndexWatcher_1.VsCodeWorkspaceIndexChangeSource();
     const embeddingInvalidationSubscription = workspaceIndexChangeSource.onDidChange(() => {
         embeddingIndexScheduler.invalidateWorkspace();
@@ -109,13 +110,18 @@ function activate(context) {
         },
         onOutput: (value) => backendOutput.append(value)
     });
-    const projectRetriever = new projectRetriever_1.SqliteLexicalProjectRetriever({
+    const projectRetriever = new projectRetriever_1.SqliteProjectRetriever({
         getAccess: () => {
             const backendToken = backendManager.requestToken;
             return backendToken
-                ? { backendUrl: (0, chatViewProvider_1.getBackendUrl)(), backendToken }
+                ? {
+                    backendUrl: (0, chatViewProvider_1.getBackendUrl)(),
+                    backendToken,
+                    capabilities: [...backendCapabilities]
+                }
                 : undefined;
         },
+        getEmbeddingProfile: () => (0, embeddingProfiles_1.readPreferredEmbeddingProfile)(embeddingProfileReader),
         readCurrentFile: (relativePath, signal) => workspaceIndexSource.readCurrentFile(relativePath, signal)
     });
     chatViewProvider = new chatViewProvider_1.DevMateChatViewProvider(context, backendManager, backendOutput, projectRetriever, () => embeddingIndexScheduler.refreshActiveProfile());

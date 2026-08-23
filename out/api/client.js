@@ -1,12 +1,13 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DEFAULT_ASK_TIMEOUT_MS = exports.DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS = void 0;
+exports.DEFAULT_ASK_TIMEOUT_MS = exports.DEFAULT_SEMANTIC_SEARCH_TIMEOUT_MS = exports.DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS = void 0;
 exports.health = health;
 exports.openKnowledgeIndex = openKnowledgeIndex;
 exports.applyKnowledgeIndexChanges = applyKnowledgeIndexChanges;
 exports.updateKnowledgeIndexMetadata = updateKnowledgeIndexMetadata;
 exports.searchKnowledgeIndex = searchKnowledgeIndex;
 exports.synchronizeKnowledgeIndexEmbeddings = synchronizeKnowledgeIndexEmbeddings;
+exports.searchKnowledgeIndexSemantically = searchKnowledgeIndexSemantically;
 exports.ask = ask;
 exports.askStream = askStream;
 exports.isLoopbackBackendUrl = isLoopbackBackendUrl;
@@ -19,6 +20,7 @@ const knowledgeIndexProtocol_1 = require("./knowledgeIndexProtocol");
 const HEALTH_TIMEOUT_MS = 2_000;
 const KNOWLEDGE_INDEX_TIMEOUT_MS = 30_000;
 exports.DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS = 150_000;
+exports.DEFAULT_SEMANTIC_SEARCH_TIMEOUT_MS = 60_000;
 exports.DEFAULT_ASK_TIMEOUT_MS = 930_000;
 const PROVIDER_KEY_HEADER = 'X-DevMate-Provider-Key';
 const MAX_BACKEND_RESPONSE_BYTES = 4_000_000;
@@ -76,6 +78,25 @@ function searchKnowledgeIndex(backendUrl, request, backendToken, signal) {
 function synchronizeKnowledgeIndexEmbeddings(backendUrl, request, secrets, timeoutMilliseconds = exports.DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS, signal) {
     return knowledgeIndexRequest(backendUrl, `${knowledgeIndexPath}/embeddings/synchronize`, request, secrets.backendToken, (value) => {
         const response = (0, knowledgeIndexProtocol_1.parseKnowledgeIndexEmbeddingResponse)(value);
+        if (!response) {
+            return undefined;
+        }
+        const configuration = response.configuration;
+        if (configuration !== null && (configuration.profileId !== request.profileId
+            || configuration.provider !== request.provider
+            || configuration.model !== request.model
+            || configuration.vectorVersion !== request.vectorVersion)) {
+            return undefined;
+        }
+        return response;
+    }, signal, {
+        providerApiKey: secrets.providerApiKey,
+        timeoutMilliseconds
+    });
+}
+function searchKnowledgeIndexSemantically(backendUrl, request, secrets, timeoutMilliseconds = exports.DEFAULT_SEMANTIC_SEARCH_TIMEOUT_MS, signal) {
+    return knowledgeIndexRequest(backendUrl, `${knowledgeIndexPath}/embeddings/search`, request, secrets.backendToken, (value) => {
+        const response = (0, knowledgeIndexProtocol_1.parseKnowledgeIndexSemanticSearchResponse)(value);
         if (!response) {
             return undefined;
         }

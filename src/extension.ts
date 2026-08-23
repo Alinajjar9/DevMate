@@ -8,13 +8,14 @@ import { EmbeddingIndexScheduler } from './embeddingIndexScheduler';
 import {
   ACTIVE_EMBEDDING_PROFILE_STORAGE_KEY,
   EMBEDDING_PROFILES_STORAGE_KEY,
-  embeddingSecretKeyForProfile
+  embeddingSecretKeyForProfile,
+  readPreferredEmbeddingProfile
 } from './embeddingProfiles';
 import {
   KnowledgeIndexSynchronizer,
   defaultKnowledgeIndexApi
 } from './indexSynchronization';
-import { SqliteLexicalProjectRetriever } from './projectRetriever';
+import { SqliteProjectRetriever } from './projectRetriever';
 import { VsCodeWorkspaceIndexSource } from './workspaceIndexSource';
 import {
   VsCodeWorkspaceIndexChangeSource,
@@ -36,16 +37,17 @@ export function activate(context: vscode.ExtensionContext): void {
     defaultKnowledgeIndexApi,
     (message) => backendOutput.append(`[DevMate] Knowledge index: ${message}\n`)
   );
+  const embeddingProfileReader = {
+    readProfiles: () => context.globalState.get<unknown>(EMBEDDING_PROFILES_STORAGE_KEY),
+    readActiveProfileId: () => context.globalState.get<unknown>(
+      ACTIVE_EMBEDDING_PROFILE_STORAGE_KEY
+    ),
+    readSecret: (profileId: string) => context.secrets.get(
+      embeddingSecretKeyForProfile(profileId)
+    )
+  };
   const embeddingIndexScheduler = new EmbeddingIndexScheduler(
-    {
-      readProfiles: () => context.globalState.get<unknown>(EMBEDDING_PROFILES_STORAGE_KEY),
-      readActiveProfileId: () => context.globalState.get<unknown>(
-        ACTIVE_EMBEDDING_PROFILE_STORAGE_KEY
-      ),
-      readSecret: (profileId) => context.secrets.get(
-        embeddingSecretKeyForProfile(profileId)
-      )
-    },
+    embeddingProfileReader,
     undefined,
     (message) => backendOutput.append(`[DevMate] Embedding index: ${message}\n`)
   );
@@ -107,13 +109,18 @@ export function activate(context: vscode.ExtensionContext): void {
     },
     onOutput: (value) => backendOutput.append(value)
   });
-  const projectRetriever = new SqliteLexicalProjectRetriever({
+  const projectRetriever = new SqliteProjectRetriever({
     getAccess: () => {
       const backendToken = backendManager.requestToken;
       return backendToken
-        ? { backendUrl: getBackendUrl(), backendToken }
+        ? {
+            backendUrl: getBackendUrl(),
+            backendToken,
+            capabilities: [...backendCapabilities]
+          }
         : undefined;
     },
+    getEmbeddingProfile: () => readPreferredEmbeddingProfile(embeddingProfileReader),
     readCurrentFile: (relativePath, signal) =>
       workspaceIndexSource.readCurrentFile(relativePath, signal)
   });

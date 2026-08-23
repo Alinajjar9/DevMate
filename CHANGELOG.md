@@ -2,6 +2,26 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Search project code by meaning
+
+### Changed
+
+- Added a query-time semantic-search service that embeds one bounded question and exactly compares it with every compatible cached workspace vector using cosine similarity.
+- Added an authenticated, capability-gated semantic-search API with strict request and response models; embedding-provider credentials remain in the bounded provider-key header and are never returned.
+- Clarified that remote embedding consent covers both bounded source-code chunks and semantic search queries.
+- Connected Project scope to the selected embedding profile and semantic backend capability while preserving SQLite lexical search and the JSON index as ordered fallbacks.
+- Reread and hash-validated every semantic result against current workspace source before including it in model context, rejecting stale chunks just like lexical results.
+- Kept search cancellation terminal, limited result counts, paged vector reads, bounded in-memory ranking, and deterministic tie ordering.
+- Kept hybrid rank fusion, filename and symbol boosts, retrieval modes, context budgeting, and chat compaction unchanged for later milestones.
+
+### Verification
+
+- Focused semantic service, API, client, and retrieval coverage — 79 tests passed.
+- `npm run verify` — 256 extension tests and 142 backend tests passed; 49 cross-language contracts and 27 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-23 — Manage code embedding profiles in settings
 
 ### Changed

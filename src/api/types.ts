@@ -13,7 +13,8 @@ export const DEVMATE_BACKEND_CAPABILITIES = [
   'request-authentication',
   'strict-response-contracts',
   'knowledge-index-v1',
-  'embedding-index-v1'
+  'embedding-index-v1',
+  'semantic-search-v1'
 ] as const;
 export const DEVMATE_REQUIRED_BACKEND_CAPABILITIES = [
   'chat',
@@ -60,6 +61,8 @@ export const MAX_INDEX_BATCH_CONTENT_CHARACTERS = 4_000_000;
 export const MAX_LEXICAL_QUERY_CHARACTERS = 2_000;
 export const MAX_LEXICAL_QUERY_TERMS = 32;
 export const MAX_LEXICAL_RESULTS = 100;
+export const MAX_SEMANTIC_QUERY_CHARACTERS = 2_000;
+export const MAX_SEMANTIC_RESULTS = 100;
 export const MAX_EMBEDDING_PROFILE_ID_CHARACTERS = 120;
 export const MAX_EMBEDDING_MODEL_CHARACTERS = 120;
 export const MAX_EMBEDDING_DIMENSIONS = 16_384;
@@ -210,6 +213,23 @@ export type KnowledgeIndexEmbeddingResponse = {
   embeddedChunks: number;
   processedBatches: number;
   complete: boolean;
+};
+
+export type KnowledgeIndexSemanticSearchRequest = {
+  workspaceKey: string;
+  query: string;
+  profileId: string;
+  provider: EmbeddingProviderName;
+  model: string;
+  baseUrl: string;
+  remoteAllowed: boolean;
+  vectorVersion: number;
+  limit: number;
+};
+
+export type KnowledgeIndexSemanticSearchResponse = {
+  configuration: KnowledgeIndexEmbeddingConfiguration | null;
+  results: KnowledgeIndexSearchItem[];
 };
 
 export type LlmSettings = {

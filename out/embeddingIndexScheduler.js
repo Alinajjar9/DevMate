@@ -128,12 +128,11 @@ class EmbeddingIndexScheduler {
         this.pendingImmediately = false;
         this.activeController = controller;
         try {
-            const profile = (0, embeddingProfiles_1.preferredEmbeddingProfile)((0, embeddingProfiles_1.parseStoredEmbeddingProfiles)(this.profiles.readProfiles()), this.profiles.readActiveProfileId());
+            const profile = await (0, embeddingProfiles_1.readPreferredEmbeddingProfile)(this.profiles);
             if (!profile) {
                 this.report('Skipped because no embedding profile is configured.');
                 return;
             }
-            const providerApiKey = await this.profiles.readSecret(profile.id);
             if (!this.isCurrent(access, workspaceKey, controller)) {
                 return;
             }
@@ -147,7 +146,7 @@ class EmbeddingIndexScheduler {
                 vectorVersion: exports.EMBEDDING_INDEX_VECTOR_VERSION,
                 batchSize: exports.DEFAULT_EMBEDDING_INDEX_BATCH_SIZE,
                 maxBatches: 1
-            }, providerApiKey, controller.signal);
+            }, profile.apiKey, controller.signal);
             if (!this.isCurrent(access, workspaceKey, controller)) {
                 return;
             }

@@ -100,6 +100,7 @@ class DevMateApiTests(unittest.TestCase):
                         "strict-response-contracts",
                         "knowledge-index-v1",
                         "embedding-index-v1",
+                        "semantic-search-v1",
                     ],
                     "backend": "online",
                     "version": "1.0.0",

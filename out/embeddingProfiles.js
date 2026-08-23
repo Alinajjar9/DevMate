@@ -6,6 +6,7 @@ exports.validateEmbeddingProfileDraft = validateEmbeddingProfileDraft;
 exports.parseStoredEmbeddingProfiles = parseStoredEmbeddingProfiles;
 exports.preferredEmbeddingProfile = preferredEmbeddingProfile;
 exports.embeddingSecretKeyForProfile = embeddingSecretKeyForProfile;
+exports.readPreferredEmbeddingProfile = readPreferredEmbeddingProfile;
 const providerUrlPolicy_1 = require("./providerUrlPolicy");
 exports.EMBEDDING_PROFILES_STORAGE_KEY = 'devMate.embeddingProfiles.v1';
 exports.ACTIVE_EMBEDDING_PROFILE_STORAGE_KEY = 'devMate.activeEmbeddingProfileId.v1';
@@ -84,6 +85,17 @@ function embeddingSecretKeyForProfile(profileId) {
         throw new Error('Embedding profile ID is invalid.');
     }
     return `devMate.embeddingProfile.${profileId}.apiKey`;
+}
+async function readPreferredEmbeddingProfile(reader) {
+    const profile = preferredEmbeddingProfile(parseStoredEmbeddingProfiles(reader.readProfiles()), reader.readActiveProfileId());
+    if (!profile) {
+        return undefined;
+    }
+    const apiKey = await reader.readSecret(profile.id);
+    return {
+        ...profile,
+        ...(apiKey !== undefined ? { apiKey } : {})
+    };
 }
 function isLocalProfile(profile) {
     return (0, providerUrlPolicy_1.isLoopbackProviderBaseUrl)(profile.baseUrl);

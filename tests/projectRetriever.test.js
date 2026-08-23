@@ -9,12 +9,16 @@ const {
 } = require('../out/projectIndex');
 const {
   LexicalProjectRetriever,
-  SqliteLexicalProjectRetriever
+  SqliteProjectRetriever
 } = require('../out/projectRetriever');
 
 const ACCESS = {
   backendUrl: 'http://127.0.0.1:8000',
   backendToken: 'test-backend-token-that-is-long-enough'
+};
+const SEMANTIC_ACCESS = {
+  ...ACCESS,
+  capabilities: ['knowledge-index-v1', 'semantic-search-v1']
 };
 
 test('lexical project retriever preserves the existing ranking and limits', async () => {
@@ -59,7 +63,7 @@ test('SQLite lexical retrieval returns only exact current source without loading
     ['src/auth.ts', currentFile('src/auth.ts', authContent)],
     ['src/catalog.ts', currentFile('src/catalog.ts', catalogContent)]
   ]);
-  const retriever = new SqliteLexicalProjectRetriever({
+  const retriever = new SqliteProjectRetriever({
     getAccess: () => ACCESS,
     readCurrentFile: async (relativePath) => files.get(relativePath),
     search: async (access, request, signal) => {
@@ -110,6 +114,178 @@ test('SQLite lexical retrieval returns only exact current source without loading
   assert.equal(results[0].totalCharacters, authContent.length);
 });
 
+test('SQLite project retrieval uses semantic ranking when a selected profile is ready', async () => {
+  const workerContent = [
+    'export async function runQueuedJobs() {',
+    '  await queue.drain();',
+    '}',
+    ''
+  ].join('\n');
+  const semanticCalls = [];
+  let lexicalCalls = 0;
+  const retriever = new SqliteProjectRetriever({
+    getAccess: () => SEMANTIC_ACCESS,
+    getEmbeddingProfile: async () => ({
+      id: 'local-embedding',
+      provider: 'ollama',
+      model: 'nomic-embed-text',
+      baseUrl: 'http://127.0.0.1:11434',
+      remoteAllowed: false,
+      apiKey: 'semantic-secret'
+    }),
+    readCurrentFile: async (relativePath) => currentFile(relativePath, workerContent),
+    semanticSearch: async (access, request, providerApiKey, signal) => {
+      semanticCalls.push({ access, request, providerApiKey, signal });
+      return {
+        status: 'ok',
+        data: {
+          configuration: {
+            profileId: 'local-embedding',
+            provider: 'ollama',
+            model: 'nomic-embed-text',
+            dimensions: 768,
+            vectorVersion: 1
+          },
+          results: [searchItem('src/worker.ts', workerContent, 1, 3, 0.94)]
+        }
+      };
+    },
+    search: async () => {
+      lexicalCalls += 1;
+      throw new Error('Lexical search must not run after a usable semantic result.');
+    }
+  });
+  const signal = new AbortController().signal;
+
+  const results = await retriever.retrieve({
+    workspaceKey: 'workspace:test',
+    question: 'Where does deferred background work execute?',
+    limits: { maxChunks: 2, maxCharacters: 4_000 },
+    signal
+  });
+
+  assert.equal(lexicalCalls, 0);
+  assert.equal(results.length, 1);
+  assert.equal(results[0].relativePath, 'src/worker.ts');
+  assert.equal(results[0].content, workerContent);
+  assert.deepEqual(semanticCalls, [{
+    access: SEMANTIC_ACCESS,
+    request: {
+      workspaceKey: 'workspace:test',
+      query: 'Where does deferred background work execute?',
+      profileId: 'local-embedding',
+      provider: 'ollama',
+      model: 'nomic-embed-text',
+      baseUrl: 'http://127.0.0.1:11434',
+      remoteAllowed: false,
+      vectorVersion: 1,
+      limit: 20
+    },
+    providerApiKey: 'semantic-secret',
+    signal
+  }]);
+});
+
+test('semantic failures and stale semantic chunks fall through to SQLite lexical search', async () => {
+  const lexicalContent = 'export function validateSession() { return true; }\n';
+  for (const semanticResult of [
+    { status: 'error', errorKind: 'http', message: 'Provider unavailable.' },
+    {
+      status: 'ok',
+      data: {
+        configuration: null,
+        results: []
+      }
+    },
+    {
+      status: 'ok',
+      data: {
+        configuration: {
+          profileId: 'local-embedding',
+          provider: 'ollama',
+          model: 'nomic-embed-text',
+          dimensions: 768,
+          vectorVersion: 1
+        },
+        results: [searchItem(
+          'src/stale.ts',
+          'export const staleSemanticChunk = true;\n',
+          1,
+          1,
+          0.9
+        )]
+      }
+    }
+  ]) {
+    let lexicalCalls = 0;
+    const retriever = new SqliteProjectRetriever({
+      getAccess: () => SEMANTIC_ACCESS,
+      getEmbeddingProfile: async () => ({
+        id: 'local-embedding',
+        provider: 'ollama',
+        model: 'nomic-embed-text',
+        baseUrl: 'http://127.0.0.1:11434',
+        remoteAllowed: false
+      }),
+      readCurrentFile: async (relativePath) => currentFile(relativePath, lexicalContent),
+      semanticSearch: async () => semanticResult,
+      search: async () => {
+        lexicalCalls += 1;
+        return {
+          status: 'ok',
+          data: {
+            results: [searchItem('src/auth.ts', lexicalContent, 1, 1, 4)]
+          }
+        };
+      }
+    });
+
+    const results = await retriever.retrieve({
+      workspaceKey: 'workspace:test',
+      question: 'session checks',
+      limits: { maxChunks: 2, maxCharacters: 4_000 }
+    });
+
+    assert.equal(lexicalCalls, 1);
+    assert.equal(results[0].relativePath, 'src/auth.ts');
+  }
+});
+
+test('cancelled semantic searches do not continue into lexical or JSON retrieval', async () => {
+  let lexicalCalls = 0;
+  let fallbackCalls = 0;
+  const retriever = new SqliteProjectRetriever({
+    getAccess: () => SEMANTIC_ACCESS,
+    getEmbeddingProfile: async () => ({
+      id: 'local-embedding',
+      provider: 'ollama',
+      model: 'nomic-embed-text',
+      baseUrl: 'http://127.0.0.1:11434',
+      remoteAllowed: false
+    }),
+    readCurrentFile: async () => undefined,
+    semanticSearch: async () => ({ status: 'error', errorKind: 'cancelled' }),
+    search: async () => {
+      lexicalCalls += 1;
+      return { status: 'ok', data: { results: [] } };
+    },
+    fallback: {
+      retrieve: async () => {
+        fallbackCalls += 1;
+        return [];
+      }
+    }
+  });
+
+  assert.deepEqual(await retriever.retrieve({
+    workspaceKey: 'workspace:test',
+    question: 'background work',
+    limits: { maxChunks: 5, maxCharacters: 40_000 }
+  }), []);
+  assert.equal(lexicalCalls, 0);
+  assert.equal(fallbackCalls, 0);
+});
+
 test('SQLite lexical retrieval falls back for missing access, failed searches, and stale source', async () => {
   const fallbackResult = {
     filePath: 'C:/repo/src/fallback.ts',
@@ -128,7 +304,7 @@ test('SQLite lexical retrieval falls back for missing access, failed searches, a
       return [fallbackResult];
     }
   };
-  const noAccess = new SqliteLexicalProjectRetriever({
+  const noAccess = new SqliteProjectRetriever({
     getAccess: () => undefined,
     readCurrentFile: async () => undefined,
     fallback,
@@ -144,7 +320,7 @@ test('SQLite lexical retrieval falls back for missing access, failed searches, a
 
   assert.deepEqual(await noAccess.retrieve(request), [fallbackResult]);
 
-  const failedSearch = new SqliteLexicalProjectRetriever({
+  const failedSearch = new SqliteProjectRetriever({
     getAccess: () => ACCESS,
     readCurrentFile: async () => undefined,
     fallback,
@@ -156,7 +332,7 @@ test('SQLite lexical retrieval falls back for missing access, failed searches, a
   });
   assert.deepEqual(await failedSearch.retrieve(request), [fallbackResult]);
 
-  const emptySearch = new SqliteLexicalProjectRetriever({
+  const emptySearch = new SqliteProjectRetriever({
     getAccess: () => ACCESS,
     readCurrentFile: async () => undefined,
     fallback,
@@ -167,7 +343,7 @@ test('SQLite lexical retrieval falls back for missing access, failed searches, a
   });
   assert.deepEqual(await emptySearch.retrieve(request), [fallbackResult]);
 
-  const stale = new SqliteLexicalProjectRetriever({
+  const stale = new SqliteProjectRetriever({
     getAccess: () => ACCESS,
     readCurrentFile: async (relativePath) => currentFile(
       relativePath,
@@ -194,7 +370,7 @@ test('SQLite lexical retrieval falls back for missing access, failed searches, a
 
 test('cancelled SQLite searches do not start expensive fallback indexing', async () => {
   let fallbackCalls = 0;
-  const retriever = new SqliteLexicalProjectRetriever({
+  const retriever = new SqliteProjectRetriever({
     getAccess: () => ACCESS,
     readCurrentFile: async () => undefined,
     fallback: {

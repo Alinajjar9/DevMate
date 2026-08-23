@@ -20,11 +20,19 @@ from .api_models import (
     KnowledgeIndexSearchItemData,
     KnowledgeIndexSearchRequest,
     KnowledgeIndexSearchResult,
+    KnowledgeIndexSemanticSearchData,
+    KnowledgeIndexSemanticSearchItemData,
+    KnowledgeIndexSemanticSearchRequest,
+    KnowledgeIndexSemanticSearchResult,
     KnowledgeIndexWorkspaceData,
     KnowledgeIndexWriteData,
     KnowledgeIndexWriteResult,
 )
-from .dependencies import get_embedding_index_service, get_knowledge_repository
+from .dependencies import (
+    get_embedding_index_service,
+    get_knowledge_repository,
+    get_semantic_search_service,
+)
 from .embedding_index_service import (
     EmbeddingIndexError,
     EmbeddingIndexProfile,
@@ -43,6 +51,11 @@ from .knowledge_repository import (
     KnowledgeRepositoryValidationError,
 )
 from .providers import ProviderError
+from .semantic_search_service import (
+    SemanticSearchError,
+    SemanticSearchProfile,
+    SemanticSearchService,
+)
 
 
 knowledge_router = APIRouter(
@@ -274,5 +287,83 @@ async def synchronize_knowledge_index_embeddings(
             embeddedChunks=result.embedded_chunks,
             processedBatches=result.processed_batches,
             complete=result.complete,
+        ),
+    )
+
+
+@knowledge_router.post(
+    "/embeddings/search",
+    response_model=KnowledgeIndexSemanticSearchResult,
+)
+async def search_knowledge_index_semantically(
+    request: KnowledgeIndexSemanticSearchRequest,
+    service: Annotated[SemanticSearchService, Depends(get_semantic_search_service)],
+    provider_api_key: Annotated[
+        str | None,
+        Header(
+            alias="X-DevMate-Provider-Key",
+            max_length=MAX_EMBEDDING_API_KEY_CHARACTERS,
+        ),
+    ] = None,
+) -> KnowledgeIndexSemanticSearchResult:
+    try:
+        result = await service.search_workspace(
+            request.workspaceKey,
+            request.query,
+            SemanticSearchProfile(
+                profile_id=request.profileId,
+                provider=request.provider,
+                model=request.model,
+                base_url=request.baseUrl,
+                api_key=provider_api_key,
+                remote_allowed=request.remoteAllowed,
+                vector_version=request.vectorVersion,
+            ),
+            limit=request.limit,
+        )
+    except KnowledgeRepositoryError as error:
+        _raise_repository_error(error)
+    except ProviderError as error:
+        raise BackendApiError(
+            error.status_code,
+            error.error_code,
+            str(error),
+        ) from error
+    except SemanticSearchError as error:
+        raise BackendApiError(
+            502,
+            "provider_invalid_response",
+            "The embedding provider returned invalid semantic query data.",
+        ) from error
+
+    configuration = result.configuration
+    return KnowledgeIndexSemanticSearchResult(
+        status="ok",
+        data=KnowledgeIndexSemanticSearchData(
+            configuration=(
+                KnowledgeIndexEmbeddingConfigurationData(
+                    profileId=configuration.profile_id,
+                    provider=configuration.provider,
+                    model=configuration.model,
+                    dimensions=configuration.dimensions,
+                    vectorVersion=configuration.vector_version,
+                )
+                if configuration is not None
+                else None
+            ),
+            results=[
+                KnowledgeIndexSemanticSearchItemData(
+                    relativePath=match.relative_path,
+                    languageId=match.language_id,
+                    stableId=match.stable_id,
+                    ordinal=match.ordinal,
+                    startLine=match.start_line,
+                    endLine=match.end_line,
+                    content=match.content,
+                    contentHash=match.content_hash,
+                    score=match.score,
+                )
+                for match in result.matches
+            ],
         ),
     )

@@ -20,6 +20,16 @@ export type EmbeddingProfile = {
 
 export type EmbeddingProfileDraft = Omit<EmbeddingProfile, 'id'>;
 
+export type ResolvedEmbeddingProfile = EmbeddingProfile & {
+  apiKey?: string;
+};
+
+export interface EmbeddingProfileReader {
+  readProfiles(): unknown;
+  readActiveProfileId(): unknown;
+  readSecret(profileId: string): PromiseLike<string | undefined>;
+}
+
 const supportedProviders = new Set<EmbeddingProviderName>(EMBEDDING_PROVIDER_NAMES);
 const profileIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/;
 
@@ -112,6 +122,23 @@ export function embeddingSecretKeyForProfile(profileId: string): string {
     throw new Error('Embedding profile ID is invalid.');
   }
   return `devMate.embeddingProfile.${profileId}.apiKey`;
+}
+
+export async function readPreferredEmbeddingProfile(
+  reader: EmbeddingProfileReader
+): Promise<ResolvedEmbeddingProfile | undefined> {
+  const profile = preferredEmbeddingProfile(
+    parseStoredEmbeddingProfiles(reader.readProfiles()),
+    reader.readActiveProfileId()
+  );
+  if (!profile) {
+    return undefined;
+  }
+  const apiKey = await reader.readSecret(profile.id);
+  return {
+    ...profile,
+    ...(apiKey !== undefined ? { apiKey } : {})
+  };
 }
 
 function isLocalProfile(profile: EmbeddingProfile): boolean {

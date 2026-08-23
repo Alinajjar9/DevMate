@@ -35,6 +35,7 @@ from .knowledge_repository import KnowledgeRepository
 from .knowledge_routes import knowledge_router
 from .knowledge_store import KnowledgeStore, knowledge_store_path_from_environment
 from .providers import ChatProvider, OpenAICompatibleProvider
+from .semantic_search_service import SemanticSearchService
 from .tool_catalog import AGENT_TOOL_DEFINITIONS
 
 
@@ -186,6 +187,7 @@ def create_app(
     knowledge_store: KnowledgeStore | None = None,
     knowledge_repository: KnowledgeRepository | None = None,
     embedding_index_service: EmbeddingIndexService | None = None,
+    semantic_search_service: SemanticSearchService | None = None,
 ) -> FastAPI:
     resolved_knowledge_store = (
         knowledge_store
@@ -195,11 +197,22 @@ def create_app(
     resolved_knowledge_repository = knowledge_repository
     if resolved_knowledge_repository is None and resolved_knowledge_store is not None:
         resolved_knowledge_repository = KnowledgeRepository(resolved_knowledge_store)
+    embedding_repository = (
+        EmbeddingRepository(resolved_knowledge_store)
+        if resolved_knowledge_store is not None
+        else None
+    )
     resolved_embedding_index_service = embedding_index_service
     if resolved_embedding_index_service is None and resolved_knowledge_store is not None:
         resolved_embedding_index_service = EmbeddingIndexService(
             HttpEmbeddingProvider(),
-            EmbeddingRepository(resolved_knowledge_store),
+            embedding_repository,
+        )
+    resolved_semantic_search_service = semantic_search_service
+    if resolved_semantic_search_service is None and resolved_knowledge_store is not None:
+        resolved_semantic_search_service = SemanticSearchService(
+            HttpEmbeddingProvider(),
+            embedding_repository,
         )
     application = FastAPI(
         title="DevMate Backend",
@@ -225,6 +238,7 @@ def create_app(
         knowledge_store=resolved_knowledge_store,
         knowledge_repository=resolved_knowledge_repository,
         embedding_index_service=resolved_embedding_index_service,
+        semantic_search_service=resolved_semantic_search_service,
     )
     application.middleware("http")(authenticate_backend_request)
     application.add_exception_handler(BackendApiError, backend_api_error)

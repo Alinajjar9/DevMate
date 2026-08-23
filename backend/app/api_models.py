@@ -23,6 +23,8 @@ from .knowledge_contracts import (
     MAX_LANGUAGE_ID_CHARACTERS,
     MAX_LEXICAL_QUERY_CHARACTERS,
     MAX_LEXICAL_RESULTS,
+    MAX_SEMANTIC_QUERY_CHARACTERS,
+    MAX_SEMANTIC_RESULTS,
     MAX_RELATIVE_PATH_CHARACTERS,
     MAX_WORKSPACE_KEY_CHARACTERS,
     MAX_WORKSPACE_ROOT_CHARACTERS,
@@ -49,6 +51,7 @@ BackendCapability = Literal[
     "strict-response-contracts",
     "knowledge-index-v1",
     "embedding-index-v1",
+    "semantic-search-v1",
 ]
 DEVMATE_BACKEND_CAPABILITIES: tuple[BackendCapability, ...] = (
     "chat",
@@ -57,6 +60,7 @@ DEVMATE_BACKEND_CAPABILITIES: tuple[BackendCapability, ...] = (
     "strict-response-contracts",
     "knowledge-index-v1",
     "embedding-index-v1",
+    "semantic-search-v1",
 )
 BackendErrorCode = Literal[
     "backend_authentication_failed",
@@ -470,6 +474,54 @@ class KnowledgeIndexEmbeddingData(KnowledgeIndexModel):
 class KnowledgeIndexEmbeddingResult(KnowledgeIndexModel):
     status: Literal["ok"]
     data: KnowledgeIndexEmbeddingData
+
+
+class KnowledgeIndexSemanticSearchRequest(KnowledgeIndexWorkspaceRequest):
+    query: str = Field(min_length=1, max_length=MAX_SEMANTIC_QUERY_CHARACTERS)
+    profileId: str = Field(
+        min_length=1,
+        max_length=MAX_EMBEDDING_PROFILE_ID_CHARACTERS,
+        pattern=(
+            rf"^[A-Za-z0-9][A-Za-z0-9_-]"
+            rf"{{0,{MAX_EMBEDDING_PROFILE_ID_CHARACTERS - 1}}}$"
+        ),
+    )
+    provider: EmbeddingProviderName
+    model: str = Field(min_length=1, max_length=MAX_EMBEDDING_MODEL_CHARACTERS)
+    baseUrl: str = Field(min_length=1, max_length=MAX_EMBEDDING_BASE_URL_CHARACTERS)
+    remoteAllowed: bool = False
+    vectorVersion: int = Field(ge=1, le=MAX_INDEX_INTEGER)
+    limit: int = Field(ge=1, le=MAX_SEMANTIC_RESULTS)
+
+
+class KnowledgeIndexSemanticSearchItemData(KnowledgeIndexModel):
+    relativePath: str = Field(min_length=1, max_length=MAX_RELATIVE_PATH_CHARACTERS)
+    languageId: str = Field(min_length=1, max_length=MAX_LANGUAGE_ID_CHARACTERS)
+    stableId: str = Field(min_length=1, max_length=MAX_CHUNK_STABLE_ID_CHARACTERS)
+    ordinal: int = Field(ge=0, le=MAX_INDEX_INTEGER)
+    startLine: int = Field(ge=1, le=MAX_INDEX_INTEGER)
+    endLine: int = Field(ge=1, le=MAX_INDEX_INTEGER)
+    content: str = Field(min_length=1, max_length=MAX_CHUNK_CHARACTERS)
+    contentHash: str = Field(min_length=1, max_length=MAX_CONTENT_HASH_CHARACTERS)
+    score: float = Field(ge=-1, le=1)
+
+
+class KnowledgeIndexSemanticSearchData(KnowledgeIndexModel):
+    configuration: KnowledgeIndexEmbeddingConfigurationData | None
+    results: list[KnowledgeIndexSemanticSearchItemData] = Field(
+        max_length=MAX_SEMANTIC_RESULTS,
+    )
+
+    @model_validator(mode="after")
+    def validate_results_have_configuration(self) -> "KnowledgeIndexSemanticSearchData":
+        if self.configuration is None and self.results:
+            raise ValueError("semantic results require an active embedding configuration")
+        return self
+
+
+class KnowledgeIndexSemanticSearchResult(KnowledgeIndexModel):
+    status: Literal["ok"]
+    data: KnowledgeIndexSemanticSearchData
 
 
 class FileChange(BaseModel):

@@ -1,10 +1,11 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SqliteLexicalProjectRetriever = exports.LexicalProjectRetriever = void 0;
+exports.SqliteProjectRetriever = exports.LexicalProjectRetriever = exports.SEMANTIC_SEARCH_CAPABILITY = void 0;
 const crypto_1 = require("crypto");
 const client_1 = require("./api/client");
 const types_1 = require("./api/types");
 const projectIndex_1 = require("./projectIndex");
+exports.SEMANTIC_SEARCH_CAPABILITY = 'semantic-search-v1';
 class LexicalProjectRetriever {
     async retrieve(request) {
         const index = request.index ?? await request.loadIndex?.();
@@ -14,14 +15,19 @@ class LexicalProjectRetriever {
     }
 }
 exports.LexicalProjectRetriever = LexicalProjectRetriever;
-class SqliteLexicalProjectRetriever {
+class SqliteProjectRetriever {
     options;
     fallback;
     search;
+    semanticSearch;
     constructor(options) {
         this.options = options;
         this.fallback = options.fallback ?? new LexicalProjectRetriever();
         this.search = options.search ?? ((access, request, signal) => (0, client_1.searchKnowledgeIndex)(access.backendUrl, request, access.backendToken, signal));
+        this.semanticSearch = options.semanticSearch ?? ((access, request, providerApiKey, signal) => (0, client_1.searchKnowledgeIndexSemantically)(access.backendUrl, request, {
+            backendToken: access.backendToken,
+            ...(providerApiKey !== undefined ? { providerApiKey } : {})
+        }, undefined, signal));
     }
     async retrieve(request) {
         const access = this.options.getAccess();
@@ -36,6 +42,21 @@ class SqliteLexicalProjectRetriever {
         if (request.signal?.aborted) {
             return [];
         }
+        const semanticResponse = await this.trySemanticSearch(access, request, Math.min(types_1.MAX_SEMANTIC_RESULTS, Math.max(20, maxChunks * 4)));
+        if (request.signal?.aborted || semanticResponse?.errorKind === 'cancelled') {
+            return [];
+        }
+        if (semanticResponse?.status === 'ok'
+            && semanticResponse.data
+            && semanticResponse.data.results.length > 0) {
+            const semanticChunks = await this.currentChunks(semanticResponse.data.results, request, maxChunks, maxCharacters);
+            if (request.signal?.aborted) {
+                return [];
+            }
+            if (semanticChunks.length > 0) {
+                return semanticChunks;
+            }
+        }
         const response = await this.search(access, {
             workspaceKey: request.workspaceKey,
             query: request.question.slice(0, types_1.MAX_LEXICAL_QUERY_CHARACTERS),
@@ -47,11 +68,46 @@ class SqliteLexicalProjectRetriever {
         if (response.status !== 'ok' || !response.data || response.data.results.length === 0) {
             return this.fallback.retrieve(request);
         }
+        const chunks = await this.currentChunks(response.data.results, request, maxChunks, maxCharacters);
+        if (request.signal?.aborted) {
+            return [];
+        }
+        return chunks.length > 0
+            ? chunks
+            : this.fallback.retrieve(request);
+    }
+    async trySemanticSearch(access, request, limit) {
+        if (!access.capabilities?.includes(exports.SEMANTIC_SEARCH_CAPABILITY)
+            || !this.options.getEmbeddingProfile) {
+            return undefined;
+        }
+        try {
+            const profile = await this.options.getEmbeddingProfile();
+            if (!profile || request.signal?.aborted) {
+                return undefined;
+            }
+            return await this.semanticSearch(access, {
+                workspaceKey: request.workspaceKey ?? '',
+                query: request.question.slice(0, types_1.MAX_SEMANTIC_QUERY_CHARACTERS),
+                profileId: profile.id,
+                provider: profile.provider,
+                model: profile.model,
+                baseUrl: profile.baseUrl,
+                remoteAllowed: profile.remoteAllowed,
+                vectorVersion: 1,
+                limit
+            }, profile.apiKey, request.signal);
+        }
+        catch {
+            return undefined;
+        }
+    }
+    async currentChunks(results, request, maxChunks, maxCharacters) {
         const excludedPaths = new Set([...(request.limits.excludedFilePaths ?? [])].map(normalizeFilePath));
         const selected = [];
         const selectedFiles = new Set();
         let remainingCharacters = maxCharacters;
-        for (const result of response.data.results) {
+        for (const result of results) {
             if (selected.length >= maxChunks || remainingCharacters <= 0) {
                 break;
             }
@@ -86,12 +142,10 @@ class SqliteLexicalProjectRetriever {
             selectedFiles.add(normalizedRelativePath);
             remainingCharacters -= content.length;
         }
-        return selected.length > 0
-            ? selected
-            : this.fallback.retrieve(request);
+        return selected;
     }
 }
-exports.SqliteLexicalProjectRetriever = SqliteLexicalProjectRetriever;
+exports.SqliteProjectRetriever = SqliteProjectRetriever;
 function exactCurrentChunk(fileContent, result) {
     if (sha256Hex(result.content) !== result.contentHash) {
         return undefined;

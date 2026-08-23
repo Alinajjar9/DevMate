@@ -12,6 +12,7 @@ import {
   MAX_INDEX_INTEGER,
   MAX_LANGUAGE_ID_CHARACTERS,
   MAX_LEXICAL_RESULTS,
+  MAX_SEMANTIC_RESULTS,
   MAX_RELATIVE_PATH_CHARACTERS,
   MAX_WORKSPACE_KEY_CHARACTERS,
   MAX_WORKSPACE_ROOT_CHARACTERS
@@ -24,6 +25,7 @@ import type {
   KnowledgeIndexOpenResponse,
   KnowledgeIndexSearchItem,
   KnowledgeIndexSearchResponse,
+  KnowledgeIndexSemanticSearchResponse,
   KnowledgeIndexWriteResponse
 } from './types';
 
@@ -184,6 +186,38 @@ export function parseKnowledgeIndexEmbeddingResponse(
   };
 }
 
+export function parseKnowledgeIndexSemanticSearchResponse(
+  value: unknown
+): KnowledgeIndexSemanticSearchResponse | undefined {
+  if (!isRecord(value)
+    || !hasOnlyKeys(value, ['configuration', 'results'])
+    || !Array.isArray(value.results)
+    || value.results.length > MAX_SEMANTIC_RESULTS) {
+    return undefined;
+  }
+  const configuration = value.configuration === null
+    ? null
+    : parseKnowledgeIndexEmbeddingConfiguration(value.configuration);
+  if (configuration === undefined || (configuration === null && value.results.length > 0)) {
+    return undefined;
+  }
+
+  const results: KnowledgeIndexSearchItem[] = [];
+  for (const candidate of value.results) {
+    const result = parseKnowledgeIndexSearchItem(candidate, -1, 1);
+    if (!result) {
+      return undefined;
+    }
+    results.push(result);
+  }
+  const signatures = results.map((result) => `${result.relativePath}\0${result.stableId}`);
+  if (new Set(signatures).size !== signatures.length
+    || results.some((result, index) => index > 0 && results[index - 1].score < result.score)) {
+    return undefined;
+  }
+  return { configuration, results };
+}
+
 function parseKnowledgeIndexEmbeddingConfiguration(
   value: unknown
 ): KnowledgeIndexEmbeddingConfiguration | undefined {
@@ -232,7 +266,11 @@ function parseKnowledgeIndexFileFingerprint(
   };
 }
 
-function parseKnowledgeIndexSearchItem(value: unknown): KnowledgeIndexSearchItem | undefined {
+function parseKnowledgeIndexSearchItem(
+  value: unknown,
+  minimumScore = 0,
+  maximumScore = Number.POSITIVE_INFINITY
+): KnowledgeIndexSearchItem | undefined {
   if (!isRecord(value)
     || !hasOnlyKeys(value, [
       'relativePath',
@@ -258,7 +296,8 @@ function parseKnowledgeIndexSearchItem(value: unknown): KnowledgeIndexSearchItem
     || !isIndexText(value.contentHash, MAX_CONTENT_HASH_CHARACTERS)
     || typeof value.score !== 'number'
     || !Number.isFinite(value.score)
-    || value.score < 0) {
+    || value.score < minimumScore
+    || value.score > maximumScore) {
     return undefined;
   }
   return {

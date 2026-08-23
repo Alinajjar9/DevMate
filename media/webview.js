@@ -533,7 +533,7 @@
       const remote = !isLoopbackEmbeddingUrl(parsedUrl);
       if (remote && !embeddingProfileRemoteAllowedEl.checked) {
         setEmbeddingProfileFormError(
-          'Confirm that this remote provider may receive bounded project source-code chunks.'
+          'Confirm that this remote provider may receive bounded project source-code chunks and search queries.'
         );
         embeddingProfileRemoteAllowedEl.focus();
         return;
@@ -2293,7 +2293,7 @@
       embeddingProfileSettingsLabelEl.textContent = profile.model;
       embeddingProfileSettingsDetailEl.textContent = [
         profile.providerLabel,
-        profile.remoteAllowed ? 'Remote source transfer allowed' : 'Local endpoint',
+        profile.remoteAllowed ? 'Remote code and query transfer allowed' : 'Local endpoint',
         state.embeddingProfileCount > 1
           ? state.embeddingProfileCount + ' saved profiles'
           : undefined
@@ -2438,7 +2438,7 @@
         embeddingProfileRemoteAllowedEl.checked = false;
       }
       embeddingProfileBaseUrlHelpEl.textContent = remote
-        ? 'This remote endpoint requires explicit source-code transfer permission below.'
+        ? 'This remote endpoint requires explicit code and search-query transfer permission below.'
         : 'Loopback endpoints keep project source on this computer.';
       embeddingProfileApiKeyHelpEl.textContent =
         embeddingProfileDialogEl.dataset.hasApiKey === 'true'

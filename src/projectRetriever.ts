@@ -1,14 +1,22 @@
 import { createHash } from 'crypto';
-import { searchKnowledgeIndex } from './api/client';
+import {
+  searchKnowledgeIndex,
+  searchKnowledgeIndexSemantically
+} from './api/client';
 import {
   MAX_LEXICAL_QUERY_CHARACTERS,
-  MAX_LEXICAL_RESULTS
+  MAX_LEXICAL_RESULTS,
+  MAX_SEMANTIC_QUERY_CHARACTERS,
+  MAX_SEMANTIC_RESULTS
 } from './api/types';
 import type {
   ApiResult,
   KnowledgeIndexSearchRequest,
-  KnowledgeIndexSearchResponse
+  KnowledgeIndexSearchResponse,
+  KnowledgeIndexSemanticSearchRequest,
+  KnowledgeIndexSemanticSearchResponse
 } from './api/types';
+import type { ResolvedEmbeddingProfile } from './embeddingProfiles';
 import type { KnowledgeIndexAccess } from './indexSynchronization';
 import { retrieveProjectChunks } from './projectIndex';
 import type {
@@ -40,14 +48,31 @@ export type KnowledgeIndexSearch = (
   signal?: AbortSignal
 ) => Promise<ApiResult<KnowledgeIndexSearchResponse>>;
 
-export type SqliteLexicalProjectRetrieverOptions = {
-  getAccess: () => KnowledgeIndexAccess | undefined;
+export const SEMANTIC_SEARCH_CAPABILITY = 'semantic-search-v1';
+
+export type KnowledgeIndexSearchAccess = KnowledgeIndexAccess & {
+  capabilities?: readonly string[];
+};
+
+export type SelectedEmbeddingSearchProfile = ResolvedEmbeddingProfile;
+
+export type KnowledgeIndexSemanticSearch = (
+  access: KnowledgeIndexSearchAccess,
+  request: KnowledgeIndexSemanticSearchRequest,
+  providerApiKey: string | undefined,
+  signal?: AbortSignal
+) => Promise<ApiResult<KnowledgeIndexSemanticSearchResponse>>;
+
+export type SqliteProjectRetrieverOptions = {
+  getAccess: () => KnowledgeIndexSearchAccess | undefined;
+  getEmbeddingProfile?: () => PromiseLike<SelectedEmbeddingSearchProfile | undefined>;
   readCurrentFile: (
     relativePath: string,
     signal?: AbortSignal
   ) => Promise<CurrentProjectFile | undefined>;
   fallback?: ProjectRetriever;
   search?: KnowledgeIndexSearch;
+  semanticSearch?: KnowledgeIndexSemanticSearch;
 };
 
 export interface ProjectRetriever {
@@ -63,11 +88,12 @@ export class LexicalProjectRetriever implements ProjectRetriever {
   }
 }
 
-export class SqliteLexicalProjectRetriever implements ProjectRetriever {
+export class SqliteProjectRetriever implements ProjectRetriever {
   private readonly fallback: ProjectRetriever;
   private readonly search: KnowledgeIndexSearch;
+  private readonly semanticSearch: KnowledgeIndexSemanticSearch;
 
-  constructor(private readonly options: SqliteLexicalProjectRetrieverOptions) {
+  constructor(private readonly options: SqliteProjectRetrieverOptions) {
     this.fallback = options.fallback ?? new LexicalProjectRetriever();
     this.search = options.search ?? ((access, request, signal) => searchKnowledgeIndex(
       access.backendUrl,
@@ -75,6 +101,18 @@ export class SqliteLexicalProjectRetriever implements ProjectRetriever {
       access.backendToken,
       signal
     ));
+    this.semanticSearch = options.semanticSearch ?? (
+      (access, request, providerApiKey, signal) => searchKnowledgeIndexSemantically(
+        access.backendUrl,
+        request,
+        {
+          backendToken: access.backendToken,
+          ...(providerApiKey !== undefined ? { providerApiKey } : {})
+        },
+        undefined,
+        signal
+      )
+    );
   }
 
   async retrieve(request: ProjectRetrievalRequest): Promise<RetrievedProjectChunk[]> {
@@ -91,6 +129,31 @@ export class SqliteLexicalProjectRetriever implements ProjectRetriever {
       return [];
     }
 
+    const semanticResponse = await this.trySemanticSearch(
+      access,
+      request,
+      Math.min(MAX_SEMANTIC_RESULTS, Math.max(20, maxChunks * 4))
+    );
+    if (request.signal?.aborted || semanticResponse?.errorKind === 'cancelled') {
+      return [];
+    }
+    if (semanticResponse?.status === 'ok'
+      && semanticResponse.data
+      && semanticResponse.data.results.length > 0) {
+      const semanticChunks = await this.currentChunks(
+        semanticResponse.data.results,
+        request,
+        maxChunks,
+        maxCharacters
+      );
+      if (request.signal?.aborted) {
+        return [];
+      }
+      if (semanticChunks.length > 0) {
+        return semanticChunks;
+      }
+    }
+
     const response = await this.search(access, {
       workspaceKey: request.workspaceKey,
       query: request.question.slice(0, MAX_LEXICAL_QUERY_CHARACTERS),
@@ -103,6 +166,56 @@ export class SqliteLexicalProjectRetriever implements ProjectRetriever {
       return this.fallback.retrieve(request);
     }
 
+    const chunks = await this.currentChunks(
+      response.data.results,
+      request,
+      maxChunks,
+      maxCharacters
+    );
+    if (request.signal?.aborted) {
+      return [];
+    }
+    return chunks.length > 0
+      ? chunks
+      : this.fallback.retrieve(request);
+  }
+
+  private async trySemanticSearch(
+    access: KnowledgeIndexSearchAccess,
+    request: ProjectRetrievalRequest,
+    limit: number
+  ): Promise<ApiResult<KnowledgeIndexSemanticSearchResponse> | undefined> {
+    if (!access.capabilities?.includes(SEMANTIC_SEARCH_CAPABILITY)
+      || !this.options.getEmbeddingProfile) {
+      return undefined;
+    }
+    try {
+      const profile = await this.options.getEmbeddingProfile();
+      if (!profile || request.signal?.aborted) {
+        return undefined;
+      }
+      return await this.semanticSearch(access, {
+        workspaceKey: request.workspaceKey ?? '',
+        query: request.question.slice(0, MAX_SEMANTIC_QUERY_CHARACTERS),
+        profileId: profile.id,
+        provider: profile.provider,
+        model: profile.model,
+        baseUrl: profile.baseUrl,
+        remoteAllowed: profile.remoteAllowed,
+        vectorVersion: 1,
+        limit
+      }, profile.apiKey, request.signal);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async currentChunks(
+    results: KnowledgeIndexSearchResponse['results'],
+    request: ProjectRetrievalRequest,
+    maxChunks: number,
+    maxCharacters: number
+  ): Promise<RetrievedProjectChunk[]> {
     const excludedPaths = new Set(
       [...(request.limits.excludedFilePaths ?? [])].map(normalizeFilePath)
     );
@@ -110,7 +223,7 @@ export class SqliteLexicalProjectRetriever implements ProjectRetriever {
     const selectedFiles = new Set<string>();
     let remainingCharacters = maxCharacters;
 
-    for (const result of response.data.results) {
+    for (const result of results) {
       if (selected.length >= maxChunks || remainingCharacters <= 0) {
         break;
       }
@@ -150,9 +263,7 @@ export class SqliteLexicalProjectRetriever implements ProjectRetriever {
       remainingCharacters -= content.length;
     }
 
-    return selected.length > 0
-      ? selected
-      : this.fallback.retrieve(request);
+    return selected;
   }
 }
 
