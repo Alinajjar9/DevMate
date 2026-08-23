@@ -20,6 +20,7 @@ from .api_models import (
     ValidationIssue,
 )
 from .api_routes import api_router
+from .chat_compaction_service import ChatCompactionService
 from .chat_memory_contracts import DEVMATE_CHAT_MEMORY_API_VERSION
 from .chat_memory_repository import ChatMemoryRepository
 from .chat_memory_routes import chat_memory_router
@@ -191,6 +192,7 @@ def create_app(
     knowledge_store: KnowledgeStore | None = None,
     knowledge_repository: KnowledgeRepository | None = None,
     chat_memory_repository: ChatMemoryRepository | None = None,
+    chat_compaction_service: ChatCompactionService | None = None,
     embedding_index_service: EmbeddingIndexService | None = None,
     semantic_search_service: SemanticSearchService | None = None,
 ) -> FastAPI:
@@ -205,6 +207,11 @@ def create_app(
     resolved_chat_memory_repository = chat_memory_repository
     if resolved_chat_memory_repository is None and resolved_knowledge_store is not None:
         resolved_chat_memory_repository = ChatMemoryRepository(resolved_knowledge_store)
+    resolved_chat_compaction_service = chat_compaction_service
+    if resolved_chat_compaction_service is None and resolved_chat_memory_repository is not None:
+        resolved_chat_compaction_service = ChatCompactionService(
+            resolved_chat_memory_repository
+        )
     embedding_repository = (
         EmbeddingRepository(resolved_knowledge_store)
         if resolved_knowledge_store is not None
@@ -246,6 +253,7 @@ def create_app(
         knowledge_store=resolved_knowledge_store,
         knowledge_repository=resolved_knowledge_repository,
         chat_memory_repository=resolved_chat_memory_repository,
+        chat_compaction_service=resolved_chat_compaction_service,
         embedding_index_service=resolved_embedding_index_service,
         semantic_search_service=resolved_semantic_search_service,
     )

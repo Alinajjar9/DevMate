@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from fastapi import Request
 
+from .chat_compaction_service import ChatCompactionService
 from .chat_memory_repository import ChatMemoryRepository
 from .chat_service import ChatService
 from .embedding_index_service import EmbeddingIndexService
@@ -24,6 +25,7 @@ class BackendDependencies:
     knowledge_store: KnowledgeStore | None
     knowledge_repository: KnowledgeRepository | None
     chat_memory_repository: ChatMemoryRepository | None
+    chat_compaction_service: ChatCompactionService | None
     embedding_index_service: EmbeddingIndexService | None
     semantic_search_service: SemanticSearchService | None
 
@@ -63,6 +65,17 @@ def get_chat_memory_repository(request: Request) -> ChatMemoryRepository:
             "The local DevMate chat-memory store is unavailable.",
         )
     return repository
+
+
+def get_chat_compaction_service(request: Request) -> ChatCompactionService:
+    service = backend_dependencies(request).chat_compaction_service
+    if service is None:
+        raise BackendApiError(
+            503,
+            "knowledge_store_unavailable",
+            "The local DevMate chat-memory store is unavailable.",
+        )
+    return service
 
 
 def get_embedding_index_service(request: Request) -> EmbeddingIndexService:

@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DEFAULT_ASK_TIMEOUT_MS = exports.DEFAULT_SEMANTIC_SEARCH_TIMEOUT_MS = exports.DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS = void 0;
+exports.DEFAULT_ASK_TIMEOUT_MS = exports.DEFAULT_SEMANTIC_SEARCH_TIMEOUT_MS = exports.DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS = exports.DEFAULT_CHAT_COMPACTION_TIMEOUT_MS = void 0;
 exports.health = health;
 exports.saveChatMemorySessions = saveChatMemorySessions;
 exports.loadChatMemorySession = loadChatMemorySession;
@@ -9,6 +9,7 @@ exports.deleteChatMemorySession = deleteChatMemorySession;
 exports.saveChatMemorySummary = saveChatMemorySummary;
 exports.loadChatMemorySummary = loadChatMemorySummary;
 exports.clearChatMemorySummary = clearChatMemorySummary;
+exports.compactChatMemorySummary = compactChatMemorySummary;
 exports.openKnowledgeIndex = openKnowledgeIndex;
 exports.applyKnowledgeIndexChanges = applyKnowledgeIndexChanges;
 exports.updateKnowledgeIndexMetadata = updateKnowledgeIndexMetadata;
@@ -28,6 +29,7 @@ const chatMemoryProtocol_1 = require("./chatMemoryProtocol");
 const HEALTH_TIMEOUT_MS = 2_000;
 const KNOWLEDGE_INDEX_TIMEOUT_MS = 30_000;
 const CHAT_MEMORY_TIMEOUT_MS = 30_000;
+exports.DEFAULT_CHAT_COMPACTION_TIMEOUT_MS = 930_000;
 exports.DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS = 150_000;
 exports.DEFAULT_SEMANTIC_SEARCH_TIMEOUT_MS = 60_000;
 exports.DEFAULT_ASK_TIMEOUT_MS = 930_000;
@@ -128,6 +130,20 @@ function loadChatMemorySummary(backendUrl, request, backendToken, signal) {
 function clearChatMemorySummary(backendUrl, request, backendToken, signal) {
     return chatMemoryRequest(backendUrl, `${chatMemoryPath}/summaries/clear`, request, backendToken, chatMemoryProtocol_1.parseChatMemorySummaryClearResponse, signal);
 }
+function compactChatMemorySummary(backendUrl, request, secrets, timeoutMilliseconds = exports.DEFAULT_CHAT_COMPACTION_TIMEOUT_MS, signal) {
+    return chatMemoryRequest(backendUrl, `${chatMemoryPath}/summaries/compact`, request, secrets.backendToken, (value) => {
+        const response = (0, chatMemoryProtocol_1.parseChatMemoryCompactionResponse)(value);
+        return response
+            && response.summary.sessionId === request.sessionId
+            && response.summary.lastCompactedTurn === request.throughTurn
+            && response.compactedTurns <= request.throughTurn + 1
+            ? response
+            : undefined;
+    }, signal, {
+        providerApiKey: secrets.providerApiKey,
+        timeoutMilliseconds
+    });
+}
 function openKnowledgeIndex(backendUrl, request, backendToken, signal) {
     return knowledgeIndexRequest(backendUrl, `${knowledgeIndexPath}/workspaces/open`, request, backendToken, knowledgeIndexProtocol_1.parseKnowledgeIndexOpenResponse, signal);
 }
@@ -178,7 +194,7 @@ function searchKnowledgeIndexSemantically(backendUrl, request, secrets, timeoutM
         timeoutMilliseconds
     });
 }
-function chatMemoryRequest(backendUrl, requestPath, request, backendToken, decodeData, signal) {
+function chatMemoryRequest(backendUrl, requestPath, request, backendToken, decodeData, signal, options = {}) {
     if (!isValidBackendToken(backendToken)) {
         return Promise.resolve(backendAuthenticationUnavailable());
     }
@@ -189,16 +205,35 @@ function chatMemoryRequest(backendUrl, requestPath, request, backendToken, decod
             errorKind: 'configuration'
         });
     }
+    const providerApiKey = options.providerApiKey;
+    if (providerApiKey !== undefined && (providerApiKey.length === 0
+        || providerApiKey.length > types_1.MAX_EMBEDDING_API_KEY_CHARACTERS
+        || /[\r\n]/.test(providerApiKey))) {
+        return Promise.resolve({
+            status: 'error',
+            message: 'The selected provider API key is invalid.',
+            errorKind: 'configuration'
+        });
+    }
+    const timeoutMilliseconds = options.timeoutMilliseconds ?? CHAT_MEMORY_TIMEOUT_MS;
+    if (!Number.isFinite(timeoutMilliseconds) || timeoutMilliseconds <= 0) {
+        return Promise.resolve({
+            status: 'error',
+            message: 'The chat-memory request timeout is invalid.',
+            errorKind: 'configuration'
+        });
+    }
     return nodeHttpJsonRequest(backendUrl, requestPath, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             Accept: 'application/json',
             'Accept-Encoding': 'identity',
-            [types_1.DEVMATE_BACKEND_TOKEN_HEADER]: backendToken
+            [types_1.DEVMATE_BACKEND_TOKEN_HEADER]: backendToken,
+            ...(providerApiKey ? { [PROVIDER_KEY_HEADER]: providerApiKey } : {})
         },
         body: JSON.stringify(request)
-    }, decodeData, CHAT_MEMORY_TIMEOUT_MS, signal);
+    }, decodeData, timeoutMilliseconds, signal);
 }
 function knowledgeIndexRequest(backendUrl, requestPath, request, backendToken, decodeData, signal, options = {}) {
     if (!isValidBackendToken(backendToken)) {

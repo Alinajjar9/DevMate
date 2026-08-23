@@ -1,12 +1,15 @@
 import json
 from typing import Annotated, NoReturn
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header
 from pydantic import ValidationError
 
 from .api_models import (
     ChatMemoryDeleteData,
     ChatMemoryDeleteResult,
+    ChatMemoryCompactionData,
+    ChatMemoryCompactionRequest,
+    ChatMemoryCompactionResult,
     ChatMemoryListData,
     ChatMemoryListRequest,
     ChatMemoryListResult,
@@ -29,6 +32,11 @@ from .api_models import (
     ChatMemorySummarySaveResult,
     ChatMemoryTurnData,
 )
+from .chat_compaction_service import (
+    ChatCompactionBoundaryError,
+    ChatCompactionModelError,
+    ChatCompactionService,
+)
 from .chat_memory_contracts import CHAT_SUMMARY_VERSION, DEVMATE_CHAT_MEMORY_API_VERSION
 from .chat_memory_repository import (
     ChatDecision,
@@ -42,8 +50,13 @@ from .chat_memory_repository import (
     ChatSummaryRecord,
     ChatTurnRecord,
 )
-from .dependencies import get_chat_memory_repository
+from .dependencies import (
+    get_chat_compaction_service,
+    get_chat_memory_repository,
+    get_chat_provider,
+)
 from .errors import BackendApiError
+from .providers import ChatProvider, ProviderError
 
 
 chat_memory_router = APIRouter(
@@ -312,4 +325,43 @@ async def clear_chat_memory_summary(
     return ChatMemorySummaryClearResult(
         status="ok",
         data=ChatMemorySummaryClearData(cleared=cleared),
+    )
+
+
+@chat_memory_router.post(
+    "/summaries/compact",
+    response_model=ChatMemoryCompactionResult,
+    response_model_exclude_none=True,
+)
+async def compact_chat_memory_summary(
+    request: ChatMemoryCompactionRequest,
+    service: Annotated[ChatCompactionService, Depends(get_chat_compaction_service)],
+    chat_provider: Annotated[ChatProvider, Depends(get_chat_provider)],
+    provider_api_key: Annotated[
+        str | None,
+        Header(alias="X-DevMate-Provider-Key", max_length=10_000),
+    ] = None,
+) -> ChatMemoryCompactionResult:
+    try:
+        summary, compacted_turns = await service.compact(
+            request.sessionId,
+            request.throughTurn,
+            request.settings,
+            chat_provider,
+            provider_api_key,
+        )
+    except ChatCompactionBoundaryError as error:
+        raise BackendApiError(422, "request_validation_failed", str(error)) from error
+    except ChatCompactionModelError as error:
+        raise BackendApiError(502, "model_invalid_response", str(error)) from error
+    except ProviderError as error:
+        raise BackendApiError(error.status_code, error.error_code, str(error)) from error
+    except ChatMemoryRepositoryError as error:
+        _raise_repository_error(error)
+    return ChatMemoryCompactionResult(
+        status="ok",
+        data=ChatMemoryCompactionData(
+            summary=_summary_data(summary),
+            compactedTurns=compacted_turns,
+        ),
     )

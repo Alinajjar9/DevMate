@@ -7,6 +7,8 @@ const {
   ask,
   askStream,
   clearChatMemorySummary,
+  compactChatMemorySummary,
+  DEFAULT_CHAT_COMPACTION_TIMEOUT_MS,
   deleteChatMemorySession,
   DEFAULT_ASK_TIMEOUT_MS,
   DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS,
@@ -29,6 +31,7 @@ const TEST_BACKEND_TOKEN = 'test-backend-token-that-is-long-enough';
 
 test('keeps the extension timeout above the fifteen-minute provider limit', () => {
   assert.equal(DEFAULT_ASK_TIMEOUT_MS, 930_000);
+  assert.equal(DEFAULT_CHAT_COMPACTION_TIMEOUT_MS, 930_000);
   assert.equal(DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS, 150_000);
   assert.equal(DEFAULT_SEMANTIC_SEARCH_TIMEOUT_MS, 60_000);
 });
@@ -226,6 +229,7 @@ test('sends authenticated versioned chat-memory requests and strictly decodes th
     received.push({
       path: request.url,
       token: request.headers['x-devmate-backend-token'],
+      providerKey: request.headers['x-devmate-provider-key'],
       body: await readRequestJson(request)
     });
     if (request.url === '/memory/v1/sessions/save') {
@@ -254,6 +258,13 @@ test('sends authenticated versioned chat-memory requests and strictly decodes th
       sendJson(response, 200, {
         status: 'ok',
         data: { summary: chatMemorySummary() }
+      });
+      return;
+    }
+    if (request.url === '/memory/v1/summaries/compact') {
+      sendJson(response, 200, {
+        status: 'ok',
+        data: { summary: chatMemorySummary(), compactedTurns: 1 }
       });
       return;
     }
@@ -298,6 +309,11 @@ test('sends authenticated versioned chat-memory requests and strictly decodes th
       { sessionId: 'session-one' },
       TEST_BACKEND_TOKEN
     );
+    const compacted = await compactChatMemorySummary(
+      backendUrl,
+      chatMemoryCompactionRequest(),
+      backendSecrets('compaction-provider-key')
+    );
 
     assert.deepEqual(saved.data, { savedSessionIds: ['session-one'] });
     assert.deepEqual(loaded.data, { session: chatMemorySnapshot() });
@@ -306,6 +322,10 @@ test('sends authenticated versioned chat-memory requests and strictly decodes th
     assert.deepEqual(summarySaved.data, { summary: chatMemorySummary() });
     assert.deepEqual(summaryLoaded.data, { summary: chatMemorySummary() });
     assert.deepEqual(summaryCleared.data, { cleared: true });
+    assert.deepEqual(compacted.data, {
+      summary: chatMemorySummary(),
+      compactedTurns: 1
+    });
   });
 
   assert.deepEqual(received.map((request) => request.path), [
@@ -315,7 +335,8 @@ test('sends authenticated versioned chat-memory requests and strictly decodes th
     '/memory/v1/sessions/delete',
     '/memory/v1/summaries/save',
     '/memory/v1/summaries/load',
-    '/memory/v1/summaries/clear'
+    '/memory/v1/summaries/clear',
+    '/memory/v1/summaries/compact'
   ]);
   assert.ok(received.every((request) => request.token === TEST_BACKEND_TOKEN));
   assert.deepEqual(received.map((request) => request.body), [
@@ -325,7 +346,18 @@ test('sends authenticated versioned chat-memory requests and strictly decodes th
     { sessionId: 'session-one' },
     chatMemorySummarySaveRequest(),
     { sessionId: 'session-one' },
-    { sessionId: 'session-one' }
+    { sessionId: 'session-one' },
+    chatMemoryCompactionRequest()
+  ]);
+  assert.deepEqual(received.map((request) => request.providerKey), [
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    'compaction-provider-key'
   ]);
 });
 
@@ -413,6 +445,17 @@ test('rejects malformed or request-mismatched chat-memory responses', async (con
         TEST_BACKEND_TOKEN
       ),
       data: { cleared: true, unexpected: true }
+    },
+    {
+      call: (backendUrl) => compactChatMemorySummary(
+        backendUrl,
+        chatMemoryCompactionRequest(),
+        backendSecrets('compaction-provider-key')
+      ),
+      data: {
+        summary: { ...chatMemorySummary(), lastCompactedTurn: 1 },
+        compactedTurns: 1
+      }
     }
   ];
 
@@ -453,6 +496,25 @@ test('refuses to send chat history to a non-loopback backend', async () => {
   assert.equal(result.status, 'error');
   assert.equal(result.errorKind, 'configuration');
   assert.match(result.message, /backend running on this computer/);
+});
+
+test('rejects invalid chat-compaction secrets and timeouts before transport', async () => {
+  const invalidSecret = await compactChatMemorySummary(
+    'http://127.0.0.1:8000',
+    chatMemoryCompactionRequest(),
+    backendSecrets('invalid\nprovider-key')
+  );
+  const invalidTimeout = await compactChatMemorySummary(
+    'http://127.0.0.1:8000',
+    chatMemoryCompactionRequest(),
+    backendSecrets('provider-key'),
+    0
+  );
+
+  assert.equal(invalidSecret.status, 'error');
+  assert.equal(invalidSecret.errorKind, 'configuration');
+  assert.equal(invalidTimeout.status, 'error');
+  assert.equal(invalidTimeout.errorKind, 'configuration');
 });
 
 test('rejects malformed knowledge-index responses field by field', async (context) => {
@@ -1053,6 +1115,22 @@ function chatMemorySummarySaveRequest() {
     content: chatMemorySummaryContent(),
     lastCompactedTurn: 0,
     updatedAtMs: 300
+  };
+}
+
+function chatMemoryCompactionRequest() {
+  return {
+    sessionId: 'session-one',
+    throughTurn: 0,
+    settings: {
+      provider: 'openai',
+      model: 'test-model',
+      baseUrl: 'https://example.com/v1',
+      maxTokens: 4_000,
+      temperature: 0.2,
+      reasoningEffort: 'medium',
+      timeoutSeconds: 120
+    }
   };
 }
 

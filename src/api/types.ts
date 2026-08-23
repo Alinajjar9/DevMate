@@ -359,6 +359,17 @@ export type ChatMemorySummaryClearResponse = {
   cleared: boolean;
 };
 
+export type ChatMemoryCompactionRequest = {
+  sessionId: string;
+  throughTurn: number;
+  settings: LlmSettings;
+};
+
+export type ChatMemoryCompactionResponse = {
+  summary: ChatMemorySummary;
+  compactedTurns: number;
+};
+
 export type LlmSettings = {
   provider: string;
   model: string;

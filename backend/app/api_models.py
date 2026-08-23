@@ -856,6 +856,26 @@ class ChatMemorySummaryClearResult(ChatMemoryModel):
     data: ChatMemorySummaryClearData
 
 
+class ChatMemoryCompactionRequest(ChatMemoryModel):
+    sessionId: str = Field(
+        min_length=1,
+        max_length=MAX_CHAT_SESSION_ID_CHARACTERS,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$",
+    )
+    throughTurn: int = Field(ge=0, le=MAX_CHAT_INTEGER)
+    settings: LlmSettings
+
+
+class ChatMemoryCompactionData(ChatMemoryModel):
+    summary: ChatMemorySummaryData
+    compactedTurns: int = Field(ge=1, le=MAX_CHAT_TURNS_PER_SNAPSHOT)
+
+
+class ChatMemoryCompactionResult(ChatMemoryModel):
+    status: Literal["ok"]
+    data: ChatMemoryCompactionData
+
+
 class FileChange(BaseModel):
     path: str
     content: str

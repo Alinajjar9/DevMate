@@ -186,7 +186,9 @@ The private SQLite store now includes versioned foundations for chat sessions, r
 
 SQLite is the live persistent source for the current workspace's sessions. The extension loads recent sessions after the managed backend is authenticated, writes pending and completed turns directly through a focused session repository, and keeps unsaved changes in memory if local storage is temporarily unavailable. Pre-release VS Code chat state is intentionally not migrated or maintained as a second copy.
 
-The managed backend advertises the optional `chat-memory-v1` capability and exposes authenticated versioned operations to atomically save bounded session batches, load one complete raw transcript, list recent sessions for one workspace, and delete one session. It also provides strict save, load, and clear operations for one validated structured summary without removing raw turns. The TypeScript client sends chat data only to a verified loopback backend and validates every response against the request. Automatic summary generation, summary prompt inclusion, and pinned-memory API operations are not connected yet.
+The managed backend advertises the optional `chat-memory-v1` capability and exposes authenticated versioned operations to atomically save bounded session batches, load one complete raw transcript, list recent sessions for one workspace, and delete one session. It also provides strict save, load, clear, and on-demand generation operations for one validated structured summary without removing raw turns. Generation uses the active chat model to merge the previous summary with only the newly eligible completed turns. The generated JSON is strictly validated and redacted before it atomically replaces the previous summary; provider or validation failures preserve both the previous summary and every raw turn.
+
+The TypeScript client sends chat data only to a verified loopback backend, forwards provider credentials only for an explicit compaction request, and validates every response against that request. Automatic threshold-based compaction, summary prompt inclusion, and pinned-memory API operations are not connected yet.
 
 ## Agent tools
 
@@ -430,7 +432,7 @@ The workspace must be trusted and VS Code Terminal Shell Integration must be ava
 
 - Only the first folder in a multi-root workspace is used.
 - Hybrid retrieval currently uses fixed equal weights and fixed bounded query-signal boosts; it does not yet expose diagnostic retrieval modes or language-server symbol-graph ranking.
-- Token counts use a conservative character estimate and fixed prompt reserve rather than each provider's exact tokenizer; automatic summary generation, summary prompt inclusion, and manual memory controls are not implemented yet.
+- Token counts use a conservative character estimate and fixed prompt reserve rather than each provider's exact tokenizer; automatic compaction triggering, summary prompt inclusion, and manual memory controls are not implemented yet.
 - Code navigation depends on installed VS Code language providers.
 - Completed change snapshots are kept in memory, so an old native diff may be unavailable after reloading VS Code.
 - Standalone backend builds are platform-specific and currently prepared for Windows x64.

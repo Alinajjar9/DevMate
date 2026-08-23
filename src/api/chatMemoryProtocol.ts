@@ -18,6 +18,7 @@ import {
 } from './types';
 import type {
   ChatMemoryDeleteResponse,
+  ChatMemoryCompactionResponse,
   ChatMemoryFileChange,
   ChatMemoryListResponse,
   ChatMemoryLoadResponse,
@@ -135,6 +136,21 @@ export function parseChatMemorySummaryClearResponse(
     return undefined;
   }
   return { cleared: value.cleared };
+}
+
+export function parseChatMemoryCompactionResponse(
+  value: unknown
+): ChatMemoryCompactionResponse | undefined {
+  if (!isRecord(value)
+    || !hasOnlyKeys(value, ['summary', 'compactedTurns'])
+    || !isChatInteger(value.compactedTurns, 1)
+    || value.compactedTurns > MAX_CHAT_TURNS_PER_SNAPSHOT) {
+    return undefined;
+  }
+  const summary = parseChatMemorySummary(value.summary);
+  return summary
+    ? { summary, compactedTurns: value.compactedTurns }
+    : undefined;
 }
 
 export function parseChatMemorySummary(value: unknown): ChatMemorySummary | undefined {

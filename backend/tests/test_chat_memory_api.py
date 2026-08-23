@@ -1,6 +1,7 @@
 import shutil
 import sqlite3
 import unittest
+import json
 from contextlib import closing
 from pathlib import Path
 from uuid import uuid4
@@ -13,9 +14,17 @@ from backend.app.providers import ChatCompletion, ChatCompletionRequest
 from backend.app.knowledge_store import KnowledgeStore
 
 
-class UnusedProvider:
-    async def complete(self, _request: ChatCompletionRequest) -> ChatCompletion:
-        raise AssertionError("Chat-memory API tests must not call the chat provider.")
+class ControlledProvider:
+    def __init__(self) -> None:
+        self.enabled = False
+        self.answer = ""
+        self.requests: list[ChatCompletionRequest] = []
+
+    async def complete(self, request: ChatCompletionRequest) -> ChatCompletion:
+        if not self.enabled:
+            raise AssertionError("Chat-memory storage routes must not call the chat provider.")
+        self.requests.append(request)
+        return ChatCompletion(content=self.answer)
 
 
 class ChatMemoryApiTests(unittest.TestCase):
@@ -26,8 +35,9 @@ class ChatMemoryApiTests(unittest.TestCase):
         self.temporary_directory = repository_root / f".devmate-test-{uuid4().hex}"
         self.temporary_directory.mkdir()
         self.store = KnowledgeStore(self.temporary_directory / "memory-api.sqlite3")
+        self.provider = ControlledProvider()
         self.application = create_app(
-            chat_provider=UnusedProvider(),
+            chat_provider=self.provider,
             backend_token_provider=lambda: self.backend_token,
             knowledge_store=self.store,
         )
@@ -50,6 +60,7 @@ class ChatMemoryApiTests(unittest.TestCase):
             "/memory/v1/summaries/save",
             "/memory/v1/summaries/load",
             "/memory/v1/summaries/clear",
+            "/memory/v1/summaries/compact",
         ):
             with self.subTest(path=path):
                 response = self.client.post(
@@ -247,9 +258,95 @@ class ChatMemoryApiTests(unittest.TestCase):
         )
         self.assertEqual(loaded.json()["data"], {"summary": None})
 
+    def test_compacts_with_the_active_provider_and_strict_summary_contract(self) -> None:
+        self.client.post(
+            "/memory/v1/sessions/save",
+            json={"sessions": [self._snapshot("session-one")]},
+        )
+        self.provider.enabled = True
+        self.provider.answer = json.dumps(self._summary_content())
+
+        response = self.client.post(
+            "/memory/v1/summaries/compact",
+            json={
+                "sessionId": "session-one",
+                "throughTurn": 0,
+                "settings": {
+                    "provider": "openai",
+                    "model": "test-model",
+                    "baseUrl": "https://example.com/v1",
+                    "maxTokens": 8_000,
+                    "temperature": 0.7,
+                    "reasoningEffort": "medium",
+                    "timeoutSeconds": 120,
+                },
+            },
+            headers={"X-DevMate-Provider-Key": "compaction-provider-secret"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["compactedTurns"], 1)
+        self.assertEqual(
+            response.json()["data"]["summary"]["content"],
+            self._summary_content(),
+        )
+        self.assertEqual(
+            response.json()["data"]["summary"]["lastCompactedTurn"],
+            0,
+        )
+        self.assertEqual(self.provider.requests[0].api_key, "compaction-provider-secret")
+        self.assertTrue(self.provider.requests[0].force_final_answer)
+
+    def test_rejects_invalid_generated_summary_without_replacing_memory(self) -> None:
+        snapshot = self._snapshot("session-one")
+        snapshot["turns"].append({
+            "ordinal": 1,
+            "user": "Continue the implementation",
+            "assistant": "The next step is complete.",
+            "fileChanges": [],
+        })
+        self.client.post(
+            "/memory/v1/sessions/save",
+            json={"sessions": [snapshot]},
+        )
+        existing = self.client.post(
+            "/memory/v1/summaries/save",
+            json={
+                "sessionId": "session-one",
+                "content": self._summary_content(),
+                "lastCompactedTurn": 0,
+                "updatedAtMs": 300,
+            },
+        ).json()["data"]["summary"]
+        self.provider.enabled = True
+        self.provider.answer = '{"goal":"missing fields"}'
+
+        response = self.client.post(
+            "/memory/v1/summaries/compact",
+            json={
+                "sessionId": "session-one",
+                "throughTurn": 1,
+                "settings": {
+                    "provider": "ollama",
+                    "model": "local-model",
+                    "maxTokens": 2_000,
+                    "temperature": 0.2,
+                    "timeoutSeconds": 120,
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json()["errorCode"], "model_invalid_response")
+        loaded = self.client.post(
+            "/memory/v1/summaries/load",
+            json={"sessionId": "session-one"},
+        )
+        self.assertEqual(loaded.json()["data"]["summary"], existing)
+
     def test_reports_when_chat_memory_storage_is_unavailable(self) -> None:
         application = create_app(
-            chat_provider=UnusedProvider(),
+            chat_provider=ControlledProvider(),
             backend_token_provider=lambda: self.backend_token,
         )
         with TestClient(

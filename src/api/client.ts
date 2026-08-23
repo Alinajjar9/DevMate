@@ -21,6 +21,8 @@ import type {
   AskRequest,
   AskResponse,
   BackendErrorCode,
+  ChatMemoryCompactionRequest,
+  ChatMemoryCompactionResponse,
   ChatMemoryDeleteResponse,
   ChatMemoryListRequest,
   ChatMemoryListResponse,
@@ -57,6 +59,7 @@ import {
   parseKnowledgeIndexWriteResponse
 } from './knowledgeIndexProtocol';
 import {
+  parseChatMemoryCompactionResponse,
   parseChatMemoryDeleteResponse,
   parseChatMemoryListResponse,
   parseChatMemoryLoadResponse,
@@ -69,6 +72,7 @@ import {
 const HEALTH_TIMEOUT_MS = 2_000;
 const KNOWLEDGE_INDEX_TIMEOUT_MS = 30_000;
 const CHAT_MEMORY_TIMEOUT_MS = 30_000;
+export const DEFAULT_CHAT_COMPACTION_TIMEOUT_MS = 930_000;
 export const DEFAULT_EMBEDDING_INDEX_TIMEOUT_MS = 150_000;
 export const DEFAULT_SEMANTIC_SEARCH_TIMEOUT_MS = 60_000;
 export const DEFAULT_ASK_TIMEOUT_MS = 930_000;
@@ -290,6 +294,35 @@ export function clearChatMemorySummary(
   );
 }
 
+export function compactChatMemorySummary(
+  backendUrl: string,
+  request: ChatMemoryCompactionRequest,
+  secrets: BackendRequestSecrets,
+  timeoutMilliseconds = DEFAULT_CHAT_COMPACTION_TIMEOUT_MS,
+  signal?: AbortSignal
+): Promise<ApiResult<ChatMemoryCompactionResponse>> {
+  return chatMemoryRequest(
+    backendUrl,
+    `${chatMemoryPath}/summaries/compact`,
+    request,
+    secrets.backendToken,
+    (value) => {
+      const response = parseChatMemoryCompactionResponse(value);
+      return response
+        && response.summary.sessionId === request.sessionId
+        && response.summary.lastCompactedTurn === request.throughTurn
+        && response.compactedTurns <= request.throughTurn + 1
+        ? response
+        : undefined;
+    },
+    signal,
+    {
+      providerApiKey: secrets.providerApiKey,
+      timeoutMilliseconds
+    }
+  );
+}
+
 export function openKnowledgeIndex(
   backendUrl: string,
   request: KnowledgeIndexOpenRequest,
@@ -431,13 +464,19 @@ type KnowledgeIndexRequestOptions = {
   timeoutMilliseconds?: number;
 };
 
+type ChatMemoryRequestOptions = {
+  providerApiKey?: string;
+  timeoutMilliseconds?: number;
+};
+
 function chatMemoryRequest<T>(
   backendUrl: string,
   requestPath: string,
   request: object,
   backendToken: string,
   decodeData: (value: unknown) => T | undefined,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options: ChatMemoryRequestOptions = {}
 ): Promise<ApiResult<T>> {
   if (!isValidBackendToken(backendToken)) {
     return Promise.resolve(backendAuthenticationUnavailable());
@@ -446,6 +485,26 @@ function chatMemoryRequest<T>(
     return Promise.resolve({
       status: 'error',
       message: 'DevMate only sends chat history to a backend running on this computer.',
+      errorKind: 'configuration'
+    });
+  }
+  const providerApiKey = options.providerApiKey;
+  if (providerApiKey !== undefined && (
+    providerApiKey.length === 0
+    || providerApiKey.length > MAX_EMBEDDING_API_KEY_CHARACTERS
+    || /[\r\n]/.test(providerApiKey)
+  )) {
+    return Promise.resolve({
+      status: 'error',
+      message: 'The selected provider API key is invalid.',
+      errorKind: 'configuration'
+    });
+  }
+  const timeoutMilliseconds = options.timeoutMilliseconds ?? CHAT_MEMORY_TIMEOUT_MS;
+  if (!Number.isFinite(timeoutMilliseconds) || timeoutMilliseconds <= 0) {
+    return Promise.resolve({
+      status: 'error',
+      message: 'The chat-memory request timeout is invalid.',
       errorKind: 'configuration'
     });
   }
@@ -458,12 +517,13 @@ function chatMemoryRequest<T>(
         'Content-Type': 'application/json',
         Accept: 'application/json',
         'Accept-Encoding': 'identity',
-        [DEVMATE_BACKEND_TOKEN_HEADER]: backendToken
+        [DEVMATE_BACKEND_TOKEN_HEADER]: backendToken,
+        ...(providerApiKey ? { [PROVIDER_KEY_HEADER]: providerApiKey } : {})
       },
       body: JSON.stringify(request)
     },
     decodeData,
-    CHAT_MEMORY_TIMEOUT_MS,
+    timeoutMilliseconds,
     signal
   );
 }

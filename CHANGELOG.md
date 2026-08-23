@@ -2,6 +2,26 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Generate safe compact chat summaries
+
+### Changed
+
+- Added an on-demand compaction service that asks the active chat model to merge the previous structured summary with only the newly eligible completed turns.
+- Sends a bounded, untrusted transcript payload without tools or thinking and strictly accepts only the expected JSON summary structure.
+- Redacts common credential patterns and validates the generated summary before atomically replacing the previous version.
+- Preserves the previous summary and every raw turn when the provider fails, returns invalid output, or targets an invalid compaction boundary.
+- Added an authenticated compaction endpoint and a loopback-only TypeScript client with strict request and response validation.
+- Kept automatic threshold triggering and summary prompt inclusion out of this step so they can be reviewed independently.
+
+### Verification
+
+- Focused compaction and authenticated memory API coverage — 14 backend tests passed.
+- Focused TypeScript API client coverage — 72 tests passed.
+- `npm run verify` — 299 extension tests and 164 backend tests passed; 67 cross-language contracts and 31 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-23 — Add secure storage access for compact chat summaries
 
 ### Changed

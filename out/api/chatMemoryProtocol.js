@@ -7,6 +7,7 @@ exports.parseChatMemoryDeleteResponse = parseChatMemoryDeleteResponse;
 exports.parseChatMemorySummarySaveResponse = parseChatMemorySummarySaveResponse;
 exports.parseChatMemorySummaryLoadResponse = parseChatMemorySummaryLoadResponse;
 exports.parseChatMemorySummaryClearResponse = parseChatMemorySummaryClearResponse;
+exports.parseChatMemoryCompactionResponse = parseChatMemoryCompactionResponse;
 exports.parseChatMemorySummary = parseChatMemorySummary;
 exports.parseChatMemorySnapshot = parseChatMemorySnapshot;
 exports.parseChatMemorySession = parseChatMemorySession;
@@ -91,6 +92,18 @@ function parseChatMemorySummaryClearResponse(value) {
         return undefined;
     }
     return { cleared: value.cleared };
+}
+function parseChatMemoryCompactionResponse(value) {
+    if (!isRecord(value)
+        || !hasOnlyKeys(value, ['summary', 'compactedTurns'])
+        || !isChatInteger(value.compactedTurns, 1)
+        || value.compactedTurns > types_1.MAX_CHAT_TURNS_PER_SNAPSHOT) {
+        return undefined;
+    }
+    const summary = parseChatMemorySummary(value.summary);
+    return summary
+        ? { summary, compactedTurns: value.compactedTurns }
+        : undefined;
 }
 function parseChatMemorySummary(value) {
     if (!isRecord(value)
