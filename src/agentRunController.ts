@@ -39,6 +39,7 @@ import { MAX_TOTAL_CHANGE_CHARACTERS } from './fileTools';
 import type { AgentRunCheckpoint } from './sessions';
 import type { AgentToolExecution, ToolExecutor } from './toolExecutor';
 import type { ScopeKind } from './workspaceContext';
+import { planAskRequestContext } from './contextPlanner';
 
 export type AgentRunInput = {
   question: string;
@@ -46,6 +47,8 @@ export type AgentRunInput = {
   scopeKind: ScopeKind;
   scope: AskScope;
   conversationHistory: ConversationTurn[];
+  modelContextWindowTokens?: number;
+  maxInputContextTokens?: number;
   settings: LlmSettings;
   backendUrl: string;
   backendToken: string;
@@ -122,6 +125,8 @@ export class AgentRunController {
       scopeKind,
       scope,
       conversationHistory,
+      modelContextWindowTokens,
+      maxInputContextTokens,
       settings,
       backendUrl,
       backendToken,
@@ -212,17 +217,32 @@ export class AgentRunController {
           dependencyInstallCalls
         );
       const toolsEnabled = enabledTools.length > 0;
+      const contextPlan = planAskRequestContext({
+        question,
+        scope,
+        conversationHistory,
+        toolHistory: compactAgentToolHistory(toolHistory),
+        modelContextWindowTokens,
+        maxInputContextTokens,
+        reservedOutputTokens: settings.maxTokens
+      });
+      if (contextPlan.overflowTokens > 0) {
+        return {
+          kind: 'failed',
+          message: 'The required instructions, question, and explicit context exceed the configured input budget. Increase the model context or maximum input setting, reduce maximum output tokens, or remove large attachments.'
+        };
+      }
       const request: AskRequest = {
         question,
         mode,
-        scope,
+        scope: contextPlan.scope,
         settings,
         enabledTools,
         agentEditsEnabled: mode === 'code' || mode === 'debug',
         forceFinalAnswer: forceFinalThisTurn,
         disableThinking: disableThinking || forceFinalThisTurn,
-        toolHistory: compactAgentToolHistory(toolHistory),
-        conversationHistory
+        toolHistory: contextPlan.toolHistory,
+        conversationHistory: contextPlan.conversationHistory
       };
       this.reportStatus(forceFinalThisTurn
         ? 'Requesting concise final answer'

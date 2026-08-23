@@ -1532,6 +1532,8 @@ class DevMateChatViewProvider {
             scopeKind: message.scope.kind,
             scope: collectedScope.apiScope,
             conversationHistory: (0, sessions_2.activeSessionModelHistory)(this.sessionStore),
+            modelContextWindowTokens: activeProfile.contextWindowTokens,
+            maxInputContextTokens: (0, contextPlanner_1.normalizeMaxInputContextTokens)(config.get('maxInputContextTokens', contextPlanner_1.AUTO_MAX_INPUT_CONTEXT_TOKENS)),
             settings: {
                 provider: activeProfile.provider,
                 model: activeProfile.model,

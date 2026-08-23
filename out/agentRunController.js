@@ -38,6 +38,7 @@ const vscode = __importStar(require("vscode"));
 const agentTools_1 = require("./agentTools");
 const client_1 = require("./api/client");
 const fileTools_1 = require("./fileTools");
+const contextPlanner_1 = require("./contextPlanner");
 const defaultTransport = {
     ask: client_1.ask,
     askStream: client_1.askStream,
@@ -53,7 +54,7 @@ class AgentRunController {
         this.transport = transport;
     }
     async run(input, signal) {
-        const { question, mode, scopeKind, scope, conversationHistory, settings, backendUrl, backendToken, providerApiKey, toolCallLimit, workspaceId, sessionId, resumedCheckpoint } = input;
+        const { question, mode, scopeKind, scope, conversationHistory, modelContextWindowTokens, maxInputContextTokens, settings, backendUrl, backendToken, providerApiKey, toolCallLimit, workspaceId, sessionId, resumedCheckpoint } = input;
         const toolHistory = resumedCheckpoint
             ? [...resumedCheckpoint.toolHistory]
             : [];
@@ -126,17 +127,32 @@ class AgentRunController {
                 ? []
                 : this.enabledAgentTools(mode, fileMutationCalls, commandCalls, dependencyInstallCalls);
             const toolsEnabled = enabledTools.length > 0;
+            const contextPlan = (0, contextPlanner_1.planAskRequestContext)({
+                question,
+                scope,
+                conversationHistory,
+                toolHistory: (0, agentTools_1.compactAgentToolHistory)(toolHistory),
+                modelContextWindowTokens,
+                maxInputContextTokens,
+                reservedOutputTokens: settings.maxTokens
+            });
+            if (contextPlan.overflowTokens > 0) {
+                return {
+                    kind: 'failed',
+                    message: 'The required instructions, question, and explicit context exceed the configured input budget. Increase the model context or maximum input setting, reduce maximum output tokens, or remove large attachments.'
+                };
+            }
             const request = {
                 question,
                 mode,
-                scope,
+                scope: contextPlan.scope,
                 settings,
                 enabledTools,
                 agentEditsEnabled: mode === 'code' || mode === 'debug',
                 forceFinalAnswer: forceFinalThisTurn,
                 disableThinking: disableThinking || forceFinalThisTurn,
-                toolHistory: (0, agentTools_1.compactAgentToolHistory)(toolHistory),
-                conversationHistory
+                toolHistory: contextPlan.toolHistory,
+                conversationHistory: contextPlan.conversationHistory
             };
             this.reportStatus(forceFinalThisTurn
                 ? 'Requesting concise final answer'

@@ -11,6 +11,8 @@ const {
   isValidModelContextWindowTokens,
   normalizeMaxInputContextTokens,
   normalizeModelContextWindowTokens,
+  omittedAgentToolResult,
+  planAskRequestContext,
   planContextCandidates
 } = require('../out/contextPlanner');
 
@@ -129,6 +131,85 @@ test('rejects ambiguous candidate identifiers and invalid estimates', () => {
   assert.throws(() => planContextCandidates([], -1), /input-token budget/);
 });
 
+test('keeps explicit attachments and recent chat ahead of project retrieval', () => {
+  const attachment = contextItem('attachment', 'notes.txt', 'a'.repeat(4_000));
+  const projectResult = contextItem('file', 'src/project.ts', 'p'.repeat(8_000));
+  const recentTurn = { user: 'u'.repeat(2_000), assistant: 'a'.repeat(2_000) };
+
+  const plan = planAskRequestContext({
+    question: 'Current question',
+    scope: {
+      type: 'project',
+      workspacePath: 'C:/repo',
+      items: [projectResult, attachment]
+    },
+    conversationHistory: [recentTurn],
+    toolHistory: [],
+    modelContextWindowTokens: 20_000,
+    maxInputContextTokens: 8_000,
+    reservedOutputTokens: 0
+  });
+
+  assert.deepEqual(plan.scope.items, [attachment]);
+  assert.deepEqual(plan.conversationHistory, [recentTurn]);
+  assert.equal(plan.omittedContextItems, 1);
+  assert.equal(plan.omittedConversationTurns, 0);
+  assert.equal(plan.overflowTokens, 0);
+});
+
+test('keeps tool-call shells while compacting older results before the newest result', () => {
+  const older = toolStep('older', 'o'.repeat(4_000));
+  const newest = toolStep('newest', 'n'.repeat(4_000));
+
+  const plan = planAskRequestContext({
+    question: 'Continue',
+    scope: { type: 'project', workspacePath: 'C:/repo', items: [] },
+    conversationHistory: [],
+    toolHistory: [older, newest],
+    modelContextWindowTokens: 20_000,
+    maxInputContextTokens: 6_500,
+    reservedOutputTokens: 0
+  });
+
+  assert.equal(plan.toolHistory.length, 2);
+  assert.equal(plan.toolHistory[0].callId, older.callId);
+  assert.equal(plan.toolHistory[0].result, omittedAgentToolResult('read_file'));
+  assert.equal(plan.toolHistory[1].result, newest.result);
+  assert.equal(plan.compactedToolResults, 1);
+});
+
+test('retains an explicit selection when mandatory context exceeds the budget', () => {
+  const selection = contextItem('selection', 'src/large.ts', 'x'.repeat(8_000));
+  const plan = planAskRequestContext({
+    question: 'Explain this selection',
+    scope: { type: 'selection', workspacePath: 'C:/repo', items: [selection] },
+    conversationHistory: [],
+    toolHistory: [],
+    modelContextWindowTokens: 1_024,
+    reservedOutputTokens: 128
+  });
+
+  assert.deepEqual(plan.scope.items, [selection]);
+  assert.ok(plan.overflowTokens > 0);
+});
+
+test('never sends older conversation turns across a missing newer turn', () => {
+  const olderTurn = { user: 'old', assistant: 'small' };
+  const newestTurn = { user: 'u'.repeat(8_000), assistant: 'a'.repeat(8_000) };
+  const plan = planAskRequestContext({
+    question: 'Continue',
+    scope: { type: 'project', workspacePath: 'C:/repo', items: [] },
+    conversationHistory: [olderTurn, newestTurn],
+    toolHistory: [],
+    modelContextWindowTokens: 10_000,
+    maxInputContextTokens: 5_000,
+    reservedOutputTokens: 0
+  });
+
+  assert.deepEqual(plan.conversationHistory, []);
+  assert.equal(plan.omittedConversationTurns, 2);
+});
+
 function candidate(id, priority, estimatedTokens, required = false) {
   return {
     id,
@@ -136,5 +217,27 @@ function candidate(id, priority, estimatedTokens, required = false) {
     estimatedTokens,
     required,
     value: id
+  };
+}
+
+function contextItem(source, filePath, content) {
+  return {
+    source,
+    filePath,
+    languageId: 'typescript',
+    content,
+    includedCharacters: content.length,
+    totalCharacters: content.length,
+    truncated: false
+  };
+}
+
+function toolStep(callId, result) {
+  return {
+    callId,
+    name: 'read_file',
+    arguments: { path: `src/${callId}.ts` },
+    result,
+    isError: false
   };
 }

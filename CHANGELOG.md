@@ -2,6 +2,26 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Budget context before every model request
+
+### Changed
+
+- Connected the context planner to every agent-loop provider request using the selected profile window, global input cap, configured output reserve, and ten-percent safety margin.
+- Reserved 4,000 estimated tokens for backend instructions and tool definitions before selecting variable request context.
+- Kept the current question plus explicit selections, active files, and attachments mandatory, and stopped before contacting the model with a clear error when that required input could not fit.
+- Prioritized current tool state and newest completed chat turns before ranked project results and older tool output.
+- Preserved every tool-call shell and replaced only omitted result text with a bounded marker, maintaining valid provider tool history and checkpoint behavior.
+- Replanned each agent pass as new tool results arrived while leaving stored raw session history and retrieved source unchanged.
+- Kept pinned memory, generated summaries, chat-database migration, and automatic compaction unchanged for later milestones.
+
+### Verification
+
+- Focused planner, agent-loop, tool-history, and conversation coverage — 48 tests passed.
+- `npm run verify` — 278 extension tests and 142 backend tests passed; 49 cross-language contracts and 29 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-23 — Configure model context limits
 
 ### Changed

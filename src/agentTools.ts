@@ -12,6 +12,7 @@ import {
   normalizeWorkspaceRelativePath
 } from './fileTools';
 import type { ExactTextReplacement, RelocateFileToolArguments } from './fileTools';
+import { omittedAgentToolResult } from './contextPlanner';
 
 export const MAX_DEPENDENCY_MANIFEST_BYTES = 64_000;
 export const MAX_DEPENDENCY_REQUIREMENTS = 100;
@@ -277,7 +278,7 @@ export function compactAgentToolHistory<
   let characters = compacted.reduce((total, step) => total + step.result.length, 0);
   for (let index = 0; characters > MAX_AGENT_TOOL_HISTORY_CHARACTERS && index < compacted.length; index += 1) {
     const step = compacted[index];
-    const marker = `[Earlier ${step.name} result omitted to stay within the agent context budget.]`;
+    const marker = omittedAgentToolResult(step.name);
     if (step.result.length <= marker.length) {
       continue;
     }

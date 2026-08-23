@@ -174,6 +174,12 @@ When the backend advertises semantic-search support and the selected profile has
 
 On the checked-in evaluation corpus, SQLite lexical retrieval produces 7 of 11 top-one hits, 7 of 11 top-three hits, and 0.6364 recall at five. These numbers remain the model-independent lexical baseline; hybrid effectiveness also depends on the configured embedding model.
 
+## Context budgeting
+
+Before every provider request, DevMate calculates a usable input budget from the selected profile's context window, the global input cap, the configured output reserve, and a ten-percent estimation margin. Unknown model capacities use the conservative 32,000-token fallback.
+
+The current question and explicit selections, active files, and attachments are never silently removed. If that mandatory input plus the reserved instructions cannot fit, DevMate stops before contacting the model and reports a clear configuration error. Remaining capacity is assigned to current tool state, newest completed conversation turns, ranked project results, and older tool output in that order. When an older tool result does not fit, DevMate keeps the tool call and replaces only its result text with an omission marker so the agent history remains structurally valid.
+
 ## Agent tools
 
 Read-only tools are available in every mode:
@@ -416,7 +422,7 @@ The workspace must be trusted and VS Code Terminal Shell Integration must be ava
 
 - Only the first folder in a multi-root workspace is used.
 - Hybrid retrieval currently uses fixed equal weights and fixed bounded query-signal boosts; it does not yet expose diagnostic retrieval modes or language-server symbol-graph ranking.
-- The token-budget planner is not yet connected to request construction; live requests still use the existing fixed character limits until the next context-planning milestone.
+- Token counts use a conservative character estimate and fixed prompt reserve rather than each provider's exact tokenizer; pinned memories, compacted chat summaries, and manual memory controls are not implemented yet.
 - Code navigation depends on installed VS Code language providers.
 - Completed change snapshots are kept in memory, so an old native diff may be unavailable after reloading VS Code.
 - Standalone backend builds are platform-specific and currently prepared for Windows x64.

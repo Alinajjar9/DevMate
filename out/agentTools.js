@@ -59,6 +59,7 @@ const path = __importStar(require("path"));
 const crypto_1 = require("crypto");
 const commandTools_1 = require("./commandTools");
 const fileTools_1 = require("./fileTools");
+const contextPlanner_1 = require("./contextPlanner");
 exports.MAX_DEPENDENCY_MANIFEST_BYTES = 64_000;
 exports.MAX_DEPENDENCY_REQUIREMENTS = 100;
 exports.DEFAULT_AGENT_TOOL_CALL_LIMIT = 16;
@@ -233,7 +234,7 @@ function compactAgentToolHistory(steps) {
     let characters = compacted.reduce((total, step) => total + step.result.length, 0);
     for (let index = 0; characters > exports.MAX_AGENT_TOOL_HISTORY_CHARACTERS && index < compacted.length; index += 1) {
         const step = compacted[index];
-        const marker = `[Earlier ${step.name} result omitted to stay within the agent context budget.]`;
+        const marker = (0, contextPlanner_1.omittedAgentToolResult)(step.name);
         if (step.result.length <= marker.length) {
             continue;
         }

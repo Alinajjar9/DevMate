@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CONTEXT_PRIORITY_ORDER = exports.ESTIMATED_CHARACTERS_PER_TOKEN = exports.CONTEXT_TOKEN_SAFETY_MARGIN = exports.MIN_MAX_INPUT_CONTEXT_TOKENS = exports.AUTO_MAX_INPUT_CONTEXT_TOKENS = exports.MAX_MODEL_CONTEXT_WINDOW_TOKENS = exports.MIN_MODEL_CONTEXT_WINDOW_TOKENS = exports.DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS = void 0;
+exports.CONTEXT_PRIORITY_ORDER = exports.CONTEXT_INSTRUCTION_RESERVE_TOKENS = exports.ESTIMATED_CHARACTERS_PER_TOKEN = exports.CONTEXT_TOKEN_SAFETY_MARGIN = exports.MIN_MAX_INPUT_CONTEXT_TOKENS = exports.AUTO_MAX_INPUT_CONTEXT_TOKENS = exports.MAX_MODEL_CONTEXT_WINDOW_TOKENS = exports.MIN_MODEL_CONTEXT_WINDOW_TOKENS = exports.DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS = void 0;
 exports.createContextBudget = createContextBudget;
 exports.estimateContextTokens = estimateContextTokens;
 exports.isValidModelContextWindowTokens = isValidModelContextWindowTokens;
@@ -8,6 +8,8 @@ exports.normalizeModelContextWindowTokens = normalizeModelContextWindowTokens;
 exports.isValidMaxInputContextTokens = isValidMaxInputContextTokens;
 exports.normalizeMaxInputContextTokens = normalizeMaxInputContextTokens;
 exports.planContextCandidates = planContextCandidates;
+exports.planAskRequestContext = planAskRequestContext;
+exports.omittedAgentToolResult = omittedAgentToolResult;
 exports.DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS = 32_000;
 exports.MIN_MODEL_CONTEXT_WINDOW_TOKENS = 1_024;
 exports.MAX_MODEL_CONTEXT_WINDOW_TOKENS = 4_000_000;
@@ -15,6 +17,12 @@ exports.AUTO_MAX_INPUT_CONTEXT_TOKENS = 0;
 exports.MIN_MAX_INPUT_CONTEXT_TOKENS = 128;
 exports.CONTEXT_TOKEN_SAFETY_MARGIN = 0.1;
 exports.ESTIMATED_CHARACTERS_PER_TOKEN = 4;
+exports.CONTEXT_INSTRUCTION_RESERVE_TOKENS = 4_000;
+const CONTEXT_ITEM_OVERHEAD_TOKENS = 48;
+const CONVERSATION_TURN_OVERHEAD_TOKENS = 12;
+const QUESTION_OVERHEAD_TOKENS = 32;
+const TOOL_STEP_OVERHEAD_TOKENS = 24;
+const RECENT_TOOL_RESULT_COUNT = 4;
 exports.CONTEXT_PRIORITY_ORDER = [
     'instructions',
     'question',
@@ -121,6 +129,110 @@ function planContextCandidates(candidates, usableInputTokens) {
         remainingTokens: Math.max(0, budget - usedTokens),
         overflowTokens: Math.max(0, usedTokens - budget)
     };
+}
+function planAskRequestContext(options) {
+    const budget = createContextBudget(options);
+    const candidates = [
+        {
+            id: 'instructions',
+            priority: 'instructions',
+            estimatedTokens: exports.CONTEXT_INSTRUCTION_RESERVE_TOKENS,
+            required: true,
+            value: 'instructions'
+        },
+        {
+            id: 'question',
+            priority: 'question',
+            estimatedTokens: estimateContextTokens(options.question) + QUESTION_OVERHEAD_TOKENS,
+            required: true,
+            value: 'question'
+        }
+    ];
+    options.scope.items.forEach((item, index) => {
+        const explicit = item.source === 'attachment'
+            || item.source === 'selection'
+            || options.scope.type !== 'project';
+        candidates.push({
+            id: `scope:${index}`,
+            priority: explicit ? 'explicit-context' : 'project-result',
+            estimatedTokens: estimateContextTokens(`${item.filePath}\n${item.languageId}\n${item.content}`) + CONTEXT_ITEM_OVERHEAD_TOKENS,
+            required: explicit,
+            value: `scope:${index}`
+        });
+    });
+    for (let index = options.conversationHistory.length - 1; index >= 0; index -= 1) {
+        const turn = options.conversationHistory[index];
+        candidates.push({
+            id: `conversation:${index}`,
+            priority: 'recent-conversation',
+            estimatedTokens: estimateContextTokens(`${turn.user}\n${turn.assistant}`)
+                + CONVERSATION_TURN_OVERHEAD_TOKENS,
+            value: `conversation:${index}`
+        });
+    }
+    if (options.toolHistory.length > 0) {
+        candidates.push({
+            id: 'tool-history-shells',
+            priority: 'operation-state',
+            estimatedTokens: options.toolHistory.reduce((total, step) => (total + estimateToolStepShellTokens(step)), 0),
+            required: true,
+            value: 'tool-history-shells'
+        });
+    }
+    for (let index = options.toolHistory.length - 1; index >= 0; index -= 1) {
+        const step = options.toolHistory[index];
+        const marker = omittedAgentToolResult(step.name);
+        candidates.push({
+            id: `tool-result:${step.callId}`,
+            priority: options.toolHistory.length - index <= RECENT_TOOL_RESULT_COUNT
+                ? 'operation-state'
+                : 'older-tool-result',
+            estimatedTokens: Math.max(0, estimateContextTokens(step.result) - estimateContextTokens(marker)),
+            value: `tool-result:${step.callId}`
+        });
+    }
+    const candidatePlan = planContextCandidates(candidates, budget.usableInputTokens);
+    const selectedIds = new Set(candidatePlan.selected.map((candidate) => candidate.id));
+    let newerConversationTurnWasOmitted = false;
+    for (let index = options.conversationHistory.length - 1; index >= 0; index -= 1) {
+        const id = `conversation:${index}`;
+        if (!selectedIds.has(id)) {
+            newerConversationTurnWasOmitted = true;
+        }
+        else if (newerConversationTurnWasOmitted) {
+            selectedIds.delete(id);
+        }
+    }
+    const scopeItems = options.scope.items.filter((_item, index) => selectedIds.has(`scope:${index}`));
+    const conversationHistory = options.conversationHistory.filter((_turn, index) => selectedIds.has(`conversation:${index}`));
+    let compactedToolResults = 0;
+    const toolHistory = options.toolHistory.map((step) => {
+        if (selectedIds.has(`tool-result:${step.callId}`)) {
+            return { ...step };
+        }
+        compactedToolResults += 1;
+        return { ...step, result: omittedAgentToolResult(step.name) };
+    });
+    const usedTokens = candidates.reduce((total, candidate) => total + (selectedIds.has(candidate.id) ? candidate.estimatedTokens : 0), 0);
+    return {
+        budget,
+        scope: { ...options.scope, items: scopeItems },
+        conversationHistory,
+        toolHistory,
+        usedTokens,
+        remainingTokens: Math.max(0, budget.usableInputTokens - usedTokens),
+        overflowTokens: Math.max(0, usedTokens - budget.usableInputTokens),
+        omittedContextItems: options.scope.items.length - scopeItems.length,
+        omittedConversationTurns: options.conversationHistory.length - conversationHistory.length,
+        compactedToolResults
+    };
+}
+function omittedAgentToolResult(toolName) {
+    return `[Earlier ${toolName} result omitted to stay within the agent context budget.]`;
+}
+function estimateToolStepShellTokens(step) {
+    const marker = omittedAgentToolResult(step.name);
+    return estimateContextTokens(`${step.callId}\n${step.name}\n${JSON.stringify(step.arguments)}\n${marker}`) + TOOL_STEP_OVERHEAD_TOKENS;
 }
 function boundedNonNegativeInteger(value, maximum) {
     return value !== undefined

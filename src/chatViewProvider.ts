@@ -2168,6 +2168,13 @@ export class DevMateChatViewProvider implements
       scopeKind: message.scope.kind,
       scope: collectedScope.apiScope,
       conversationHistory: activeSessionModelHistory(this.sessionStore),
+      modelContextWindowTokens: activeProfile.contextWindowTokens,
+      maxInputContextTokens: normalizeMaxInputContextTokens(
+        config.get<number>(
+          'maxInputContextTokens',
+          AUTO_MAX_INPUT_CONTEXT_TOKENS
+        )
+      ),
       settings: {
         provider: activeProfile.provider,
         model: activeProfile.model,

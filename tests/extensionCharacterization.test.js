@@ -8,6 +8,7 @@ const TEST_BACKEND_TOKEN = 'test-backend-token-that-is-long-enough';
 const configuration = new Map([
   ['backendUrl', 'http://127.0.0.1:8000'],
   ['maxTokens', 2048],
+  ['maxInputContextTokens', 24_000],
   ['temperature', 0.35],
   ['toolCallLimit', 16],
   ['requestTimeoutSeconds', 1900]
@@ -468,7 +469,8 @@ test('prepares a resumed agent run and persists its completed outcome', async ()
     name: 'Local model',
     provider: 'ollama',
     model: 'qwen3-coder',
-    baseUrl: 'http://127.0.0.1:11434/v1'
+    baseUrl: 'http://127.0.0.1:11434/v1',
+    contextWindowTokens: 64_000
   });
   provider.postStatus = (text) => messages.push({ command: 'status', text });
   provider.collectScope = async () => ({
@@ -523,6 +525,8 @@ test('prepares a resumed agent run and persists its completed outcome', async ()
   assert.equal(capturedInput.question, 'Continue the fix');
   assert.equal(capturedInput.mode, 'debug');
   assert.equal(capturedInput.scopeKind, 'project');
+  assert.equal(capturedInput.modelContextWindowTokens, 64_000);
+  assert.equal(capturedInput.maxInputContextTokens, 24_000);
   assert.equal(capturedInput.backendToken, TEST_BACKEND_TOKEN);
   assert.equal(capturedInput.settings.maxTokens, 2048);
   assert.equal(capturedInput.settings.temperature, 0.35);
@@ -769,6 +773,132 @@ test('agent run restores checkpoint counters, history, and token usage', async (
     totalTokens: 20,
     exact: true
   });
+});
+
+test('agent run applies the context budget before sending a provider request', async () => {
+  let capturedRequest;
+  const transport = {
+    ask: async () => assert.fail('streaming should remain supported'),
+    askStream: async (_url, request) => {
+      capturedRequest = request;
+      return {
+        unsupported: false,
+        result: {
+          status: 'ok',
+          data: {
+            answer: 'Done.',
+            usedFiles: [],
+            changes: [],
+            toolCalls: [],
+            tokenUsage: { inputTokens: 10, outputTokens: 2, totalTokens: 12, exact: true }
+          }
+        }
+      };
+    },
+    waitForRetryDelay: async () => true
+  };
+  const controller = new AgentRunController({
+    execute: async () => assert.fail('no tool call was expected')
+  }, {
+    saveCheckpoint: async () => undefined,
+    recoverBackend: async () => true,
+    emit: () => undefined
+  }, transport);
+  const projectContent = 'p'.repeat(8_000);
+  const recentTurn = {
+    user: 'u'.repeat(2_000),
+    assistant: 'a'.repeat(2_000)
+  };
+
+  const outcome = await controller.run({
+    question: 'Current question',
+    mode: 'ideas',
+    scopeKind: 'project',
+    scope: {
+      type: 'project',
+      workspacePath: 'C:\\repo',
+      items: [{
+        source: 'file',
+        filePath: 'C:\\repo\\src\\project.ts',
+        languageId: 'typescript',
+        content: projectContent,
+        includedCharacters: projectContent.length,
+        totalCharacters: projectContent.length,
+        truncated: false
+      }]
+    },
+    conversationHistory: [recentTurn],
+    modelContextWindowTokens: 10_000,
+    maxInputContextTokens: 6_000,
+    settings: {
+      provider: 'ollama',
+      model: 'qwen3-coder',
+      maxTokens: 128,
+      temperature: 0.2,
+      reasoningEffort: 'auto',
+      timeoutSeconds: 900
+    },
+    backendUrl: 'http://127.0.0.1:8000',
+    backendToken: TEST_BACKEND_TOKEN,
+    toolCallLimit: 16,
+    workspaceId: workspace.id,
+    sessionId: 'session'
+  }, new AbortController().signal);
+
+  assert.equal(outcome.kind, 'completed');
+  assert.deepEqual(capturedRequest.scope.items, []);
+  assert.deepEqual(capturedRequest.conversationHistory, [recentTurn]);
+});
+
+test('agent run reports required-context overflow before contacting the provider', async () => {
+  const controller = new AgentRunController({
+    execute: async () => assert.fail('no tool call was expected')
+  }, {
+    saveCheckpoint: async () => undefined,
+    recoverBackend: async () => true,
+    emit: () => undefined
+  }, {
+    ask: async () => assert.fail('provider should not receive an over-budget request'),
+    askStream: async () => assert.fail('provider should not receive an over-budget request'),
+    waitForRetryDelay: async () => true
+  });
+
+  const outcome = await controller.run({
+    question: 'Explain this selection',
+    mode: 'ideas',
+    scopeKind: 'selection',
+    scope: {
+      type: 'selection',
+      workspacePath: 'C:\\repo',
+      items: [{
+        source: 'selection',
+        filePath: 'C:\\repo\\src\\large.ts',
+        languageId: 'typescript',
+        content: 'x'.repeat(8_000),
+        includedCharacters: 8_000,
+        totalCharacters: 8_000,
+        truncated: false
+      }]
+    },
+    conversationHistory: [],
+    modelContextWindowTokens: 1_024,
+    settings: {
+      provider: 'ollama',
+      model: 'qwen3-coder',
+      maxTokens: 128,
+      temperature: 0.2,
+      reasoningEffort: 'auto',
+      timeoutSeconds: 900
+    },
+    backendUrl: 'http://127.0.0.1:8000',
+    backendToken: TEST_BACKEND_TOKEN,
+    toolCallLimit: 16,
+    workspaceId: workspace.id,
+    sessionId: 'session'
+  }, new AbortController().signal);
+
+  assert.equal(outcome.kind, 'failed');
+  assert.match(outcome.message, /required instructions, question, and explicit context exceed/i);
 });
 
 test('agent run retries transient provider failures and stops after cancellation', async () => {
