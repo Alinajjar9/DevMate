@@ -2,6 +2,25 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Lay the foundation for context budgeting
+
+### Changed
+
+- Added a pure context-budget planner with a conservative 32,000-token fallback for models whose input capacity is unknown.
+- Reserved configured output capacity before calculating the input budget and applied a ten-percent safety margin for token-estimation uncertainty.
+- Allowed future model-specific context windows and user input caps without adding or changing settings in this milestone.
+- Defined one deterministic priority order for instructions, the current question, explicit context, operation state, pinned memory, recent conversation, compacted summaries, project results, and older tool output.
+- Kept mandatory input even when it exceeds the budget and reported the overflow instead of silently dropping the user's question or required instructions.
+- Kept the planner disconnected from live request construction so this commit introduces no prompt, session, retrieval, or UI behavior change.
+
+### Verification
+
+- Focused context-budget and priority coverage — 7 tests passed.
+- `npm run verify` — 268 extension tests and 142 backend tests passed; 49 cross-language contracts and 29 emitted JavaScript files verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-23 — Prioritize filenames and code identifiers
 
 ### Changed

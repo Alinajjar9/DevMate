@@ -353,6 +353,7 @@ The Python backend source remains in the package as a fallback for development o
 | `src/embeddingProfiles.ts` | Local-first embedding profile validation, selection, consent, and SecretStorage keys |
 | `src/embeddingProfileController.ts` | Validated embedding-profile persistence and UI-facing operations |
 | `src/providerUrlPolicy.ts` | Shared chat and embedding provider URL security policy |
+| `src/contextPlanner.ts` | Token-budget calculation and deterministic context-priority policy |
 | `src/projectIndex.ts` | Local index representation, chunking, and lexical scoring |
 | `src/projectRetriever.ts` | Capability-gated project retrieval, exact-source validation, and lexical fallback |
 | `src/projectSearchRanking.ts` | Reciprocal Rank Fusion plus bounded filename, path, and exact-identifier boosts |
@@ -414,6 +415,7 @@ The workspace must be trusted and VS Code Terminal Shell Integration must be ava
 
 - Only the first folder in a multi-root workspace is used.
 - Hybrid retrieval currently uses fixed equal weights and fixed bounded query-signal boosts; it does not yet expose diagnostic retrieval modes or language-server symbol-graph ranking.
+- The token-budget planner is not yet connected to request construction; live requests still use the existing fixed character limits until the next context-planning milestone.
 - Code navigation depends on installed VS Code language providers.
 - Completed change snapshots are kept in memory, so an old native diff may be unavailable after reloading VS Code.
 - Standalone backend builds are platform-specific and currently prepared for Windows x64.
