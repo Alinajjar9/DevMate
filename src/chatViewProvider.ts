@@ -33,7 +33,6 @@ import type {
 } from './embeddingProfileController';
 import { getChatWebviewHtml } from './webview';
 import type {
-  AssistantMode,
   ChatMemorySummaryContent,
   LlmSettings
 } from './api/types';
@@ -89,7 +88,6 @@ import {
 import type {
   LlmProfile,
   LlmProfileDraft,
-  LlmProvider,
   ReasoningEffort
 } from './llmProfiles';
 import {
@@ -118,7 +116,7 @@ import {
   normalizeRelativeWorkspacePath,
   WorkspaceContext
 } from './workspaceContext';
-import type { CollectedScope, ScopeInfo, ScopeKind } from './workspaceContext';
+import type { CollectedScope, ScopeKind } from './workspaceContext';
 import { WorkspaceMutations } from './workspaceMutations';
 import type { WorkspaceMutationPermissionFile } from './workspaceMutations';
 import { ToolExecutor } from './toolExecutor';
@@ -131,6 +129,15 @@ import {
   isValidModelContextWindowTokens,
   normalizeMaxInputContextTokens
 } from './contextPlanner';
+import { parseWebviewMessage } from './webviewProtocol';
+import type {
+  AgentToolSettingsSubmission,
+  AskWebviewMessage,
+  DevMateSettingsSubmission,
+  ExtensionToWebviewMessage,
+  LlmProfileFormSubmission,
+  WebviewMessage
+} from './webviewProtocol';
 
 type AttachmentInfo = {
   id: string;
@@ -141,28 +148,6 @@ type WorkspaceFilePickItem = vscode.QuickPickItem & {
   id: string;
   uri: vscode.Uri;
 };
-
-type LlmProfileFormSubmission = {
-  id?: string;
-  name: string;
-  provider: LlmProvider;
-  model: string;
-  baseUrl?: string;
-  contextWindowTokens?: number;
-  apiKey?: string;
-};
-
-type DevMateSettingsSubmission = {
-  timeoutSeconds: number;
-  commandTimeoutSeconds: number;
-  toolCallLimit: number;
-  maxTokens: number;
-  maxInputContextTokens: number;
-  temperature: number;
-  policy: FilePermissionPolicy;
-};
-
-type AgentToolSettingsSubmission = AgentToolSettings;
 
 type PendingCommandPermission = {
   id: string;
@@ -195,60 +180,6 @@ type CompletedFileDiff = {
   originalUri: vscode.Uri;
   proposedUri: vscode.Uri;
 };
-
-type WebviewMessage =
-  | {
-    command: 'ask';
-    mode: AssistantMode;
-    question: string;
-    scope: ScopeInfo;
-    isNewTurn?: boolean;
-  }
-  | { command: 'continueAgentRun' }
-  | { command: 'cancelRequest' }
-  | { command: 'setScope'; scope: ScopeKind }
-  | { command: 'pickFiles' }
-  | { command: 'removeAttachment'; id: string }
-  | { command: 'chooseLlmProfile' }
-  | { command: 'selectLlmProfile'; profileId: string }
-  | { command: 'setReasoningEffort'; effort: ReasoningEffort }
-  | { command: 'addLlmProfile' }
-  | { command: 'editLlmProfile'; profileId: string }
-  | { command: 'deleteLlmProfile'; profileId: string }
-  | { command: 'saveLlmProfile'; profile: LlmProfileFormSubmission }
-  | { command: 'chooseEmbeddingProfile' }
-  | { command: 'selectEmbeddingProfile'; profileId: string }
-  | { command: 'addEmbeddingProfile' }
-  | { command: 'editEmbeddingProfile'; profileId: string }
-  | { command: 'deleteEmbeddingProfile'; profileId: string }
-  | { command: 'saveEmbeddingProfile'; profile: EmbeddingProfileFormSubmission }
-  | { command: 'saveSettings'; settings: DevMateSettingsSubmission }
-  | { command: 'saveAgentToolSettings'; settings: AgentToolSettingsSubmission }
-  | { command: 'reviewPermissionDiff'; requestId: string; path: string }
-  | { command: 'revokeRememberedCommand'; signature: string }
-  | { command: 'clearRememberedCommands' }
-  | { command: 'restartBackend' }
-  | { command: 'openBackendLogs' }
-  | { command: 'newSession' }
-  | { command: 'selectSession'; sessionId: string }
-  | { command: 'renameSession'; sessionId: string }
-  | { command: 'deleteSession'; sessionId: string }
-  | { command: 'copyText'; text: string }
-  | { command: 'openWorkspaceFile'; path: string; line?: number }
-  | { command: 'openFileChangeDiff'; diffId: string; path: string }
-  | { command: 'openExternalLink'; url: string }
-  | {
-      command: 'commandPermissionDecision';
-      requestId: string;
-      decision: 'deny' | 'allowOnce' | 'allowAlways';
-    }
-  | { command: 'openCommandTerminal'; activityId: string }
-  | {
-      command: 'permissionDecision';
-      requestId: string;
-      decision: 'deny' | 'allowOnce' | 'allowAlways';
-    }
-  | { command: 'ready' };
 
 export class DevMateChatViewProvider implements
   vscode.WebviewViewProvider,
@@ -369,7 +300,12 @@ export class DevMateChatViewProvider implements
     webviewView.webview.html = getChatWebviewHtml(webviewView.webview, this.extensionUri);
 
     this.viewDisposables.push(
-      webviewView.webview.onDidReceiveMessage((message: WebviewMessage) => {
+      webviewView.webview.onDidReceiveMessage((value: unknown) => {
+        const message = parseWebviewMessage(value);
+        if (!message) {
+          this.postStatus('Unsupported or invalid command received.', 'error');
+          return;
+        }
         void this.handleMessage(message);
       }),
       webviewView.onDidDispose(() => {
@@ -1038,7 +974,7 @@ export class DevMateChatViewProvider implements
             { role: 'user', text: turn.user },
             ...(turn.assistant
               ? [{
-                role: 'assistant',
+                role: 'assistant' as const,
                 text: turn.assistant,
                 fileChanges: turn.fileChanges ?? []
               }]
@@ -2121,7 +2057,7 @@ export class DevMateChatViewProvider implements
   }
 
   private async answerQuestion(
-    message: Extract<WebviewMessage, { command: 'ask' }>,
+    message: AskWebviewMessage,
     signal: AbortSignal,
     resumedCheckpoint?: AgentRunCheckpoint
   ): Promise<void> {
@@ -2391,7 +2327,7 @@ export class DevMateChatViewProvider implements
     this.postMessage({ command: 'status', text, level });
   }
 
-  private postMessage(message: unknown): void {
+  private postMessage(message: ExtensionToWebviewMessage): void {
     this.view?.webview.postMessage(message);
   }
 

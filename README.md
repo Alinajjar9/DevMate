@@ -360,7 +360,8 @@ The Python backend source remains in the package as a fallback for development o
 | Path | Purpose |
 | --- | --- |
 | `src/extension.ts` | Extension activation, registrations, and dependency composition |
-| `src/chatViewProvider.ts` | Chat lifecycle, request preflight/finalization, sessions, permissions, and UI forwarding |
+| `src/chatViewProvider.ts` | Validated chat command routing, request lifecycle, sessions, permissions, and UI forwarding |
+| `src/webviewProtocol.ts` | Runtime-validated UI commands and typed extension-to-webview events |
 | `src/agentRunController.ts` | Provider retries, checkpointed agent-loop policy, recovery, and tool iteration |
 | `src/toolExecutor.ts` | Validated tool dispatch, workspace inspection, terminal execution, and mutation routing |
 | `src/workspaceContext.ts` | Workspace identity, scope collection, attachments, and project-index orchestration |

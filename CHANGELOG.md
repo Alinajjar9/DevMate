@@ -2,6 +2,42 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-08-23 — Type messages sent to the chat UI
+
+### Changed
+
+- Added one discriminated union for all 32 extension-to-webview events in the existing webview protocol module.
+- Replaced `postMessage(message: unknown)` with a typed sender, so incorrect event names and payloads now fail during TypeScript compilation.
+- Kept related session, profile, permission, settings, token, and tool-activity view data together instead of creating one interface or file per event.
+- Made restored assistant-session messages explicitly retain their `assistant` role while checking the new contract.
+- Added a drift test confirming that `media/webview.js` handles exactly the event commands declared by the TypeScript protocol.
+- Kept browser-side behavior and rendered UI unchanged.
+
+### Verification
+
+- `npm run verify` — 309 extension tests and 164 backend tests passed; 67 cross-language contracts, 34 cycle-free TypeScript modules, and 34 emitted JavaScript modules verified.
+- `git diff --check`
+
+---
+
+## 2026-08-23 — Validate messages from the chat UI
+
+### Changed
+
+- Moved every webview-to-extension command shape and form submission type into `src/webviewProtocol.ts`.
+- Decode messages from `unknown` before routing them instead of trusting a TypeScript annotation at the webview boundary.
+- Reject unknown commands, invalid enum values, non-finite settings, malformed nested forms, and unexpected fields.
+- Added table-driven coverage for every supported UI command plus malformed-message cases.
+- Kept command handling and request ownership in `ChatViewProvider`, reducing it from roughly 2,422 lines to 2,357 lines without splitting the router across callback-heavy files.
+- Kept valid chat UI behavior unchanged.
+
+### Verification
+
+- `npm run verify` — 308 extension tests and 164 backend tests passed; 67 cross-language contracts, 34 cycle-free TypeScript modules, and 34 emitted JavaScript modules verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-23 — Group the project search code
 
 ### Changed
