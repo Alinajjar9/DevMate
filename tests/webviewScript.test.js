@@ -10,8 +10,20 @@ function readSource(...segments) {
 function readExtensionHostSource() {
   return [
     readSource('src', 'extension.ts'),
+    readSource('src', 'agentCheckpointController.ts'),
     readSource('src', 'agentRunController.ts'),
+    readSource('src', 'attachmentController.ts'),
     readSource('src', 'chatViewProvider.ts'),
+    readSource('src', 'chatRequestController.ts'),
+    readSource('src', 'diffPresenter.ts'),
+    readSource('src', 'llmProfileController.ts'),
+    readSource('src', 'permissionController.ts'),
+    readSource('src', 'permissionPresenter.ts'),
+    readSource('src', 'profilePresenter.ts'),
+    readSource('src', 'settingsController.ts'),
+    readSource('src', 'settingsPresenter.ts'),
+    readSource('src', 'sessionController.ts'),
+    readSource('src', 'sessionPresenter.ts'),
     readSource('src', 'toolExecutor.ts'),
     readSource('src', 'workspaceContext.ts'),
     readSource('src', 'workspaceMutations.ts'),
@@ -203,8 +215,8 @@ test('model selection uses a DevMate-styled modal instead of a native Quick Pick
   assert.match(source, /command: 'editLlmProfile'/);
   assert.match(source, /deleteLlmProfileEl\.dataset\.confirm/);
   const selectorImplementation = source.slice(
-    source.indexOf('private chooseLlmProfile'),
-    source.indexOf('private async selectLlmProfile')
+    source.indexOf('chooseLlmProfile(): void'),
+    source.indexOf('async selectLlmProfile')
   );
   assert.doesNotMatch(selectorImplementation, /showQuickPick/);
 });
@@ -229,7 +241,7 @@ test('settings expose a separate bounded agent-tool limits dialog', () => {
   assert.match(source, /id="agentToolSettingsDialog"/);
   assert.match(source, /id="settingsReadFileMaxLines"[^>]*max="1000"/);
   assert.match(source, /command: 'saveAgentToolSettings'/);
-  assert.match(source, /agentTools: this\.getAgentToolSettings\(\)/);
+  assert.match(source, /agentTools: this\.agentToolSettings\(\)/);
 });
 
 test('model and global context limits expose validated Auto controls', () => {
@@ -311,7 +323,10 @@ test('completed answers show persistent green and red file-change summaries', ()
   assert.match(source, /gitDecoration-deletedResourceForeground/);
   assert.match(source, /appendFileChangeSummary\(narration, fileChanges\)/);
   assert.match(source, /fileChanges: turn\.fileChanges \?\? \[\]/);
-  assert.match(source, /collectFileChangeSummary\(toolHistory, appliedResponseChanges\)/);
+  assert.match(
+    source,
+    /collectFileChangeSummary\(\s*outcome\.toolHistory,\s*appliedResponseChanges\s*\)/
+  );
   assert.match(source, /command: 'openFileChangeDiff'/);
   assert.match(source, /'vscode\.diff'/);
   assert.match(source, /rememberCompletedFileDiff/);
@@ -332,7 +347,7 @@ test('project-bound sessions open from a dedicated landing screen', () => {
   assert.match(source, /sessionSelectorEl\.disabled = state\.askPending/);
   assert.match(source, /newSessionButtonEl\.disabled = state\.askPending/);
   assert.match(source, /sessionBelongsToWorkspace\(session, workspace\)/);
-  assert.match(source, /sessionRepository\.loadWorkspace/);
+  assert.match(source, /repository\.loadWorkspace/);
 });
 
 test('new user messages persist independently from failed assistant requests', () => {

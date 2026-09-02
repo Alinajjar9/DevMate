@@ -360,8 +360,21 @@ The Python backend source remains in the package as a fallback for development o
 | Path | Purpose |
 | --- | --- |
 | `src/extension.ts` | Extension activation, registrations, and dependency composition |
-| `src/chatViewProvider.ts` | Validated chat command routing, request lifecycle, sessions, permissions, and UI forwarding |
+| `src/chatViewProvider.ts` | Validated chat command routing, view lifecycle, cancellation ownership, and typed UI forwarding |
+| `src/chatRequestController.ts` | Chat request validation, context preparation, compaction, agent coordination, and saved responses |
 | `src/webviewProtocol.ts` | Runtime-validated UI commands and typed extension-to-webview events |
+| `src/agentCheckpointController.ts` | Unfinished agent-run storage, active-chat matching, cleanup, and UI-ready state |
+| `src/attachmentController.ts` | Attached-file state, native workspace picker, limits, and candidate validation |
+| `src/llmProfiles.ts` | Pure model-profile normalization, validation, labels, and reasoning-model rules |
+| `src/llmProfileController.ts` | Model-profile storage, selection, reasoning preferences, and credential operations |
+| `src/profilePresenter.ts` | Model and embedding profile forms, pickers, typed UI state, and status messages |
+| `src/permissionController.ts` | Permission policy, remembered commands, pending approvals, and decision rules |
+| `src/permissionPresenter.ts` | Permission prompts, decisions, diff-review flow, warnings, and UI updates |
+| `src/diffPresenter.ts` | Native VS Code diff documents, pending reviews, and completed change snapshots |
+| `src/settingsController.ts` | General and agent-tool setting defaults, validation, reading, and persistence |
+| `src/settingsPresenter.ts` | Settings-screen state, save flows, validation feedback, and typed UI updates |
+| `src/sessionController.ts` | Chat session state, ordered persistence, repository synchronization, and pending writes |
+| `src/sessionPresenter.ts` | Session dialogs, project checks, chat-list formatting, and typed session UI messages |
 | `src/agentRunController.ts` | Provider retries, checkpointed agent-loop policy, recovery, and tool iteration |
 | `src/toolExecutor.ts` | Validated tool dispatch, workspace inspection, terminal execution, and mutation routing |
 | `src/workspaceContext.ts` | Workspace identity, scope collection, attachments, and project-index orchestration |
@@ -387,7 +400,7 @@ The Python backend source remains in the package as a fallback for development o
 | `src/embeddingProfileController.ts` | Validated embedding-profile persistence and UI-facing operations |
 | `src/providerUrlPolicy.ts` | Shared chat and embedding provider URL security policy |
 | `src/contextPlanner.ts` | Token-budget calculation and deterministic context-priority policy |
-| `src/sessions.ts` | Project-bound conversation storage |
+| `src/sessions.ts` | Pure session types, limits, validation, and immutable state transformations |
 | `src/permissions.ts` | File and command permission storage |
 | `backend/app/api_models.py` | Backend protocol constants and validated request/response contracts |
 | `backend/app/api_routes.py` | HTTP endpoints and NDJSON streaming orchestration |

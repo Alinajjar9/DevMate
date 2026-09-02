@@ -1,4 +1,3 @@
-import type { AgentToolSettings } from './agentTools';
 import type { AssistantMode, TokenUsage } from './api/types';
 import type { ManagedBackendStatus } from './backendManager';
 import type {
@@ -7,7 +6,13 @@ import type {
 } from './embeddingProfileController';
 import type { EmbeddingProfile } from './embeddingProfiles';
 import type { FileChangeSummaryItem } from './fileTools';
+import type { LlmProfileFormSubmission } from './llmProfileController';
 import type { LlmProvider, ReasoningEffort } from './llmProfiles';
+import type {
+  AgentToolSettingsSubmission,
+  DevMateConfigurationState,
+  DevMateSettingsSubmission
+} from './settingsController';
 import type {
   FilePermissionAction,
   FilePermissionPolicy,
@@ -15,27 +20,11 @@ import type {
 } from './permissions';
 import type { ScopeInfo, ScopeKind } from './workspaceContext';
 
-export type LlmProfileFormSubmission = {
-  id?: string;
-  name: string;
-  provider: LlmProvider;
-  model: string;
-  baseUrl?: string;
-  contextWindowTokens?: number;
-  apiKey?: string;
-};
-
-export type DevMateSettingsSubmission = {
-  timeoutSeconds: number;
-  commandTimeoutSeconds: number;
-  toolCallLimit: number;
-  maxTokens: number;
-  maxInputContextTokens: number;
-  temperature: number;
-  policy: FilePermissionPolicy;
-};
-
-export type AgentToolSettingsSubmission = AgentToolSettings;
+export type { LlmProfileFormSubmission } from './llmProfileController';
+export type {
+  AgentToolSettingsSubmission,
+  DevMateSettingsSubmission
+} from './settingsController';
 
 export type AskWebviewMessage = {
   command: 'ask';
@@ -138,14 +127,7 @@ type ActiveLlmProfileView = {
   reasoningEffortOptions: Array<{ value: ReasoningEffort; label: string }>;
 };
 
-type WebviewSettings = {
-  timeoutSeconds: number;
-  commandTimeoutSeconds: number;
-  toolCallLimit: number;
-  maxTokens: number;
-  maxInputContextTokens: number;
-  temperature: number;
-  agentTools: AgentToolSettings;
+type WebviewSettings = DevMateConfigurationState & {
   rememberedCommands: RememberedCommand[];
   workspaceTrusted: boolean;
 };

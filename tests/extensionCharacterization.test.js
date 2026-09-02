@@ -69,6 +69,7 @@ Module._load = function loadWithVscodeMock(request, parent, isMain) {
   return originalModuleLoad.call(this, request, parent, isMain);
 };
 const { DevMateChatViewProvider } = require('../out/chatViewProvider');
+const { ChatRequestController } = require('../out/chatRequestController');
 const { AgentRunController } = require('../out/agentRunController');
 const {
   StartedCommandError,
@@ -78,6 +79,7 @@ const {
 const { WorkspaceContext } = require('../out/workspaceContext');
 const { WorkspaceMutations } = require('../out/workspaceMutations');
 const { LexicalProjectRetriever } = require('../out/projectSearch/projectRetriever');
+const { SessionController } = require('../out/sessionController');
 Module._load = originalModuleLoad;
 
 const {
@@ -96,7 +98,95 @@ const workspace = {
 };
 
 function providerWithoutConstructor() {
-  return Object.create(DevMateChatViewProvider.prototype);
+  const provider = Object.create(DevMateChatViewProvider.prototype);
+  const activeDiffs = new Map();
+  provider.diffPresenter = {
+    activeDiffs,
+    beginRequest: () => activeDiffs.clear(),
+    completedDiffId: (filePath) => activeDiffs.get(filePath)
+  };
+  provider.sessionPresenter = {
+    postState: () => undefined
+  };
+  provider.agentCheckpoints = {
+    current: () => undefined,
+    postState: () => undefined,
+    clear: async () => undefined
+  };
+  return provider;
+}
+
+function requestControllerFromProvider(provider) {
+  return new ChatRequestController({
+    backend: {
+      start: () => provider.backendManager.start(),
+      detail: () => provider.backendManager.status.detail,
+      token: () => provider.backendManager.requestToken,
+      url: () => 'http://127.0.0.1:8000',
+      appendLog: (message) => provider.backendOutput.append(message)
+    },
+    context: {
+      workspace: () => provider.getConversationWorkspace(),
+      collect: (scope, question, signal) => provider.collectScope(scope, question, signal)
+    },
+    profiles: {
+      active: () => provider.getActiveLlmProfile(),
+      reasoningPreferences: () => provider.getReasoningEffortPreferences(),
+      apiKey: (profileId) => provider.llmProfiles.apiKey(profileId),
+      showForm: async (profileId) => {
+        await provider.profilePresenter?.showLlmProfileForm(profileId);
+      }
+    },
+    settings: provider.settingsController,
+    sessions: provider.sessionController,
+    compaction: provider.chatCompactionController,
+    agentRuns: provider.agentRunController,
+    checkpoints: provider.agentCheckpoints,
+    changes: {
+      beginRequest: () => provider.diffPresenter.beginRequest(),
+      apply: (changes, summary, signal) =>
+        provider.workspaceMutations.confirmAndApplyFileChanges(changes, summary, signal),
+      completedDiffId: (filePath) => provider.diffPresenter.completedDiffId(filePath)
+    },
+    events: {
+      postMessage: (message) => provider.postMessage(message),
+      postStatus: (text, level) => provider.postStatus(text, level),
+      postFailure: (message, options) => provider.postRequestFailure(message, options),
+      finishCancellation: (signal) => provider.finishCancelledRequest(signal),
+      sessionStateChanged: () => provider.sessionPresenter.postState(false)
+    },
+    now: () => Date.now()
+  }, async () => undefined);
+}
+
+function requestSettings() {
+  return {
+    timeoutSeconds: 1_800,
+    commandTimeoutSeconds: 300,
+    toolCallLimit: 16,
+    maxTokens: 2_048,
+    maxInputContextTokens: 24_000,
+    temperature: 0.35,
+    agentTools: {
+      readFileMaxLines: 400,
+      listFilesMaxResults: 200,
+      searchCodeMaxResults: 50,
+      diagnosticsMaxResults: 100,
+      terminalErrorsMaxResults: 5,
+      codeNavigationMaxResults: 100
+    }
+  };
+}
+
+function sessionControllerWithStore(initialStore, onSave = () => undefined) {
+  return new SessionController({
+    loadWorkspace: async () => ({ kind: 'completed', value: initialStore }),
+    saveSessions: async (sessions) => {
+      onSave(sessions);
+      return { kind: 'completed', value: undefined };
+    },
+    deleteSession: async () => ({ kind: 'completed', value: undefined })
+  }, undefined, initialStore);
 }
 
 function extensionContext({ checkpoint } = {}) {
@@ -132,117 +222,6 @@ function extensionContext({ checkpoint } = {}) {
     secrets: { get: async () => undefined }
   };
 }
-
-async function withoutDelays(callback) {
-  const originalSetTimeout = global.setTimeout;
-  global.setTimeout = (handler, _delay, ...argumentsList) => (
-    originalSetTimeout(handler, 0, ...argumentsList)
-  );
-  try {
-    return await callback();
-  } finally {
-    global.setTimeout = originalSetTimeout;
-  }
-}
-
-test('loads the current workspace sessions directly from the repository', async () => {
-  const stored = createConversationSessionStore('stored-session', 100, workspace);
-  const repository = {
-    loadWorkspace: async (workspaceIdentity) => {
-      assert.equal(workspaceIdentity, workspace.id);
-      return { kind: 'completed', value: stored };
-    },
-    saveSessions: async () => ({ kind: 'completed', value: undefined }),
-    deleteSession: async () => ({ kind: 'completed', value: undefined })
-  };
-  const provider = new DevMateChatViewProvider(
-    extensionContext(),
-    {},
-    { show() {}, append() {} },
-    undefined,
-    undefined,
-    repository
-  );
-
-  try {
-    await provider.synchronizeConversationSessions();
-
-    assert.equal(provider.sessionsLoaded, true);
-    assert.equal(provider.sessionStore.activeSessionId, 'stored-session');
-    assert.deepEqual(provider.sessionStore, stored);
-  } finally {
-    provider.dispose();
-  }
-});
-
-test('keeps failed repository writes dirty without touching VS Code global state', async () => {
-  const provider = providerWithoutConstructor();
-  const statuses = [];
-  provider.sessionStore = createConversationSessionStore('session-one', 100, workspace);
-  provider.dirtySessionIds = new Set();
-  provider.deletedSessionIds = new Set();
-  provider.sessionWriteQueue = Promise.resolve();
-  provider.sessionRepository = {
-    saveSessions: async () => ({ kind: 'failed', message: 'Database unavailable.' })
-  };
-  provider.extensionContext = {
-    globalState: {
-      update: async () => assert.fail('session persistence must not use VS Code global state')
-    }
-  };
-  provider.backendOutput = { append() {} };
-  provider.postStatus = (message, level) => statuses.push({ message, level });
-
-  const saved = await provider.persistSession('session-one');
-
-  assert.equal(saved, false);
-  assert.deepEqual([...provider.dirtySessionIds], ['session-one']);
-  assert.match(statuses[0].message, /available for now/);
-});
-
-test('serializes direct repository writes so newer turns cannot be overwritten', async () => {
-  const provider = providerWithoutConstructor();
-  const writes = [];
-  let releaseFirstWrite;
-  const firstWrite = new Promise((resolve) => {
-    releaseFirstWrite = resolve;
-  });
-  provider.sessionStore = createConversationSessionStore('session-one', 100, workspace);
-  provider.dirtySessionIds = new Set();
-  provider.deletedSessionIds = new Set();
-  provider.sessionWriteQueue = Promise.resolve();
-  provider.sessionRepository = {
-    saveSessions: async (sessions) => {
-      writes.push(structuredClone(sessions));
-      if (writes.length === 1) {
-        await firstWrite;
-      }
-      return { kind: 'completed', value: undefined };
-    }
-  };
-  provider.backendOutput = { append() {} };
-  provider.postStatus = () => undefined;
-
-  const olderSave = provider.persistSession('session-one');
-  await new Promise((resolve) => setImmediate(resolve));
-  provider.sessionStore = {
-    ...provider.sessionStore,
-    sessions: provider.sessionStore.sessions.map((session) => ({
-      ...session,
-      title: 'Newer session state',
-      updatedAt: 200
-    }))
-  };
-  const newerSave = provider.persistSession('session-one');
-  releaseFirstWrite();
-  await Promise.all([olderSave, newerSave]);
-
-  assert.deepEqual(writes.map((sessions) => sessions[0].title), [
-    'New session',
-    'Newer session state'
-  ]);
-  assert.equal(provider.dirtySessionIds.size, 0);
-});
 
 test('collects active-file and selection context with explicit attachments first-class', async () => {
   const workspaceContext = new WorkspaceContext(undefined);
@@ -368,55 +347,15 @@ test('collects project context with attachments before deduplicated lexical resu
   ]);
 });
 
-test('persists explicit and Auto maximum input-context settings', async () => {
-  const provider = providerWithoutConstructor();
-  const previousConfiguration = new Map(configuration);
-  const messages = [];
-  provider.extensionContext = extensionContext();
-  provider.postPermissionPolicyState = () => undefined;
-  provider.postSettingsState = () => undefined;
-  provider.postMessage = (message) => messages.push(message);
-  provider.postStatus = (message) => assert.fail(message);
-
-  try {
-    const baseSettings = {
-      timeoutSeconds: 900,
-      commandTimeoutSeconds: 300,
-      toolCallLimit: 16,
-      maxTokens: 8_000,
-      temperature: 0.2,
-      policy: { createFiles: 'ask', updateFiles: 'ask' }
-    };
-    await provider.saveSettings({
-      ...baseSettings,
-      maxInputContextTokens: 24_000
-    });
-    assert.equal(configuration.get('maxInputContextTokens'), 24_000);
-
-    await provider.saveSettings({
-      ...baseSettings,
-      maxInputContextTokens: 0
-    });
-    assert.equal(configuration.get('maxInputContextTokens'), 0);
-    assert.equal(
-      messages.filter((message) => message.command === 'settingsSaved').length,
-      2
-    );
-  } finally {
-    configuration.clear();
-    for (const [key, value] of previousConfiguration) {
-      configuration.set(key, value);
-    }
-  }
-});
-
 test('routes asks exclusively and reconstructs resumed requests from the checkpoint', async () => {
   const provider = providerWithoutConstructor();
   const calls = [];
   const statuses = [];
   provider.activeRequest = undefined;
   provider.disposeCommandTerminals = () => undefined;
-  provider.answerQuestion = async (...argumentsList) => calls.push(argumentsList);
+  provider.chatRequestController = {
+    answer: async (...argumentsList) => calls.push(argumentsList)
+  };
   provider.postStatus = (...argumentsList) => statuses.push(argumentsList);
 
   const askMessage = {
@@ -442,7 +381,10 @@ test('routes asks exclusively and reconstructs resumed requests from the checkpo
     scopeKind: 'activeFile'
   };
   provider.activeRequest = undefined;
-  provider.currentAgentCheckpoint = () => checkpoint;
+  provider.agentCheckpoints = {
+    current: () => checkpoint,
+    postState: () => undefined
+  };
   await provider.handleMessage({ command: 'continueAgentRun' });
   assert.equal(calls.length, 2);
   assert.deepEqual(calls[1][0], {
@@ -501,20 +443,18 @@ test('prepares a resumed agent run and persists its completed outcome', async ()
   let clearedCheckpoints = 0;
   let persistedSessions = 0;
 
-  provider.sessionStore = sessionStore;
-  provider.activeRequestDiffs = new Map([['existing', 'diff']]);
+  provider.sessionController = sessionControllerWithStore(sessionStore, () => {
+    persistedSessions += 1;
+  });
+  provider.diffPresenter.activeDiffs.set('existing', 'diff');
   provider.backendManager = {
     start: async () => true,
     requestToken: TEST_BACKEND_TOKEN,
     status: { detail: 'online' }
   };
-  provider.extensionContext = { secrets: { get: async () => undefined } };
+  provider.llmProfiles = { apiKey: async () => undefined };
+  provider.settingsController = { state: () => requestSettings() };
   provider.getConversationWorkspace = () => workspace;
-  provider.persistSession = async () => {
-    persistedSessions += 1;
-    return true;
-  };
-  provider.postSessionState = () => undefined;
   provider.getActiveLlmProfile = () => ({
     id: 'local-model',
     name: 'Local model',
@@ -535,8 +475,11 @@ test('prepares a resumed agent run and persists its completed outcome', async ()
   provider.finishCancelledRequest = () => false;
   provider.postMessage = (message) => messages.push(message);
   provider.getReasoningEffortPreferences = () => ({ 'local-model': 'high' });
-  provider.clearAgentCheckpoint = async () => {
-    clearedCheckpoints += 1;
+  provider.agentCheckpoints = {
+    current: () => undefined,
+    clear: async () => {
+      clearedCheckpoints += 1;
+    }
   };
   provider.postRequestFailure = (message) => assert.fail(message);
   provider.agentRunController = {
@@ -587,14 +530,14 @@ test('prepares a resumed agent run and persists its completed outcome', async ()
   };
 
   const signal = new AbortController().signal;
-  await withoutDelays(() => provider.answerQuestion({
+  await requestControllerFromProvider(provider).answer({
     command: 'ask',
     mode: 'debug',
     question: '  Continue the fix  ',
     scope: { kind: 'project', label: 'Project A', detail: '' }
-  }, signal, checkpoint));
+  }, signal, checkpoint);
 
-  assert.equal(provider.activeRequestDiffs.has('existing'), true);
+  assert.equal(provider.diffPresenter.activeDiffs.has('existing'), true);
   assert.equal(capturedSignal, signal);
   assert.equal(capturedInput.question, 'Continue the fix');
   assert.equal(capturedInput.mode, 'debug');
@@ -615,7 +558,7 @@ test('prepares a resumed agent run and persists its completed outcome', async ()
   assert.equal(clearedCheckpoints, 1);
   assert.equal(persistedSessions, 1);
   assert.equal(
-    provider.sessionStore.sessions[0].turns.at(-1).assistant,
+    provider.sessionController.store.sessions[0].turns.at(-1).assistant,
     'Fix completed.\n\nUsed files:\n- `C:\\repo\\src\\app.ts`'
   );
   assert.equal(
@@ -628,8 +571,10 @@ test('does not collect or send workspace context without an authenticated backen
   const provider = providerWithoutConstructor();
   let collectedContext = false;
   let failure;
-  provider.sessionStore = createConversationSessionStore('session', 1, workspace);
-  provider.activeRequestDiffs = new Map();
+  provider.sessionController = sessionControllerWithStore(
+    createConversationSessionStore('session', 1, workspace)
+  );
+  provider.diffPresenter.activeDiffs.clear();
   provider.getConversationWorkspace = () => workspace;
   provider.getActiveLlmProfile = () => ({
     id: 'local-model',
@@ -651,7 +596,7 @@ test('does not collect or send workspace context without an authenticated backen
     failure = { message, options };
   };
 
-  await provider.answerQuestion({
+  await requestControllerFromProvider(provider).answer({
     command: 'ask',
     mode: 'ideas',
     question: 'Do not send this context',
@@ -671,26 +616,25 @@ test('keeps a fresh pending user turn when the agent run fails', async () => {
   let persistedSessions = 0;
   let compactionInput;
   let agentInput;
-  provider.sessionStore = appendConversationSessionTurn(
+  const initialStore = appendConversationSessionTurn(
     createConversationSessionStore('session', 1, workspace),
     'Earlier request',
     'Earlier answer',
     2
   );
-  provider.activeRequestDiffs = new Map([['stale', 'diff']]);
+  provider.sessionController = sessionControllerWithStore(initialStore, () => {
+    persistedSessions += 1;
+  });
+  provider.diffPresenter.activeDiffs.set('stale', 'diff');
   provider.backendManager = {
     start: async () => true,
     requestToken: TEST_BACKEND_TOKEN,
     status: { detail: 'online' }
   };
   provider.backendOutput = { append: (value) => backendOutput.push(value) };
-  provider.extensionContext = { secrets: { get: async () => undefined } };
+  provider.llmProfiles = { apiKey: async () => undefined };
+  provider.settingsController = { state: () => requestSettings() };
   provider.getConversationWorkspace = () => workspace;
-  provider.persistSession = async () => {
-    persistedSessions += 1;
-    return true;
-  };
-  provider.postSessionState = () => undefined;
   provider.getActiveLlmProfile = () => ({
     id: 'local-model',
     name: 'Local model',
@@ -702,8 +646,10 @@ test('keeps a fresh pending user turn when the agent run fails', async () => {
     apiScope: { type: 'project', workspacePath: workspaceFolder.uri.fsPath, items: [] }
   });
   provider.finishCancelledRequest = () => false;
-  provider.currentAgentCheckpoint = () => undefined;
-  provider.clearAgentCheckpoint = async () => assert.fail('failed runs retain checkpoints');
+  provider.agentCheckpoints = {
+    current: () => undefined,
+    clear: async () => assert.fail('failed runs retain checkpoints')
+  };
   provider.getReasoningEffortPreferences = () => ({});
   provider.postMessage = (message) => messages.push(message);
   provider.postStatus = (text, level) => messages.push({ command: 'status', text, level });
@@ -720,14 +666,14 @@ test('keeps a fresh pending user turn when the agent run fails', async () => {
     }
   };
 
-  await withoutDelays(() => provider.answerQuestion({
+  await requestControllerFromProvider(provider).answer({
     command: 'ask',
     mode: 'ideas',
     question: 'New request',
     scope: { kind: 'project', label: 'Project A', detail: '' }
-  }, new AbortController().signal));
+  }, new AbortController().signal);
 
-  assert.equal(provider.activeRequestDiffs.size, 0);
+  assert.equal(provider.diffPresenter.activeDiffs.size, 0);
   assert.equal(persistedSessions, 1);
   assert.equal(compactionInput.session.id, 'session');
   assert.deepEqual(compactionInput.session.turns.at(-1), {
@@ -742,7 +688,7 @@ test('keeps a fresh pending user turn when the agent run fails', async () => {
     assistant: 'Earlier answer'
   }]);
   assert.equal(agentInput.conversationSummary, undefined);
-  assert.deepEqual(provider.sessionStore.sessions[0].turns.at(-1), {
+  assert.deepEqual(provider.sessionController.store.sessions[0].turns.at(-1), {
     user: 'New request',
     assistant: ''
   });

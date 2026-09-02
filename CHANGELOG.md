@@ -2,6 +2,223 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-09-02 — Keep the complete chat request flow in one controller
+
+### Changed
+
+- Added one chat request controller for input validation, session and workspace checks, model access, backend authentication, context collection, chat compaction, agent execution, file-change completion, and saved responses.
+- Kept the model/tool loop in `AgentRunController`, workspace writes in `WorkspaceMutations`, session data in `SessionController`, and cancellation ownership in `ChatViewProvider`.
+- Connected the controller through grouped backend, context, profile, change, and event interfaces instead of giving it direct VS Code access.
+- Moved request formatting and completion bookkeeping beside the workflow that uses them while preserving pending turns after failures and raw chat history after compaction.
+- Added direct boundary tests for empty questions, missing model profiles and credentials, unsafe proposed changes, completed resumed runs, unauthenticated backends, and failed agent runs.
+- Reduced `src/chatViewProvider.ts` from about 1,032 lines to about 769 lines without intentionally changing request behavior.
+
+### Verification
+
+- `npm run verify` — 376 extension tests and 164 backend tests passed; 67 cross-language contracts, 46 cycle-free TypeScript modules, and 46 emitted JavaScript modules verified.
+- `git diff --check`
+
+---
+
+## 2026-09-02 — Keep settings UI flows in one presenter
+
+### Changed
+
+- Added one settings presenter for publishing the current settings screen, saving general preferences, saving agent-tool limits, and reporting validation or storage errors.
+- Kept defaults, bounds, validation, and persistence in `SettingsController`, while the presenter adds workspace trust and remembered-command information for the UI.
+- Connected workspace-trust changes and remembered-command changes to the same settings refresh path.
+- Preserved the existing success messages, form-closing events, permission-policy refresh, and error levels.
+- Added focused tests for current state, successful general and tool-setting saves, permission refresh, validation feedback, and storage failures.
+- Reduced `src/chatViewProvider.ts` from about 1,056 lines to about 1,032 lines without intentionally changing settings behavior.
+
+### Verification
+
+- `npm run verify` — 372 extension tests and 164 backend tests passed; 67 cross-language contracts, 45 cycle-free TypeScript modules, and 45 emitted JavaScript modules verified.
+- `git diff --check`
+
+---
+
+## 2026-09-02 — Keep permission UI flows in one presenter
+
+### Changed
+
+- Added one permission presenter for file and command prompts, decisions, diff reviews, cancellation, remembered-command changes, warnings, and typed UI updates.
+- Kept permission state and persistence in `PermissionController` and kept native diff documents in `DiffPresenter`, with the new presenter coordinating the two through their public interfaces.
+- Made `ChatViewProvider` use the presenter as its single permission interface for workspace mutations, tool commands, settings state, and webview routes.
+- Preserved one-time approval when a saved preference fails and kept remembered commands from opening another approval prompt.
+- Added focused tests for replaced requests, policy updates, missing diff previews, one-time command approval, remembered commands, storage failures, and cancellation.
+- Reduced `src/chatViewProvider.ts` from about 1,177 lines to about 1,056 lines without intentionally changing permission behavior.
+
+### Verification
+
+- `npm run verify` — 367 extension tests and 164 backend tests passed; 67 cross-language contracts, 44 cycle-free TypeScript modules, and 44 emitted JavaScript modules verified.
+- `git diff --check`
+
+---
+
+## 2026-09-02 — Keep unfinished agent runs in one controller
+
+### Changed
+
+- Added one checkpoint controller for validated loading, active workspace and chat matching, persistence, cleanup, and small UI-ready checkpoint summaries.
+- Kept agent-loop execution in `AgentRunController` and kept typed message delivery in `ChatViewProvider` behind narrow callbacks.
+- Connected completed runs, new runs, resumed runs, and deleted chats to the same checkpoint lifecycle.
+- Preserved recoverable in-memory state when a save fails and preserved cleanup in memory when stored-state removal fails, while reporting the existing warnings.
+- Added focused tests for workspace and chat isolation, expired state, token summaries, saving, cleanup, session deletion, and storage failures.
+- Reduced `src/chatViewProvider.ts` from about 1,227 lines to about 1,177 lines without intentionally changing agent-resume behavior.
+
+### Verification
+
+- `npm run verify` — 360 extension tests and 164 backend tests passed; 67 cross-language contracts, 43 cycle-free TypeScript modules, and 43 emitted JavaScript modules verified.
+- `git diff --check`
+
+---
+
+## 2026-09-02 — Keep session UI flows in one presenter
+
+### Changed
+
+- Added one session presenter for synchronization, creation, project-safe selection, rename and delete dialogs, session summaries, and restored chat-message formatting.
+- Kept the in-memory store and ordered persistence in `SessionController`, while `ChatViewProvider` continues to own active requests and agent-checkpoint storage.
+- Preserved the rule that sessions cannot change during an active request and rechecks that rule after native rename and delete dialogs close.
+- Kept checkpoint cleanup connected to session deletion through one narrow callback.
+- Added focused tests for session state formatting, synchronization, missing workspaces, active-request blocking, project ownership, rename races, and confirmed deletion.
+- Reduced `src/chatViewProvider.ts` from about 1,344 lines to about 1,227 lines without intentionally changing session behavior.
+
+### Verification
+
+- `npm run verify` — 353 extension tests and 164 backend tests passed; 67 cross-language contracts, 42 cycle-free TypeScript modules, and 42 emitted JavaScript modules verified.
+- `git diff --check`
+
+---
+
+## 2026-09-02 — Keep profile UI flows in one presenter
+
+### Changed
+
+- Added one profile presenter for model and embedding pickers, forms, selection, deletion, intelligence controls, typed UI state, and readable status messages.
+- Kept profile validation, persistence, active selection, and credentials in the existing model and embedding controllers.
+- Kept active model access in `ChatViewProvider` for request construction while routing all profile UI commands through the presenter.
+- Preserved the built-in Nemotron API-key prompt and the rule that intelligence cannot change during an active request.
+- Added focused tests for model state formatting, intelligence blocking, built-in key setup, form errors, successful model saves, and embedding selection and deletion.
+- Reduced `src/chatViewProvider.ts` from about 1,546 lines to about 1,344 lines without intentionally changing profile behavior.
+
+### Verification
+
+- `npm run verify` — 347 extension tests and 164 backend tests passed; 67 cross-language contracts, 41 cycle-free TypeScript modules, and 41 emitted JavaScript modules verified.
+- `git diff --check`
+
+---
+
+## 2026-09-01 — Keep file attachments in one controller
+
+### Changed
+
+- Added one attachment controller for selected-file state, native workspace file picking, path filtering, selection limits, candidate validation, removal, and attachment updates.
+- Kept project-context collection and webview message delivery in `ChatViewProvider`, passing only the validated attachment URIs into `WorkspaceContext`.
+- Preserved the existing status messages and kept the previous selection when the picker is cancelled, workspace listing fails, or too many files are selected.
+- Continued to revalidate selected files for supported content and size before they become chat context.
+- Added focused tests for missing workspaces, filtering and sorting, validation, ignored files, removal, selection limits, and listing failures.
+- Reduced `src/chatViewProvider.ts` from about 1,642 lines to about 1,546 lines without intentionally changing attachment behavior.
+
+### Verification
+
+- `npm run verify` — 341 extension tests and 164 backend tests passed; 67 cross-language contracts, 40 cycle-free TypeScript modules, and 40 emitted JavaScript modules verified.
+- `git diff --check`
+
+---
+
+## 2026-09-01 — Keep VS Code diff handling in one presenter
+
+### Changed
+
+- Added one diff presenter for virtual diff documents, pending permission reviews, completed file-change snapshots, path lookup, and native VS Code diff editors.
+- Kept permission decisions, expired-snapshot warnings, workspace-file fallback, and webview routing in `ChatViewProvider`.
+- Preserved completed snapshots across requests while keeping the existing limit of forty snapshots and clearing request-specific path links at the start of a new request.
+- Kept `ChatViewProvider` as the registered text-document provider through a one-line delegate, so extension activation and the diff URI scheme remain compatible.
+- Added focused tests for pending reviews, completed and renamed-file titles, request cleanup, snapshot limits, and disposal.
+- Reduced `src/chatViewProvider.ts` from about 1,772 lines to about 1,642 lines without intentionally changing diff behavior.
+
+### Verification
+
+- `npm run verify` — 335 extension tests and 164 backend tests passed; 67 cross-language contracts, 39 cycle-free TypeScript modules, and 39 emitted JavaScript modules verified.
+- `git diff --check`
+
+---
+
+## 2026-09-01 — Move permission decisions out of the chat view
+
+### Changed
+
+- Added one permission controller for file-change policy, remembered commands, pending file and command approvals, replacement, cancellation, and decision rules.
+- Kept native diff documents, VS Code diff editors, webview messages, and user-facing warnings in `ChatViewProvider`.
+- Kept the controller independent from VS Code and the webview through a small workspace-state interface.
+- Made failed “always allow” persistence fall back to the approved one-time action and return a readable warning state instead of leaving its promise unfinished.
+- Added focused tests for safe saved-state parsing, file-policy updates, remembered-command shortcuts, non-rememberable commands, replacement, cancellation, revocation, clearing, and storage failures.
+- Reduced `src/chatViewProvider.ts` from about 1,810 lines to about 1,772 lines without intentionally changing normal permission behavior.
+
+### Verification
+
+- `npm run verify` — 331 extension tests and 164 backend tests passed; 67 cross-language contracts, 38 cycle-free TypeScript modules, and 38 emitted JavaScript modules verified.
+- `git diff --check`
+
+---
+
+## 2026-09-01 — Move chat session state out of the chat view
+
+### Changed
+
+- Added one session controller that owns the in-memory session store, loaded state, local revisions, pending saves and deletes, synchronization, and the serialized repository write queue.
+- Moved create, select, rename, delete, pending-question, completed-turn, and model-history operations behind that controller.
+- Kept session dialogs, project warnings, webview event formatting, active-request rules, and agent-checkpoint presentation in `ChatViewProvider`.
+- Kept storage failures as simple controller events so the controller does not import VS Code or display UI itself.
+- Added focused tests for initial loading, failed writes, write ordering, session lifecycle operations, pending-turn completion, and slow-load protection for newer local state.
+- Reduced `src/chatViewProvider.ts` from about 1,968 lines to about 1,810 lines without intentionally changing session behavior.
+
+### Verification
+
+- `npm run verify` — 324 extension tests and 164 backend tests passed; 67 cross-language contracts, 37 cycle-free TypeScript modules, and 37 emitted JavaScript modules verified.
+- `git diff --check`
+
+---
+
+## 2026-09-01 — Move settings logic out of the chat view
+
+### Changed
+
+- Added one settings controller for general DevMate preferences and the six bounded agent-tool limits.
+- Moved configuration defaults, normalization, validation, reading, and persistence behind a small interface that does not import VS Code or the webview.
+- Made agent requests, checkpoint status, and the settings UI read the same normalized configuration state.
+- Kept permission decisions, remembered commands, command routing, and user-facing messages in `ChatViewProvider`.
+- Reused the controller's settings types in the validated webview protocol instead of maintaining duplicate form types.
+- Added focused tests for defaults, bounds, explicit and Auto context limits, permission-policy persistence, tool settings, invalid values, and write failures.
+- Reduced `src/chatViewProvider.ts` from about 2,130 lines to about 1,970 lines without intentionally changing valid user settings or UI behavior.
+
+### Verification
+
+- `npm run verify` — 321 extension tests and 164 backend tests passed; 67 cross-language contracts, 36 cycle-free TypeScript modules, and 36 emitted JavaScript modules verified.
+- `git diff --check`
+
+---
+
+## 2026-09-01 — Move model profile management out of the chat view
+
+### Changed
+
+- Added one model-profile controller for stored profiles, active selection, reasoning preferences, credential access, validation, and create, edit, and delete operations.
+- Kept the controller independent from VS Code and the webview through a small persistence interface, while `ChatViewProvider` still owns UI routing and presentation.
+- Kept API keys in SecretStorage and made the controller return readable results instead of displaying UI messages itself.
+- Reused one model-profile form type across the controller and the validated webview protocol.
+- Added focused tests for built-in and custom profiles, API-key handling, provider changes, reasoning preferences, deletion cleanup, fallback selection, and persistence failures.
+- Reduced `src/chatViewProvider.ts` from about 2,358 lines to about 2,130 lines without intentionally changing user-visible behavior.
+
+### Verification
+
+- `npm run verify` — 316 extension tests and 164 backend tests passed; 67 cross-language contracts, 35 cycle-free TypeScript modules, and 35 emitted JavaScript modules verified.
+- `git diff --check`
+
+---
+
 ## 2026-08-23 — Type messages sent to the chat UI
 
 ### Changed
