@@ -1,6 +1,5 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { AgentToolSettings } from './agentTools';
 import { backendStatusLabel } from './backendManager';
 import type { LocalBackendManager, ManagedBackendStatus } from './backendManager';
 import { EmbeddingProfileController } from './embeddingProfileController';
@@ -11,6 +10,7 @@ import {
 import type {
   ConversationSessionRepository
 } from './sessionRepository';
+import type { AgentRunCheckpoint } from './sessions';
 import { SessionController } from './sessionController';
 import { LlmProfileController } from './llmProfileController';
 import { PermissionController } from './permissionController';
@@ -37,10 +37,12 @@ import { PermissionPresenter } from './permissionPresenter';
 import { ChatRequestController } from './chatRequestController';
 import { parseWebviewMessage } from './webviewProtocol';
 import type {
+  AskWebviewMessage,
   ExtensionToWebviewMessage,
   WebviewMessage
 } from './webviewProtocol';
 
+// Connect the chat features here; keep their workflows in their controllers and presenters.
 export class DevMateChatViewProvider implements
   vscode.WebviewViewProvider,
   vscode.TextDocumentContentProvider,
@@ -56,22 +58,18 @@ export class DevMateChatViewProvider implements
   private readonly workspaceContext: WorkspaceContext;
   private readonly workspaceMutations: WorkspaceMutations;
   private readonly toolExecutor: ToolExecutor;
-  private readonly agentRunController: AgentRunController;
   private readonly chatRequestController: ChatRequestController;
-  private readonly settingsController: SettingsController;
   private readonly settingsPresenter: SettingsPresenter;
-  private readonly llmProfiles: LlmProfileController;
   private readonly profilePresenter: ProfilePresenter;
   private readonly permissionPresenter: PermissionPresenter;
   private readonly diffPresenter: DiffPresenter;
   private readonly attachmentController: AttachmentController;
   private activeRequest?: AbortController;
-  private readonly sessionController: SessionController;
   private readonly sessionPresenter: SessionPresenter;
   private readonly agentCheckpoints: AgentCheckpointController;
 
   constructor(
-    private readonly extensionContext: vscode.ExtensionContext,
+    extensionContext: vscode.ExtensionContext,
     private readonly backendManager: LocalBackendManager,
     private readonly backendOutput: vscode.OutputChannel,
     projectRetriever: ProjectRetriever = new LexicalProjectRetriever(),
@@ -82,8 +80,29 @@ export class DevMateChatViewProvider implements
       new ChatCompactionController()
   ) {
     this.extensionUri = extensionContext.extensionUri;
+
+    // Share the VS Code adapters, not the state owned by each feature.
+    const viewMessages = {
+      postMessage: (message: ExtensionToWebviewMessage) => this.postMessage(message),
+      postStatus: (text: string, level?: 'info' | 'warning' | 'error') =>
+        this.postStatus(text, level)
+    };
+    const workspaceState = {
+      readState: (key: string) => extensionContext.workspaceState.get<unknown>(key),
+      writeState: (key: string, value: unknown) =>
+        extensionContext.workspaceState.update(key, value)
+    };
+    const profileStorage = {
+      readState: (key: string) => extensionContext.globalState.get<unknown>(key),
+      writeState: (key: string, value: unknown) => extensionContext.globalState.update(key, value),
+      readSecret: (key: string) => extensionContext.secrets.get(key),
+      writeSecret: (key: string, value: string) => extensionContext.secrets.store(key, value),
+      deleteSecret: (key: string) => extensionContext.secrets.delete(key)
+    };
+
+    // Settings and permissions share updates, but each keeps its own rules.
     this.diffPresenter = new DiffPresenter();
-    this.settingsController = new SettingsController({
+    const settingsController = new SettingsController({
       readConfiguration: (key) =>
         vscode.workspace.getConfiguration('devMate').get<unknown>(key),
       writeConfiguration: (key, value) =>
@@ -92,33 +111,28 @@ export class DevMateChatViewProvider implements
           value,
           vscode.ConfigurationTarget.Global
         ),
-      writeWorkspaceState: (key, value) =>
-        this.extensionContext.workspaceState.update(key, value)
+      writeWorkspaceState: workspaceState.writeState
     });
-    const permissionController = new PermissionController({
-      readState: (key) => this.extensionContext.workspaceState.get<unknown>(key),
-      writeState: (key, value) =>
-        this.extensionContext.workspaceState.update(key, value)
-    });
+    const permissionController = new PermissionController(workspaceState);
     this.permissionPresenter = new PermissionPresenter(
       permissionController,
       this.diffPresenter,
       {
-        postMessage: (message) => this.postMessage(message),
-        postStatus: (text, level) => this.postStatus(text, level),
+        ...viewMessages,
         settingsChanged: () => this.settingsPresenter.postState()
       }
     );
     this.settingsPresenter = new SettingsPresenter(
-      this.settingsController,
+      settingsController,
       {
+        ...viewMessages,
         rememberedCommands: () => this.permissionPresenter.rememberedCommands(),
         workspaceTrusted: () => vscode.workspace.isTrusted,
-        permissionPolicyChanged: () => this.permissionPresenter.postPolicyState(),
-        postMessage: (message) => this.postMessage(message),
-        postStatus: (text, level) => this.postStatus(text, level)
+        permissionPolicyChanged: () => this.permissionPresenter.postPolicyState()
       }
     );
+
+    // Workspace tools use the same context, permission prompts, and diff snapshots.
     this.workspaceContext = new WorkspaceContext(
       extensionContext.storageUri,
       (text) => this.postStatus(text),
@@ -127,7 +141,7 @@ export class DevMateChatViewProvider implements
     this.attachmentController = new AttachmentController({
       isProjectCandidate: async (uri) =>
         Boolean(await this.workspaceContext.readProjectCandidate(uri)),
-      reportStatus: (text, level) => this.postStatus(text, level),
+      reportStatus: viewMessages.postStatus,
       attachmentsChanged: (attachments) => {
         this.postMessage({ command: 'attachmentsUpdated', attachments });
       }
@@ -150,7 +164,7 @@ export class DevMateChatViewProvider implements
       this.workspaceContext,
       this.workspaceMutations,
       {
-        getAgentToolSettings: () => this.getAgentToolSettings(),
+        getAgentToolSettings: () => settingsController.agentToolSettings(),
         requestCommandPermission: (signature, label, cwd, options) =>
           this.permissionPresenter.requestCommand(signature, label, cwd, options),
         postAgentToolActivity: (id, title, detail, status, result, canOpenTerminal) =>
@@ -164,7 +178,9 @@ export class DevMateChatViewProvider implements
           )
       }
     );
-    this.sessionController = new SessionController(
+
+    // Sessions store the conversation; checkpoints store only an unfinished run.
+    const sessionController = new SessionController(
       sessionRepository,
       (issue) => {
         this.backendOutput.append(`[DevMate] Chat storage: ${issue.message}\n`);
@@ -177,15 +193,11 @@ export class DevMateChatViewProvider implements
       }
     );
     this.agentCheckpoints = new AgentCheckpointController(
-      {
-        readState: (key) => this.extensionContext.workspaceState.get<unknown>(key),
-        writeState: (key, value) =>
-          this.extensionContext.workspaceState.update(key, value)
-      },
+      workspaceState,
       {
         workspaceId: () => this.getConversationWorkspace()?.id,
-        activeSessionId: () => this.sessionController.activeSession()?.id,
-        toolCallLimit: () => this.settingsController.state().toolCallLimit,
+        activeSessionId: () => sessionController.activeSession()?.id,
+        toolCallLimit: () => settingsController.state().toolCallLimit,
         stateChanged: (state) => {
           this.postMessage({ command: 'agentCheckpointUpdated', ...state });
         },
@@ -193,45 +205,38 @@ export class DevMateChatViewProvider implements
       }
     );
     this.sessionPresenter = new SessionPresenter(
-      this.sessionController,
+      sessionController,
       this.workspaceContext,
       {
+        ...viewMessages,
         isRequestActive: () => Boolean(this.activeRequest),
-        postMessage: (message) => this.postMessage(message),
-        postStatus: (text, level) => this.postStatus(text, level),
         postCheckpointState: () => this.agentCheckpoints.postState(),
         clearCheckpointForSession: (sessionId) =>
           this.agentCheckpoints.clearForSession(sessionId)
       }
     );
-    this.agentRunController = new AgentRunController(this.toolExecutor, {
+
+    // Chat and embedding profiles share storage access, but keep separate storage keys.
+    const llmProfiles = new LlmProfileController(profileStorage);
+    const embeddingProfiles = new EmbeddingProfileController(
+      profileStorage,
+      onEmbeddingProfileChanged
+    );
+    this.profilePresenter = new ProfilePresenter(
+      llmProfiles,
+      embeddingProfiles,
+      {
+        ...viewMessages,
+        isRequestActive: () => Boolean(this.activeRequest)
+      }
+    );
+
+    // The request controller coordinates these features; the view only forwards its events.
+    const agentRunController = new AgentRunController(this.toolExecutor, {
       saveCheckpoint: (checkpoint) => this.agentCheckpoints.save(checkpoint),
       recoverBackend: () => this.backendManager.start(),
       emit: (event) => this.handleAgentRunEvent(event)
     });
-    this.llmProfiles = new LlmProfileController({
-      readState: (key) => this.extensionContext.globalState.get<unknown>(key),
-      writeState: (key, value) => this.extensionContext.globalState.update(key, value),
-      readSecret: (key) => this.extensionContext.secrets.get(key),
-      writeSecret: (key, value) => this.extensionContext.secrets.store(key, value),
-      deleteSecret: (key) => this.extensionContext.secrets.delete(key)
-    });
-    const embeddingProfiles = new EmbeddingProfileController({
-      readState: (key) => this.extensionContext.globalState.get<unknown>(key),
-      writeState: (key, value) => this.extensionContext.globalState.update(key, value),
-      readSecret: (key) => this.extensionContext.secrets.get(key),
-      writeSecret: (key, value) => this.extensionContext.secrets.store(key, value),
-      deleteSecret: (key) => this.extensionContext.secrets.delete(key)
-    }, onEmbeddingProfileChanged);
-    this.profilePresenter = new ProfilePresenter(
-      this.llmProfiles,
-      embeddingProfiles,
-      {
-        isRequestActive: () => Boolean(this.activeRequest),
-        postMessage: (message) => this.postMessage(message),
-        postStatus: (text, level) => this.postStatus(text, level)
-      }
-    );
     this.chatRequestController = new ChatRequestController({
       backend: {
         start: () => this.backendManager.start(),
@@ -246,15 +251,15 @@ export class DevMateChatViewProvider implements
           this.collectScope(scope, question, signal)
       },
       profiles: {
-        active: () => this.llmProfiles.activeProfile(),
-        reasoningPreferences: () => this.llmProfiles.reasoningPreferences(),
-        apiKey: (profileId) => this.llmProfiles.apiKey(profileId),
+        active: () => llmProfiles.activeProfile(),
+        reasoningPreferences: () => llmProfiles.reasoningPreferences(),
+        apiKey: (profileId) => llmProfiles.apiKey(profileId),
         showForm: (profileId) => this.profilePresenter.showLlmProfileForm(profileId)
       },
-      settings: this.settingsController,
-      sessions: this.sessionController,
+      settings: settingsController,
+      sessions: sessionController,
       compaction: chatCompactionController,
-      agentRuns: this.agentRunController,
+      agentRuns: agentRunController,
       checkpoints: this.agentCheckpoints,
       changes: {
         beginRequest: () => this.diffPresenter.beginRequest(),
@@ -263,14 +268,15 @@ export class DevMateChatViewProvider implements
         completedDiffId: (filePath) => this.diffPresenter.completedDiffId(filePath)
       },
       events: {
-        postMessage: (message) => this.postMessage(message),
-        postStatus: (text, level) => this.postStatus(text, level),
+        ...viewMessages,
         postFailure: (message, options) => this.postRequestFailure(message, options),
         finishCancellation: (signal) => this.finishCancelledRequest(signal),
         sessionStateChanged: () => this.sessionPresenter.postState(false)
       },
       now: () => Date.now()
     });
+
+    // Terminal listeners live as long as the provider, even when the view is closed.
     this.lifetimeDisposables.push(
       vscode.window.onDidStartTerminalShellExecution((event) => {
         this.toolExecutor.captureWorkspaceTerminalExecution(event);
@@ -359,140 +365,67 @@ export class DevMateChatViewProvider implements
   }
 
   private async handleMessage(message: WebviewMessage): Promise<void> {
+    // Keep every command visible here so its owner is easy to find.
     switch (message.command) {
+      // Requests and their context.
       case 'setScope':
-        await this.updateScope(message.scope);
-        return;
+        return this.updateScope(message.scope);
       case 'ask':
-        if (this.activeRequest) {
-          this.postStatus('DevMate is already working on a request.', 'warning');
-          return;
-        }
-        const requestController = new AbortController();
-        this.disposeCommandTerminals();
-        this.activeRequest = requestController;
-        try {
-          await this.chatRequestController.answer(message, requestController.signal);
-        } catch (error) {
-          if (!this.finishCancelledRequest(requestController.signal)) {
-            this.postRequestFailure(
-              error instanceof Error ? error.message : 'DevMate could not complete the request.'
-            );
-          }
-        } finally {
-          if (this.activeRequest === requestController) {
-            this.activeRequest = undefined;
-          }
-        }
-        return;
-      case 'continueAgentRun': {
-        if (this.activeRequest) {
-          this.postStatus('DevMate is already working on a request.', 'warning');
-          return;
-        }
-        const checkpoint = this.agentCheckpoints.current();
-        if (!checkpoint) {
-          this.postRequestFailure('There is no unfinished DevMate run for this session.', {
-            level: 'warning'
-          });
-          this.agentCheckpoints.postState();
-          return;
-        }
-        const requestController = new AbortController();
-        this.disposeCommandTerminals();
-        this.activeRequest = requestController;
-        const scopeLabel = checkpoint.scopeKind === 'project'
-          ? 'Project'
-          : checkpoint.scopeKind === 'activeFile'
-            ? 'File'
-            : 'Selection';
-        try {
-          await this.chatRequestController.answer({
-            command: 'ask',
-            mode: checkpoint.mode,
-            question: checkpoint.question,
-            scope: {
-              kind: checkpoint.scopeKind,
-              label: scopeLabel,
-              detail: ''
-            }
-          }, requestController.signal, checkpoint);
-        } catch (error) {
-          if (!this.finishCancelledRequest(requestController.signal)) {
-            this.postRequestFailure(
-              error instanceof Error ? error.message : 'DevMate could not continue the request.'
-            );
-          }
-        } finally {
-          if (this.activeRequest === requestController) {
-            this.activeRequest = undefined;
-          }
-        }
-        return;
-      }
+        return this.runRequest(message);
+      case 'continueAgentRun':
+        return this.resumeRequest();
       case 'cancelRequest':
-        this.cancelActiveRequest();
-        return;
+        return this.cancelActiveRequest();
       case 'pickFiles':
-        await this.attachmentController.pickWorkspaceFiles();
-        return;
+        return this.attachmentController.pickWorkspaceFiles();
       case 'removeAttachment':
-        this.attachmentController.remove(message.id);
-        return;
+        return this.attachmentController.remove(message.id);
+
+      // Chat-model and embedding profiles.
       case 'chooseLlmProfile':
-        this.profilePresenter.chooseLlmProfile();
-        return;
+        return this.profilePresenter.chooseLlmProfile();
       case 'selectLlmProfile':
-        await this.profilePresenter.selectLlmProfile(message.profileId);
-        return;
+        return this.profilePresenter.selectLlmProfile(message.profileId);
       case 'setReasoningEffort':
-        await this.profilePresenter.setActiveReasoningEffort(message.effort);
-        return;
+        return this.profilePresenter.setActiveReasoningEffort(message.effort);
       case 'addLlmProfile':
-        await this.profilePresenter.showLlmProfileForm();
-        return;
+        return this.profilePresenter.showLlmProfileForm();
       case 'editLlmProfile':
-        await this.profilePresenter.showLlmProfileForm(message.profileId);
-        return;
+        return this.profilePresenter.showLlmProfileForm(message.profileId);
       case 'deleteLlmProfile':
-        await this.profilePresenter.deleteLlmProfile(message.profileId);
-        return;
+        return this.profilePresenter.deleteLlmProfile(message.profileId);
       case 'saveLlmProfile':
-        await this.profilePresenter.saveLlmProfile(message.profile);
-        return;
+        return this.profilePresenter.saveLlmProfile(message.profile);
       case 'chooseEmbeddingProfile':
-        this.profilePresenter.chooseEmbeddingProfile();
-        return;
+        return this.profilePresenter.chooseEmbeddingProfile();
       case 'selectEmbeddingProfile':
-        await this.profilePresenter.selectEmbeddingProfile(message.profileId);
-        return;
+        return this.profilePresenter.selectEmbeddingProfile(message.profileId);
       case 'addEmbeddingProfile':
-        await this.profilePresenter.showEmbeddingProfileForm();
-        return;
+        return this.profilePresenter.showEmbeddingProfileForm();
       case 'editEmbeddingProfile':
-        await this.profilePresenter.showEmbeddingProfileForm(message.profileId);
-        return;
+        return this.profilePresenter.showEmbeddingProfileForm(message.profileId);
       case 'deleteEmbeddingProfile':
-        await this.profilePresenter.deleteEmbeddingProfile(message.profileId);
-        return;
+        return this.profilePresenter.deleteEmbeddingProfile(message.profileId);
       case 'saveEmbeddingProfile':
-        await this.profilePresenter.saveEmbeddingProfile(message.profile);
-        return;
+        return this.profilePresenter.saveEmbeddingProfile(message.profile);
+
+      // Settings and permission decisions.
       case 'saveSettings':
-        await this.settingsPresenter.save(message.settings);
-        return;
+        return this.settingsPresenter.save(message.settings);
       case 'saveAgentToolSettings':
-        await this.settingsPresenter.saveAgentToolSettings(message.settings);
-        return;
+        return this.settingsPresenter.saveAgentToolSettings(message.settings);
       case 'reviewPermissionDiff':
-        await this.permissionPresenter.reviewFileDiff(message.requestId, message.path);
-        return;
+        return this.permissionPresenter.reviewFileDiff(message.requestId, message.path);
       case 'revokeRememberedCommand':
-        await this.permissionPresenter.revokeRememberedCommand(message.signature);
-        return;
+        return this.permissionPresenter.revokeRememberedCommand(message.signature);
       case 'clearRememberedCommands':
-        await this.permissionPresenter.clearRememberedCommands();
-        return;
+        return this.permissionPresenter.clearRememberedCommands();
+      case 'commandPermissionDecision':
+        return this.permissionPresenter.decideCommandPermission(message.requestId, message.decision);
+      case 'permissionDecision':
+        return this.permissionPresenter.decideFilePermission(message.requestId, message.decision);
+
+      // Backend controls and saved chats.
       case 'restartBackend':
         if (this.activeRequest) {
           this.postStatus('Wait for the active request to finish before restarting the backend.', 'warning');
@@ -505,58 +438,99 @@ export class DevMateChatViewProvider implements
         this.backendOutput.show(true);
         return;
       case 'newSession':
-        await this.sessionPresenter.createSession();
-        return;
+        return this.sessionPresenter.createSession();
       case 'selectSession':
-        await this.sessionPresenter.selectSession(message.sessionId);
-        return;
+        return this.sessionPresenter.selectSession(message.sessionId);
       case 'renameSession':
-        await this.sessionPresenter.renameSession(message.sessionId);
-        return;
+        return this.sessionPresenter.renameSession(message.sessionId);
       case 'deleteSession':
-        await this.sessionPresenter.deleteSession(message.sessionId);
-        return;
+        return this.sessionPresenter.deleteSession(message.sessionId);
+
+      // Native editor actions and initial view state.
       case 'copyText':
         if (typeof message.text === 'string' && message.text.length <= 500_000) {
           await vscode.env.clipboard.writeText(message.text);
         }
         return;
       case 'openWorkspaceFile':
-        await this.openWorkspaceFile(message.path, message.line);
-        return;
+        return this.openWorkspaceFile(message.path, message.line);
       case 'openFileChangeDiff':
-        await this.openCompletedFileDiff(message.diffId, message.path);
-        return;
+        return this.openCompletedFileDiff(message.diffId, message.path);
       case 'openExternalLink':
-        await this.openExternalLink(message.url);
-        return;
-      case 'commandPermissionDecision':
-        await this.permissionPresenter.decideCommandPermission(
-          message.requestId,
-          message.decision
-        );
-        return;
+        return this.openExternalLink(message.url);
       case 'openCommandTerminal':
-        this.toolExecutor.showCommandTerminal(message.activityId);
-        return;
-      case 'permissionDecision':
-        await this.permissionPresenter.decideFilePermission(
-          message.requestId,
-          message.decision
-        );
-        return;
+        return this.toolExecutor.showCommandTerminal(message.activityId);
       case 'ready':
-        this.attachmentController.postState();
-        await this.profilePresenter.postLlmProfileState();
-        await this.profilePresenter.promptForBuiltInNemotronKey();
-        this.profilePresenter.postEmbeddingProfileState();
-        this.permissionPresenter.postPolicyState();
-        this.settingsPresenter.postState();
-        this.postBackendStatus();
-        this.sessionPresenter.postState(false);
-        return;
+        return this.postInitialViewState();
       default:
         this.postStatus('Unsupported command received.', 'error');
+    }
+  }
+
+  private async postInitialViewState(): Promise<void> {
+    this.attachmentController.postState();
+    await this.profilePresenter.postLlmProfileState();
+    await this.profilePresenter.promptForBuiltInNemotronKey();
+    this.profilePresenter.postEmbeddingProfileState();
+    this.permissionPresenter.postPolicyState();
+    this.settingsPresenter.postState();
+    this.postBackendStatus();
+    this.sessionPresenter.postState(false);
+  }
+
+  private async resumeRequest(): Promise<void> {
+    // Check before reading the checkpoint: the current run may still be updating it.
+    if (this.activeRequest) {
+      this.postStatus('DevMate is already working on a request.', 'warning');
+      return;
+    }
+    const checkpoint = this.agentCheckpoints.current();
+    if (!checkpoint) {
+      this.postRequestFailure('There is no unfinished DevMate run for this session.', {
+        level: 'warning'
+      });
+      this.agentCheckpoints.postState();
+      return;
+    }
+    const scopeLabels = { project: 'Project', activeFile: 'File', selection: 'Selection' };
+    await this.runRequest({
+      command: 'ask',
+      mode: checkpoint.mode,
+      question: checkpoint.question,
+      scope: {
+        kind: checkpoint.scopeKind,
+        label: scopeLabels[checkpoint.scopeKind],
+        detail: ''
+      }
+    }, checkpoint);
+  }
+
+  private async runRequest(
+    message: AskWebviewMessage,
+    checkpoint?: AgentRunCheckpoint
+  ): Promise<void> {
+    if (this.activeRequest) {
+      this.postStatus('DevMate is already working on a request.', 'warning');
+      return;
+    }
+    // New and resumed requests share the same cancellation and cleanup rules.
+    const abortController = new AbortController();
+    this.disposeCommandTerminals();
+    this.activeRequest = abortController;
+    try {
+      await this.chatRequestController.answer(message, abortController.signal, checkpoint);
+    } catch (error) {
+      if (!this.finishCancelledRequest(abortController.signal)) {
+        const fallbackMessage = checkpoint
+          ? 'DevMate could not continue the request.'
+          : 'DevMate could not complete the request.';
+        this.postRequestFailure(error instanceof Error ? error.message : fallbackMessage);
+      }
+    } finally {
+      // An older request must not clear a newer one after the view has reopened.
+      if (this.activeRequest === abortController) {
+        this.activeRequest = undefined;
+      }
     }
   }
 
@@ -677,10 +651,6 @@ export class DevMateChatViewProvider implements
       retryable: options.retryable === true
     });
     this.postStatus(message, options.level ?? 'error');
-  }
-
-  private getAgentToolSettings(): AgentToolSettings {
-    return this.settingsController.agentToolSettings();
   }
 
   private postBackendStatus(): void {

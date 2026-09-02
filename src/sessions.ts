@@ -220,22 +220,8 @@ function isRecordCP(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-export function appendConversationTurn(
-  history: ConversationTurn[],
-  user: string,
-  assistant: string
-): ConversationTurn[] {
-  const turn = {
-    user: user.trim().slice(0, MAX_CONVERSATION_TURN_CHARACTERS),
-    assistant: assistant.trim().slice(0, MAX_CONVERSATION_TURN_CHARACTERS)
-  };
-  if (!turn.user || !turn.assistant) {
-    return boundConversationHistory(history);
-  }
-  return boundConversationHistory([...history, turn]);
-}
-
-export function boundConversationHistory(history: ConversationTurn[]): ConversationTurn[] {
+// Limit the history sent to the model, not the raw turns saved in the session.
+function boundConversationHistory(history: ConversationTurn[]): ConversationTurn[] {
   const bounded: ConversationTurn[] = [];
   let characters = 0;
   for (const candidate of history.slice(-MAX_CONVERSATION_TURNS).reverse()) {

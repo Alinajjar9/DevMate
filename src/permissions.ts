@@ -59,19 +59,6 @@ export function allowActions(
   return updated;
 }
 
-export function permissionPolicyLabel(policy: FilePermissionPolicy): string {
-  if (policy.createFiles === 'allow' && policy.updateFiles === 'allow') {
-    return 'Changes allowed';
-  }
-  if (policy.createFiles === 'allow') {
-    return 'Creates allowed';
-  }
-  if (policy.updateFiles === 'allow') {
-    return 'Edits allowed';
-  }
-  return 'Ask for changes';
-}
-
 export function parseRememberedCommands(value: unknown): RememberedCommand[] {
   if (!Array.isArray(value)) {
     return [];

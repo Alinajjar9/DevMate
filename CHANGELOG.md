@@ -2,6 +2,82 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-09-02 — Check the release package and keep test databases out
+
+### Changed
+
+- Fixed `.vscodeignore` after the package inventory showed that an ignored temporary test folder would still ship its SQLite database.
+- Added a short release-check section explaining package exclusions, isolated testing, and the remaining manual UI/provider check.
+- Built a separate `devmate-1.0.0-readability.vsix` without replacing the previous build or installing over the normal extension. Temporary smoke files stay under the ignored `.vscode-test` directory.
+- No application behavior changed and no additional production modules were introduced.
+
+### Verification
+
+- `npm run verify` — all 382 extension tests and 164 backend tests passed; 67 cross-language contracts, 46 cycle-free TypeScript modules, and 46 emitted JavaScript modules verified.
+- Rebuilt the standalone Windows x64 backend and VSIX; inspected all 186 archive entries and confirmed that test databases, source maps, development dependencies, and previous release archives were absent.
+- Launched the unpacked VSIX in the real VS Code 1.134.0 extension host with isolated settings, extension storage, a separate backend port, and a one-file test workspace.
+- Confirmed activation, chat-command/view opening, authenticated bundled-backend health, workspace indexing, SQLite integrity and exact-source lexical retrieval, rejection of unauthenticated requests, and backend shutdown after the test instance exited.
+- No chat or embedding provider was contacted. Visual UI inspection and a request using the chosen model remain manual checks before a demo.
+- `git diff --check`
+
+---
+
+## 2026-09-02 — Remove unused helpers and clarify cleanup boundaries
+
+### Changed
+
+- Removed the unused conversation-append wrapper, old permission-label formatter, and standalone search-fusion wrapper after checking application, test, and script references.
+- Updated their useful tests to exercise current session-history extraction, permission decisions, and query-aware search ranking instead.
+- Removed the obsolete backend-state type containing the old mock state and one unused Python chat-memory import.
+- Kept history bounding and omission-marker detection private to their modules, without changing their logic.
+- Added simple comments explaining prompt-history limits, rank fusion, shared contract exports, and why both history-marker formats must still be rejected as file contents.
+- Preserved shared contract constants, VS Code entry points, session test factories, and active security/fallback behavior. No files were added or user-visible behavior intentionally changed.
+
+### Verification
+
+- `npm run verify` — all 382 extension tests and 164 backend tests passed; 67 cross-language contracts, 46 cycle-free TypeScript modules, and 46 emitted JavaScript modules verified.
+- Ran the updated history, permission, search, and mutation tests before deleting the old wrappers.
+- `git diff --check`
+
+---
+
+## 2026-09-02 — Update chat tests to match the current controllers
+
+### Changed
+
+- Moved the resumed-request, backend-authentication, and failed-request scenarios into the existing request-controller test file.
+- Removed the old provider-to-request adapter, obsolete provider-method mocks, unused imports, and leftover settings, session, and checkpoint fixture setup.
+- Made request tests use the real session controller with an in-memory repository, keeping saved-turn snapshots separate from live state.
+- Preserved checks for request construction, summary use, checkpoint cleanup, pending turns, and compaction failures; added explicit checks that unauthenticated requests do not reach compaction or the agent.
+- Kept provider routing and native VS Code wiring tests in the characterization file and documented this testing boundary in the README.
+- Removed about 200 lines across the two test files without adding files or changing application code.
+
+### Verification
+
+- `npm run verify` — all 382 extension tests and 164 backend tests passed; 67 cross-language contracts, 46 cycle-free TypeScript modules, and 46 emitted JavaScript modules verified.
+- Ran the replacement and original request scenarios together before removing the duplicate versions.
+- `git diff --check`
+
+---
+
+## 2026-09-02 — Simplify chat view setup and request routing
+
+### Changed
+
+- Grouped the provider constructor by responsibility and shared the repeated workspace-storage, profile-storage, and typed message callbacks.
+- Kept constructor-only controllers local instead of storing extra fields on the provider, and removed the redundant tool-settings delegate.
+- Shortened the command router to direct, grouped calls while keeping every supported command visible in one place.
+- Combined new and resumed requests into one cancellation, error-reporting, and cleanup path; kept checkpoint lookup and initial view-state publishing in named methods in the same file.
+- Added plain-English comments and tests for cancellation, overlapping requests, missing checkpoints, startup ordering, credential storage, and the real constructor wiring.
+- Reduced `src/chatViewProvider.ts` from about 769 lines to about 739 lines without adding files or intentionally changing behavior.
+
+### Verification
+
+- `npm run verify` — 382 extension tests and 164 backend tests passed; 67 cross-language contracts, 46 cycle-free TypeScript modules, and 46 emitted JavaScript modules verified.
+- `git diff --check`
+
+---
+
 ## 2026-09-02 — Keep the complete chat request flow in one controller
 
 ### Changed

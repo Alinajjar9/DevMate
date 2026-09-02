@@ -269,7 +269,7 @@ test('settings manage separate embedding profiles with explicit remote consent',
   assert.match(source, /command: 'saveEmbeddingProfile'/);
   assert.match(source, /remoteAllowed: remote && embeddingProfileRemoteAllowedEl\.checked/);
   assert.match(source, /embeddingSecretKeyForProfile/);
-  assert.match(source, /this\.extensionContext\.secrets\.store/);
+  assert.match(source, /extensionContext\.secrets\.store/);
   assert.match(source, /refreshActiveProfile/);
 });
 

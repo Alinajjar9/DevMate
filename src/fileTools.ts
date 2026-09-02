@@ -206,6 +206,7 @@ function isRecordS(value: unknown): value is Record<string, unknown> {
 }
 const windowsReservedNames = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 const windowsInvalidCharacters = /[<>:"|?*]/;
+// Reject both marker formats: neither is real source code that is safe to write to a file.
 const legacyHistoryMarker = /^\[(?:omitted after execution: )?\d+ characters, sha256 [0-9a-f]{16}\]$/i;
 const internalHistoryMarker = /^\[DevMate internal history summary: (?:content|text) omitted after execution; \d+ characters; sha256 [0-9a-f]{16}; never use as file content\]$/i;
 
@@ -218,7 +219,7 @@ export function agentHistoryOmissionMarker(
     + `${characters} characters; sha256 ${hash}; never use as file content]`;
 }
 
-export function isAgentHistoryOmissionMarker(value: string): boolean {
+function isAgentHistoryOmissionMarker(value: string): boolean {
   return legacyHistoryMarker.test(value.trim()) || internalHistoryMarker.test(value.trim());
 }
 

@@ -12,7 +12,7 @@ const {
   SqliteProjectRetriever
 } = require('../out/projectSearch/projectRetriever');
 const {
-  fuseProjectSearchResults,
+  rankProjectSearchResults,
   RECIPROCAL_RANK_FUSION_CONSTANT
 } = require('../out/projectSearch/projectSearchRanking');
 
@@ -213,9 +213,11 @@ test('reciprocal rank fusion rewards agreement and preserves semantic-only match
     0.98
   );
 
-  const fused = fuseProjectSearchResults(
+  // An empty query tests rank fusion without filename or identifier boosts.
+  const fused = rankProjectSearchResults(
     [auth, catalog],
     [worker, { ...auth, score: 0.75 }],
+    '',
     3
   );
 
@@ -227,7 +229,7 @@ test('reciprocal rank fusion rewards agreement and preserves semantic-only match
   ]);
   assert.ok(fused[0].score > fused[1].score);
   assert.equal(fused.filter((result) => result.relativePath === 'src/auth.ts').length, 1);
-  assert.deepEqual(fuseProjectSearchResults([auth], [worker], 0), []);
+  assert.deepEqual(rankProjectSearchResults([auth], [worker], '', 0), []);
 });
 
 test('semantic failures and stale semantic chunks fall through to SQLite lexical search', async () => {

@@ -33,17 +33,10 @@ export function rankProjectSearchResults(
   query: string,
   limit: number
 ): KnowledgeIndexSearchItem[] {
+  // Merge the two rankings first, then add small boosts for exact code and file names.
   const entries = mergeRankings(lexicalResults, semanticResults);
   const signals = collectQuerySignals(query);
   return selectResults(entries, limit, (result) => querySignalBoost(result, signals));
-}
-
-export function fuseProjectSearchResults(
-  lexicalResults: readonly KnowledgeIndexSearchItem[],
-  semanticResults: readonly KnowledgeIndexSearchItem[],
-  limit: number
-): KnowledgeIndexSearchItem[] {
-  return selectResults(mergeRankings(lexicalResults, semanticResults), limit, () => 0);
 }
 
 function mergeRankings(

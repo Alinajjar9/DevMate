@@ -77,6 +77,7 @@ npm run compile
 - Comment security checks, asynchronous state changes, algorithms, provider-specific behavior, and intentional fallbacks.
 - Do not comment obvious assignments or repeat what a well-named function already says.
 - Update or remove a comment when the behavior it describes changes.
+- Test controller workflows through their current dependencies. Keep VS Code mocks for view routing and native editor behavior instead of rebuilding old provider internals in tests.
 
 ## Running DevMate from source
 
@@ -355,12 +356,28 @@ The Windows x64 VSIX includes a self-contained backend executable. DevMate start
 
 The Python backend source remains in the package as a fallback for development or an unsupported platform. In that case, install `backend/requirements.txt` and set **DevMate: Backend Python Path** to the interpreter.
 
+### Final package check
+
+Before sharing a build, inspect what the packager includes:
+
+```powershell
+npx --yes @vscode/vsce ls --tree
+```
+
+The package needs `out`, `media`, and the backend runtime. It should not contain test databases, `.map` files, development dependencies, or previous VSIX files. `.gitignore` does not control this list; `.vscodeignore` does.
+
+Test a release with a small throwaway project and separate VS Code user-data and extension directories. Use a different local backend port if your normal DevMate is already running. This keeps the check away from your real chats, settings, and installed extension.
+
+The automated packaging check for this cleanup passed activation, chat-view opening, authenticated backend startup, private SQLite creation, and lexical indexing in VS Code 1.134.0 on Windows x64. The owned backend also stopped after the test window closed. It did not contact a model or embedding provider.
+
+Before a demo, still do a short manual check: open the profile/settings forms, send one question with your chosen model, and review then cancel one proposed edit. Automated startup checks do not prove that the UI looks right or that a particular external provider works.
+
 ## Repository structure
 
 | Path | Purpose |
 | --- | --- |
 | `src/extension.ts` | Extension activation, registrations, and dependency composition |
-| `src/chatViewProvider.ts` | Validated chat command routing, view lifecycle, cancellation ownership, and typed UI forwarding |
+| `src/chatViewProvider.ts` | Feature wiring, grouped chat command routing, shared request cancellation, view lifecycle, and typed UI forwarding |
 | `src/chatRequestController.ts` | Chat request validation, context preparation, compaction, agent coordination, and saved responses |
 | `src/webviewProtocol.ts` | Runtime-validated UI commands and typed extension-to-webview events |
 | `src/agentCheckpointController.ts` | Unfinished agent-run storage, active-chat matching, cleanup, and UI-ready state |

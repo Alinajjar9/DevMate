@@ -4,11 +4,11 @@ export type AssistantMode = 'ideas' | 'code' | 'debug';
 export type ScopeType = 'project' | 'file' | 'selection';
 export type ContextSource = 'file' | 'selection' | 'attachment';
 export type ApiStatus = 'ok' | 'error';
-export type BackendState = 'online' | 'offline' | 'mock';
 export type EmbeddingProviderName = 'ollama' | 'openai-compatible';
 export type ReasoningEffort = 'auto' | 'low' | 'medium' | 'high' | 'xhigh';
 export const DEVMATE_BACKEND_SERVICE = 'devmate-backend';
 export const DEVMATE_BACKEND_PROTOCOL_VERSION = 2;
+// The contract check compares these capabilities and limits with the Python definitions.
 export const DEVMATE_BACKEND_CAPABILITIES = [
   'chat',
   'streaming',

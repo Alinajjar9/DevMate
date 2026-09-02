@@ -69,7 +69,6 @@ Module._load = function loadWithVscodeMock(request, parent, isMain) {
   return originalModuleLoad.call(this, request, parent, isMain);
 };
 const { DevMateChatViewProvider } = require('../out/chatViewProvider');
-const { ChatRequestController } = require('../out/chatRequestController');
 const { AgentRunController } = require('../out/agentRunController');
 const {
   StartedCommandError,
@@ -79,14 +78,15 @@ const {
 const { WorkspaceContext } = require('../out/workspaceContext');
 const { WorkspaceMutations } = require('../out/workspaceMutations');
 const { LexicalProjectRetriever } = require('../out/projectSearch/projectRetriever');
-const { SessionController } = require('../out/sessionController');
 Module._load = originalModuleLoad;
 
-const {
-  appendConversationSessionTurn,
-  createConversationSessionStore
-} = require('../out/sessions');
 const { parseAgentToolCall } = require('../out/agentTools');
+const { LLM_PROFILES_STORAGE_KEY, secretKeyForProfile } = require('../out/llmProfiles');
+const {
+  EMBEDDING_PROFILES_STORAGE_KEY,
+  embeddingSecretKeyForProfile
+} = require('../out/embeddingProfiles');
+const { FILE_PERMISSION_POLICY_STORAGE_KEY } = require('../out/permissions');
 const {
   createEmptyProjectIndex,
   createIndexedProjectFile
@@ -97,104 +97,19 @@ const workspace = {
   name: workspaceFolder.name
 };
 
+// Stub only the collaborators needed for routing. Request workflows are tested in their own file.
 function providerWithoutConstructor() {
   const provider = Object.create(DevMateChatViewProvider.prototype);
-  const activeDiffs = new Map();
-  provider.diffPresenter = {
-    activeDiffs,
-    beginRequest: () => activeDiffs.clear(),
-    completedDiffId: (filePath) => activeDiffs.get(filePath)
-  };
-  provider.sessionPresenter = {
-    postState: () => undefined
-  };
   provider.agentCheckpoints = {
     current: () => undefined,
-    postState: () => undefined,
-    clear: async () => undefined
+    postState: () => undefined
   };
   return provider;
 }
 
-function requestControllerFromProvider(provider) {
-  return new ChatRequestController({
-    backend: {
-      start: () => provider.backendManager.start(),
-      detail: () => provider.backendManager.status.detail,
-      token: () => provider.backendManager.requestToken,
-      url: () => 'http://127.0.0.1:8000',
-      appendLog: (message) => provider.backendOutput.append(message)
-    },
-    context: {
-      workspace: () => provider.getConversationWorkspace(),
-      collect: (scope, question, signal) => provider.collectScope(scope, question, signal)
-    },
-    profiles: {
-      active: () => provider.getActiveLlmProfile(),
-      reasoningPreferences: () => provider.getReasoningEffortPreferences(),
-      apiKey: (profileId) => provider.llmProfiles.apiKey(profileId),
-      showForm: async (profileId) => {
-        await provider.profilePresenter?.showLlmProfileForm(profileId);
-      }
-    },
-    settings: provider.settingsController,
-    sessions: provider.sessionController,
-    compaction: provider.chatCompactionController,
-    agentRuns: provider.agentRunController,
-    checkpoints: provider.agentCheckpoints,
-    changes: {
-      beginRequest: () => provider.diffPresenter.beginRequest(),
-      apply: (changes, summary, signal) =>
-        provider.workspaceMutations.confirmAndApplyFileChanges(changes, summary, signal),
-      completedDiffId: (filePath) => provider.diffPresenter.completedDiffId(filePath)
-    },
-    events: {
-      postMessage: (message) => provider.postMessage(message),
-      postStatus: (text, level) => provider.postStatus(text, level),
-      postFailure: (message, options) => provider.postRequestFailure(message, options),
-      finishCancellation: (signal) => provider.finishCancelledRequest(signal),
-      sessionStateChanged: () => provider.sessionPresenter.postState(false)
-    },
-    now: () => Date.now()
-  }, async () => undefined);
-}
-
-function requestSettings() {
-  return {
-    timeoutSeconds: 1_800,
-    commandTimeoutSeconds: 300,
-    toolCallLimit: 16,
-    maxTokens: 2_048,
-    maxInputContextTokens: 24_000,
-    temperature: 0.35,
-    agentTools: {
-      readFileMaxLines: 400,
-      listFilesMaxResults: 200,
-      searchCodeMaxResults: 50,
-      diagnosticsMaxResults: 100,
-      terminalErrorsMaxResults: 5,
-      codeNavigationMaxResults: 100
-    }
-  };
-}
-
-function sessionControllerWithStore(initialStore, onSave = () => undefined) {
-  return new SessionController({
-    loadWorkspace: async () => ({ kind: 'completed', value: initialStore }),
-    saveSessions: async (sessions) => {
-      onSave(sessions);
-      return { kind: 'completed', value: undefined };
-    },
-    deleteSession: async () => ({ kind: 'completed', value: undefined })
-  }, undefined, initialStore);
-}
-
-function extensionContext({ checkpoint } = {}) {
+function extensionContext() {
   const globalValues = new Map();
   const workspaceValues = new Map();
-  if (checkpoint !== undefined) {
-    workspaceValues.set('devMate.agentCheckpoint.v1', checkpoint);
-  }
   return {
     extensionUri: createUri('C:\\extension'),
     globalValues,
@@ -218,8 +133,7 @@ function extensionContext({ checkpoint } = {}) {
           workspaceValues.set(key, value);
         }
       }
-    },
-    secrets: { get: async () => undefined }
+    }
   };
 }
 
@@ -397,305 +311,265 @@ test('routes asks exclusively and reconstructs resumed requests from the checkpo
   assert.equal(provider.activeRequest, undefined);
 });
 
-test('prepares a resumed agent run and persists its completed outcome', async () => {
-  let sessionStore = createConversationSessionStore('session', 1, workspace);
-  sessionStore = appendConversationSessionTurn(
-    sessionStore,
-    'Earlier question',
-    'Earlier answer',
-    2
-  );
-  const checkpoint = {
-    version: 1,
-    workspaceId: workspace.id,
-    sessionId: 'session',
-    question: 'Continue the fix',
-    mode: 'debug',
-    scopeKind: 'project',
-    toolHistory: [{
-      callId: 'read-1',
-      name: 'read_file',
-      arguments: { path: 'src/app.ts' },
-      result: 'Current source',
-      isError: false
-    }],
-    toolUsedFiles: ['C:\\repo\\src\\app.ts'],
-    toolSignatures: [],
-    fileMutationCalls: 1,
-    mutationCharacters: 40,
-    commandCalls: 2,
-    dependencyInstallCalls: 1,
-    workspaceRevision: 7,
-    forceFinalAnswer: false,
-    disableThinking: false,
-    emptyResponseRecoveryAttempted: false,
-    inputTokens: 10,
-    outputTokens: 5,
-    totalTokens: 15,
-    tokenUsageExact: true,
-    createdAt: 100,
-    updatedAt: 200
+test('reports request failures and releases ownership for both new and resumed requests', async () => {
+  const askMessage = {
+    command: 'ask', mode: 'ideas', question: 'Explain this',
+    scope: { kind: 'project', label: 'Project', detail: '' }
   };
-  const provider = providerWithoutConstructor();
-  const messages = [];
-  let capturedInput;
-  let capturedSignal;
-  let clearedCheckpoints = 0;
-  let persistedSessions = 0;
+  for (const resumed of [false, true]) {
+    for (const failure of [new Error('Provider unavailable'), 'unexpected failure']) {
+      const provider = providerWithoutConstructor();
+      const messages = [];
+      provider.postMessage = (message) => messages.push(message);
+      provider.disposeCommandTerminals = () => undefined;
+      provider.agentCheckpoints.current = () => ({
+        question: askMessage.question, mode: 'ideas', scopeKind: 'project'
+      });
+      provider.chatRequestController = { answer: async () => { throw failure; } };
 
-  provider.sessionController = sessionControllerWithStore(sessionStore, () => {
-    persistedSessions += 1;
-  });
-  provider.diffPresenter.activeDiffs.set('existing', 'diff');
-  provider.backendManager = {
-    start: async () => true,
-    requestToken: TEST_BACKEND_TOKEN,
-    status: { detail: 'online' }
-  };
-  provider.llmProfiles = { apiKey: async () => undefined };
-  provider.settingsController = { state: () => requestSettings() };
-  provider.getConversationWorkspace = () => workspace;
-  provider.getActiveLlmProfile = () => ({
-    id: 'local-model',
-    name: 'Local model',
-    provider: 'ollama',
-    model: 'qwen3-coder',
-    baseUrl: 'http://127.0.0.1:11434/v1',
-    contextWindowTokens: 64_000
-  });
-  provider.postStatus = (text) => messages.push({ command: 'status', text });
-  provider.collectScope = async () => ({
-    info: { kind: 'project', label: 'Project A', detail: 'Project: Project A' },
-    apiScope: {
-      type: 'project',
-      workspacePath: workspaceFolder.uri.fsPath,
-      items: []
+      await provider.handleMessage(resumed ? { command: 'continueAgentRun' } : askMessage);
+
+      const expected = failure instanceof Error ? failure.message : resumed
+        ? 'DevMate could not continue the request.'
+        : 'DevMate could not complete the request.';
+      assert.deepEqual(messages, [
+        { command: 'requestFailed', message: expected, retryable: false },
+        { command: 'status', text: expected, level: 'error' }
+      ]);
+      assert.equal(provider.activeRequest, undefined);
     }
-  });
-  provider.finishCancelledRequest = () => false;
-  provider.postMessage = (message) => messages.push(message);
-  provider.getReasoningEffortPreferences = () => ({ 'local-model': 'high' });
-  provider.agentCheckpoints = {
-    current: () => undefined,
-    clear: async () => {
-      clearedCheckpoints += 1;
-    }
+  }
+});
+
+test('cancels new and resumed requests without allowing another request during cleanup', async () => {
+  const askMessage = {
+    command: 'ask', mode: 'ideas', question: 'Explain this',
+    scope: { kind: 'selection', label: 'Selection', detail: '' }
   };
-  provider.postRequestFailure = (message) => assert.fail(message);
-  provider.agentRunController = {
-    run: async (input, signal) => {
-      capturedInput = input;
-      capturedSignal = signal;
-      return {
-        kind: 'completed',
-        response: {
-          answer: 'Fix completed.',
-          usedFiles: ['C:\\repo\\src\\app.ts'],
-          changes: [],
-          toolCalls: []
-        },
-        toolHistory: checkpoint.toolHistory,
-        toolUsedFiles: checkpoint.toolUsedFiles,
-        tokenUsage: {
-          inputTokens: 12,
-          outputTokens: 6,
-          totalTokens: 18,
-          exact: true
-        }
-      };
-    }
-  };
-  const compactedSummaryContent = {
-    goal: 'Finish the existing fix.',
-    constraints: ['Keep the change focused.'],
-    decisions: [],
-    importantFiles: ['src/app.ts'],
-    completedWork: [],
-    openTasks: ['Verify the fix.'],
-    unresolvedQuestions: []
-  };
-  provider.chatCompactionController = {
-    compactIfNeeded: async () => ({
-      kind: 'not-needed',
-      reason: 'too-few-turns',
-      summary: {
-        sessionId: 'session',
-        summaryVersion: 1,
-        content: compactedSummaryContent,
-        lastCompactedTurn: 0,
-        createdAtMs: 100,
-        updatedAtMs: 100
+  for (const resumed of [false, true]) {
+    const provider = providerWithoutConstructor();
+    const messages = [];
+    let disposedTerminals = 0;
+    let cancelledPermissions = 0;
+    let calls = 0;
+    let requestSignal;
+    let finishRequest;
+    const pending = new Promise((resolve) => { finishRequest = resolve; });
+    provider.postMessage = (message) => messages.push(message);
+    provider.disposeCommandTerminals = () => { disposedTerminals += 1; };
+    provider.permissionPresenter = {
+      cancelPending: () => { cancelledPermissions += 1; }
+    };
+    provider.agentCheckpoints.current = () => ({
+      question: askMessage.question, mode: 'ideas', scopeKind: 'selection'
+    });
+    provider.chatRequestController = {
+      answer: async (_message, signal) => {
+        calls += 1;
+        requestSignal = signal;
+        await pending;
+        throw new Error('Cancelled while waiting');
       }
-    })
-  };
+    };
 
-  const signal = new AbortController().signal;
-  await requestControllerFromProvider(provider).answer({
-    command: 'ask',
-    mode: 'debug',
-    question: '  Continue the fix  ',
-    scope: { kind: 'project', label: 'Project A', detail: '' }
-  }, signal, checkpoint);
+    const running = provider.handleMessage(resumed ? { command: 'continueAgentRun' } : askMessage);
+    const owner = provider.activeRequest;
+    assert.equal(owner.signal, requestSignal);
+    await provider.handleMessage({ command: 'cancelRequest' });
+    await provider.handleMessage({ command: 'cancelRequest' });
+    assert.equal(requestSignal.aborted, true);
+    assert.equal(cancelledPermissions, 1);
+    assert.equal(disposedTerminals, 2); // Once at start, once at cancellation.
+    assert.equal(provider.activeRequest, owner);
+    await provider.handleMessage(askMessage);
+    await provider.handleMessage({ command: 'continueAgentRun' });
+    assert.equal(calls, 1);
 
-  assert.equal(provider.diffPresenter.activeDiffs.has('existing'), true);
-  assert.equal(capturedSignal, signal);
-  assert.equal(capturedInput.question, 'Continue the fix');
-  assert.equal(capturedInput.mode, 'debug');
-  assert.equal(capturedInput.scopeKind, 'project');
-  assert.equal(capturedInput.modelContextWindowTokens, 64_000);
-  assert.equal(capturedInput.maxInputContextTokens, 24_000);
-  assert.equal(capturedInput.backendToken, TEST_BACKEND_TOKEN);
-  assert.equal(capturedInput.settings.maxTokens, 2048);
-  assert.equal(capturedInput.settings.temperature, 0.35);
-  assert.equal(capturedInput.settings.timeoutSeconds, 1800);
-  assert.equal(capturedInput.settings.reasoningEffort, 'auto');
-  assert.equal(capturedInput.toolCallLimit, 16);
-  assert.equal(capturedInput.workspaceId, workspace.id);
-  assert.equal(capturedInput.sessionId, 'session');
-  assert.equal(capturedInput.resumedCheckpoint, checkpoint);
-  assert.deepEqual(capturedInput.conversationHistory, []);
-  assert.deepEqual(capturedInput.conversationSummary, compactedSummaryContent);
-  assert.equal(clearedCheckpoints, 1);
-  assert.equal(persistedSessions, 1);
-  assert.equal(
-    provider.sessionController.store.sessions[0].turns.at(-1).assistant,
-    'Fix completed.\n\nUsed files:\n- `C:\\repo\\src\\app.ts`'
-  );
-  assert.equal(
-    messages.find((message) => message.command === 'assistantResponse').response,
-    'Fix completed.\n\nUsed files:\n- `C:\\repo\\src\\app.ts`'
-  );
+    finishRequest();
+    await running;
+    assert.equal(provider.activeRequest, undefined);
+    assert.deepEqual(messages.filter((message) => message.command !== 'status'), [
+      { command: 'requestCancelling' },
+      { command: 'requestCancelled' }
+    ]);
+    assert.deepEqual(messages.at(-1), { command: 'status', text: 'Ready', level: 'info' });
+  }
 });
 
-test('does not collect or send workspace context without an authenticated backend token', async () => {
-  const provider = providerWithoutConstructor();
-  let collectedContext = false;
-  let failure;
-  provider.sessionController = sessionControllerWithStore(
-    createConversationSessionStore('session', 1, workspace)
-  );
-  provider.diffPresenter.activeDiffs.clear();
-  provider.getConversationWorkspace = () => workspace;
-  provider.getActiveLlmProfile = () => ({
-    id: 'local-model',
-    name: 'Local model',
-    provider: 'ollama',
-    model: 'qwen3-coder'
-  });
-  provider.backendManager = {
-    start: async () => true,
-    requestToken: undefined,
-    status: { detail: 'online' }
-  };
-  provider.postStatus = () => undefined;
-  provider.collectScope = async () => {
-    collectedContext = true;
-    return undefined;
-  };
-  provider.postRequestFailure = (message, options) => {
-    failure = { message, options };
-  };
+test('does not let a finished request clear a newer request after the view is disposed', async () => {
+  for (const resumed of [false, true]) {
+    const provider = providerWithoutConstructor();
+    let finishRequest;
+    const pending = new Promise((resolve) => { finishRequest = resolve; });
+    provider.viewDisposables = [];
+    provider.permissionPresenter = { cancelPending() {} };
+    provider.disposeCommandTerminals = () => undefined;
+    provider.chatRequestController = { answer: () => pending };
+    provider.agentCheckpoints.current = () => ({
+      question: 'Explain this', mode: 'ideas', scopeKind: 'project'
+    });
+    const running = provider.handleMessage(resumed ? { command: 'continueAgentRun' } : {
+      command: 'ask', mode: 'ideas', question: 'Explain this',
+      scope: { kind: 'project', label: 'Project', detail: '' }
+    });
+    const previousOwner = provider.activeRequest;
+    provider.disposeViewDisposables();
+    assert.equal(previousOwner.signal.aborted, true);
+    assert.equal(provider.activeRequest, undefined);
+    const newOwner = new AbortController();
+    provider.activeRequest = newOwner;
 
-  await requestControllerFromProvider(provider).answer({
-    command: 'ask',
-    mode: 'ideas',
-    question: 'Do not send this context',
-    isNewTurn: false,
-    scope: { kind: 'project', label: 'Project A', detail: '' }
-  }, new AbortController().signal);
-
-  assert.equal(collectedContext, false);
-  assert.match(failure.message, /authenticated backend connection/);
-  assert.deepEqual(failure.options, { level: 'warning', retryable: true });
+    finishRequest();
+    await running;
+    assert.equal(provider.activeRequest, newOwner);
+    assert.equal(newOwner.signal.aborted, false);
+  }
 });
 
-test('keeps a fresh pending user turn when the agent run fails', async () => {
+test('checks request ownership before looking up a checkpoint and refreshes missing checkpoint state', async () => {
   const provider = providerWithoutConstructor();
   const messages = [];
-  const backendOutput = [];
-  let persistedSessions = 0;
-  let compactionInput;
-  let agentInput;
-  const initialStore = appendConversationSessionTurn(
-    createConversationSessionStore('session', 1, workspace),
-    'Earlier request',
-    'Earlier answer',
-    2
-  );
-  provider.sessionController = sessionControllerWithStore(initialStore, () => {
-    persistedSessions += 1;
-  });
-  provider.diffPresenter.activeDiffs.set('stale', 'diff');
-  provider.backendManager = {
-    start: async () => true,
-    requestToken: TEST_BACKEND_TOKEN,
-    status: { detail: 'online' }
-  };
-  provider.backendOutput = { append: (value) => backendOutput.push(value) };
-  provider.llmProfiles = { apiKey: async () => undefined };
-  provider.settingsController = { state: () => requestSettings() };
-  provider.getConversationWorkspace = () => workspace;
-  provider.getActiveLlmProfile = () => ({
-    id: 'local-model',
-    name: 'Local model',
-    provider: 'ollama',
-    model: 'qwen3-coder'
-  });
-  provider.collectScope = async () => ({
-    info: { kind: 'project', label: 'Project A', detail: 'Project: Project A' },
-    apiScope: { type: 'project', workspacePath: workspaceFolder.uri.fsPath, items: [] }
-  });
-  provider.finishCancelledRequest = () => false;
-  provider.agentCheckpoints = {
-    current: () => undefined,
-    clear: async () => assert.fail('failed runs retain checkpoints')
-  };
-  provider.getReasoningEffortPreferences = () => ({});
+  let checkpointReads = 0;
+  let checkpointUpdates = 0;
   provider.postMessage = (message) => messages.push(message);
-  provider.postStatus = (text, level) => messages.push({ command: 'status', text, level });
-  provider.agentRunController = {
-    run: async (input) => {
-      agentInput = input;
-      return { kind: 'failed', message: 'Provider unavailable.', retryable: true };
-    }
+  provider.agentCheckpoints = {
+    current: () => { checkpointReads += 1; },
+    postState: () => { checkpointUpdates += 1; }
   };
-  provider.chatCompactionController = {
-    compactIfNeeded: async (input) => {
-      compactionInput = input;
-      return { kind: 'failed', message: 'Summary provider unavailable.' };
+  const owner = new AbortController();
+  provider.activeRequest = owner;
+  await provider.handleMessage({ command: 'continueAgentRun' });
+  assert.equal(checkpointReads, 0);
+  assert.equal(provider.activeRequest, owner);
+  assert.match(messages[0].text, /already working/);
+
+  provider.activeRequest = undefined;
+  await provider.handleMessage({ command: 'continueAgentRun' });
+  assert.equal(checkpointReads, 1);
+  assert.equal(checkpointUpdates, 1);
+  assert.equal(provider.activeRequest, undefined);
+  assert.deepEqual(messages.slice(1), [
+    {
+      command: 'requestFailed',
+      message: 'There is no unfinished DevMate run for this session.',
+      retryable: false
+    },
+    {
+      command: 'status',
+      text: 'There is no unfinished DevMate run for this session.',
+      level: 'warning'
     }
+  ]);
+});
+
+test('publishes initial view state in order and waits for profile setup', async () => {
+  const provider = providerWithoutConstructor();
+  const calls = [];
+  let finishProfileState;
+  const pending = new Promise((resolve) => { finishProfileState = resolve; });
+  provider.attachmentController = { postState: () => calls.push('attachments') };
+  provider.profilePresenter = {
+    postLlmProfileState: async () => { calls.push('llm profiles'); await pending; },
+    promptForBuiltInNemotronKey: async () => { calls.push('profile key prompt'); },
+    postEmbeddingProfileState: () => calls.push('embedding profiles')
   };
+  provider.permissionPresenter = { postPolicyState: () => calls.push('permissions') };
+  provider.settingsPresenter = { postState: () => calls.push('settings') };
+  provider.postBackendStatus = () => calls.push('backend');
+  provider.sessionPresenter = { postState: (replaceMessages) => calls.push(['sessions', replaceMessages]) };
 
-  await requestControllerFromProvider(provider).answer({
-    command: 'ask',
-    mode: 'ideas',
-    question: 'New request',
-    scope: { kind: 'project', label: 'Project A', detail: '' }
-  }, new AbortController().signal);
+  const ready = provider.handleMessage({ command: 'ready' });
+  assert.deepEqual(calls, ['attachments', 'llm profiles']);
+  finishProfileState();
+  await ready;
+  assert.deepEqual(calls, [
+    'attachments', 'llm profiles', 'profile key prompt', 'embedding profiles',
+    'permissions', 'settings', 'backend', ['sessions', false]
+  ]);
+});
 
-  assert.equal(provider.diffPresenter.activeDiffs.size, 0);
-  assert.equal(persistedSessions, 1);
-  assert.equal(compactionInput.session.id, 'session');
-  assert.deepEqual(compactionInput.session.turns.at(-1), {
-    user: 'New request',
-    assistant: ''
-  });
-  assert.equal(compactionInput.access.backendToken, TEST_BACKEND_TOKEN);
-  assert.equal(compactionInput.settings.model, 'qwen3-coder');
-  assert.match(backendOutput.join(''), /Summary provider unavailable/);
-  assert.deepEqual(agentInput.conversationHistory, [{
-    user: 'Earlier request',
-    assistant: 'Earlier answer'
-  }]);
-  assert.equal(agentInput.conversationSummary, undefined);
-  assert.deepEqual(provider.sessionController.store.sessions[0].turns.at(-1), {
-    user: 'New request',
-    assistant: ''
-  });
-  assert.deepEqual(
-    messages.find((message) => message.command === 'requestFailed'),
-    { command: 'requestFailed', message: 'Provider unavailable.', retryable: true }
+test('connects profile secrets and workspace settings through the real provider constructor', async () => {
+  const context = extensionContext();
+  const secrets = new Map();
+  context.secrets = {
+    get: async (key) => secrets.get(key),
+    store: async (key, value) => { secrets.set(key, value); },
+    delete: async (key) => { secrets.delete(key); }
+  };
+  let embeddingChanges = 0;
+  const provider = new DevMateChatViewProvider(
+    context, {}, { append() {} }, undefined,
+    () => { embeddingChanges += 1; }
   );
+  const messages = [];
+  provider.postMessage = (message) => messages.push(message);
+  const originalConfiguration = new Map(configuration);
+  try {
+    await provider.handleMessage({
+      command: 'saveLlmProfile',
+      profile: {
+        name: 'Test chat', provider: 'openai', model: 'test-chat',
+        baseUrl: 'https://example.com/v1', apiKey: 'chat-secret'
+      }
+    });
+    await provider.handleMessage({
+      command: 'saveEmbeddingProfile',
+      profile: {
+        provider: 'ollama', model: 'test-embedding',
+        baseUrl: 'http://127.0.0.1:11434', remoteAllowed: false, apiKey: 'embedding-secret'
+      }
+    });
+    const chatProfile = context.globalValues.get(LLM_PROFILES_STORAGE_KEY)[0];
+    const embeddingProfile = context.globalValues.get(EMBEDDING_PROFILES_STORAGE_KEY)[0];
+    assert.equal(chatProfile.model, 'test-chat');
+    assert.equal(embeddingProfile.model, 'test-embedding');
+    assert.equal(secrets.get(secretKeyForProfile(chatProfile.id)), 'chat-secret');
+    assert.equal(secrets.get(embeddingSecretKeyForProfile(embeddingProfile.id)), 'embedding-secret');
+    assert.doesNotMatch(JSON.stringify([...context.globalValues]), /chat-secret|embedding-secret/);
+    assert.equal(embeddingChanges, 1);
+
+    // Saving settings must update the policy read by the permission presenter too.
+    const policy = { createFiles: 'ask', updateFiles: 'allow' };
+    await provider.handleMessage({
+      command: 'saveSettings',
+      settings: {
+        timeoutSeconds: 1_800,
+        commandTimeoutSeconds: 300,
+        toolCallLimit: 16,
+        maxTokens: 2_048,
+        maxInputContextTokens: 24_000,
+        temperature: 0.35,
+        policy
+      }
+    });
+    assert.deepEqual(context.workspaceValues.get(FILE_PERMISSION_POLICY_STORAGE_KEY), policy);
+    assert.equal(context.globalValues.has(FILE_PERMISSION_POLICY_STORAGE_KEY), false);
+    assert.deepEqual(provider.permissionPresenter.policy(), policy);
+    assert.ok(messages.some((message) => message.command === 'settingsSaved'));
+
+    // Both presenters must observe the current request, not a copied startup value.
+    provider.activeRequest = new AbortController();
+    await provider.handleMessage({ command: 'newSession' });
+    assert.match(messages.at(-1).text, /Wait for the active request/);
+    await provider.handleMessage({ command: 'setReasoningEffort', effort: 'auto' });
+    assert.match(messages.at(-1).text, /Wait for the active request/);
+    provider.activeRequest = undefined;
+
+    await provider.handleMessage({ command: 'editLlmProfile', profileId: chatProfile.id });
+    assert.equal(messages.at(-1).hasApiKey, true);
+    await provider.handleMessage({ command: 'editEmbeddingProfile', profileId: embeddingProfile.id });
+    assert.equal(messages.at(-1).hasApiKey, true);
+    await provider.handleMessage({ command: 'deleteLlmProfile', profileId: chatProfile.id });
+    assert.equal(secrets.has(secretKeyForProfile(chatProfile.id)), false);
+    assert.equal(secrets.has(embeddingSecretKeyForProfile(embeddingProfile.id)), true);
+    await provider.handleMessage({ command: 'deleteEmbeddingProfile', profileId: embeddingProfile.id });
+    assert.equal(secrets.size, 0);
+    assert.equal(embeddingChanges, 2);
+  } finally {
+    provider.dispose();
+    configuration.clear();
+    for (const [key, value] of originalConfiguration) configuration.set(key, value);
+  }
 });
 
 test('agent run restores checkpoint counters, history, and token usage', async () => {

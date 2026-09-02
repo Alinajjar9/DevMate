@@ -8,6 +8,8 @@
 .vscodeignore
 .vscode/**
 .vscode-test/**
+# Test databases are local artifacts, not extension resources.
+.devmate-test-*/**
 src/**
 node_modules/**
 .venv/**
