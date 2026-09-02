@@ -1,105 +1,120 @@
-# devmate project guide
+# DevMate project guide
 
-## the two parts
+This guide explains the submitted implementation. For installation and build commands, start with the [README](../README.md). For source files and implementation details, see the [technical reference](technical_reference.md).
 
-devmate has an extension part and a backend part.
+## The two parts
 
-- the extension part creates the sidebar interface and works with vs code. this part knows which project is open, which file is active, what text is selected, which files have unsaved changes, whether the workspace is trusted, and what errors vs code currently knows about.
-- the backend part receives a structured request from the extension, checks the request, builds messages for the model, calls the model provider, and streams the response back.
-the backend is local. the local service then talks to the selected provider. provider keys are kept in vs code secret storage and are only forwarded through the loopback backend.
+DevMate has a VS Code extension and a local Python backend.
 
-## seperate fastapi backend
+- The extension creates the chat interface and works with the open workspace. It knows the active file, selection, unsaved documents, workspace trust, diagnostics, and terminals. It also checks and executes the model's tools.
+- The backend validates requests, builds model messages, calls providers, and returns answers or tool requests. It owns the local SQLite database for the project index and chat memory.
 
-backend is seperate because fastapi and pydantic make api models, validation, streaming, and provider errors clear to implement and test.
-the backend also creates separation. model communication stays in one place while workspace control stays in the extension. the backend does not get a general path to the user computer and does not edit files itself.
+The backend is local, but the selected model provider may be remote. Chat profiles and embedding profiles have separate settings and keys. Keys are kept in VS Code SecretStorage, then forwarded through the authenticated local backend when needed.
 
+The backend does not apply project edits or run project commands. Those actions stay in the extension, where VS Code state and permissions can be checked.
 
-## the three modes
+## Modes and scopes
 
-- ideas mode is for discussion, planning, architecture, and explanation. it receives read only tools. it cannot change files or run verification commands.
-- code mode is for implementation. it can inspect the project, create or edit files, move or delete files with permission, and run approved tests or checks.
-- debug mode has access to similar tools as code mode, but its instruction is different. it should start from evidence, find the likely cause, make a small fix, and verify the result.
-code and debug are therefore separated by working style rather than by a completely different tool list.
+Modes control the agent's working style and available tools:
 
-## the three scopes
+- **Ideas:** discussion, planning, and explanation with read-only tools.
+- **Code:** implementation, with permitted file changes and approved verification commands.
+- **Debug:** evidence gathering, a focused fix, and verification. It has similar tools to Code, but different instructions.
 
-- project scope searches the local project index for useful parts of the workspace. it is best when the task may involve several files.
-- file scope focuses the initial context on the active editor file.
-- selection scope focuses the initial context on highlighted text. the source file is still known, so the model understands where the selection came from.
-attachments add supporting files. they are useful when the user knows that a test, configuration file, type definition, or related document matters. attachments do not lock the agent to those files.
+Scopes control the initial context, not every file the agent may later inspect:
 
-## tools
+- **Project:** retrieve useful source excerpts from the current project.
+- **File:** start with the active editor file.
+- **Selection:** start with the highlighted text and its source location.
 
-tools are built in a structured request way from the model. it contains a tool name and arguments. for example, a read tool contains a relative file path and optional line range.
-the model does not execute the tool. the extension receives the request, parses the arguments, checks paths and limits, performs the local operation, and returns a text result to the model.
-read only tools can list files, read file ranges, search code, read symbols, find definitions, find references, read diagnostics, and read recent terminal failures.
-mutation tools can create, edit, delete, rename, and move eligible text files. verification tools can run a limited set of test, lint, type check, and build commands.
+Attachments add supporting files to any scope. They do not restrict the agent to those files. Only the first workspace folder is supported.
 
-## commands
+## A normal request
 
-full permision to shell is unsafe.
-devmate instead uses a command registry. the executable and arguments are separate. only known verification patterns are allowed. shell operators, installation, generators, watchers, servers, git commands, and privilege changes are rejected this makes it less flexible but easier to control
+1. The user sends a question. DevMate records the pending question in the current session.
+2. The extension checks the managed backend's authentication, identity, protocol, and required capabilities.
+3. It collects the selected scope and attachments, resolves the chat profile, and prepares the conversation context.
+4. Older completed chat turns may be summarized automatically. The context planner then selects what fits in the input budget.
+5. The backend validates the request and sends the messages to the selected model provider.
+6. The provider either returns an answer or asks for tools. The extension validates and executes each allowed tool, then sends bounded results in the next model request.
+7. When the run ends, DevMate shows the answer and actual file changes, and saves the completed turn. A changed-file link can open a native diff while its snapshot is available.
 
+Each model call still receives a request containing the context it needs. The database does not make a remote model remember the workspace automatically. Retrieval and context planning reduce what is sent.
 
-## how file editing works
+## Project search
 
-the edit tool does not normally replace a complete file. it sends one or more exact text replacements. each old text must appear exactly once in the current file.
-this rule protects against stale or unclear edits. if the text is missing, the file may have changed. if it appears more than once, the location is ambiguous. the model must read a smaller range and try again with more specific text.
-before applying a change, devmate checks that the file belongs to the workspace, is not protected, is not binary, is not too large, is not reached through a symbolic link, and does not have unsaved user changes.
-the user can review the proposed diff before approval. after approval, devmate checks the file again in case it changed while the user was reading the diff.
+DevMate indexes eligible text files locally. File hashes identify changes, and chunks keep their source paths and line positions. Document symbols are preferred for chunk boundaries when VS Code provides them; overlapping line chunks are the fallback.
 
-## permissions
+The initial Project scope combines two kinds of retrieval:
 
-permissions are connected to the workspace. allowing file creation in one project does not automatically allow it in another project.
-normal create and update choices can be set to ask or allow. destructive operations are treated more carefully and remain one time decisions.
-commands can be allowed once or remembered as one exact command. the executable, arguments, directory, and workspace all matter. a small change creates a new permission request.
-workspace trust is a higher level switch. if vs code does not trust the workspace, devmate does not mutate files or run commands even if an old preference says allow.
+- **Lexical search:** SQLite full-text search finds matching words and technical names. It works without an embedding model.
+- **Semantic search:** an optional embedding model turns source chunks and the question into vectors. Similar vectors can find related code even when it uses different words.
 
-## project context and retrieval
+The two result lists are combined by rank, with extra weight for exact identifiers and file paths. Only a bounded selection is included, and indexed matches are checked against current source before use. Missing or failed embeddings do not disable lexical search. A separate local lexical index is also available as a fallback.
 
-it would be wasteful to send every project file with every question. devmate builds a local index of eligible text files and splits them into chunks.
-when a question arrives, the question words are compared with chunk words and file paths. uncommon matching words receive more weight. file name matches are also useful. only a small number of high scoring chunks are included
-this is called lexical retrieval. it is local and predictable. it works especially well for exact technical names. semantic retrieval with embeddings could understand broader meaning, but it would add another model, storage, and more complexity.
+The `search_code` tool used during an agent run is different: it currently performs a case-insensitive text search. Hybrid retrieval is implemented for automatic Project-scope context, not every search tool call.
 
-## a normal request from start to finish
+## Embedding profiles
 
-- first, the user writes a question and sends it. the message is saved to the current session before the provider call starts.
-- the extension makes sure the backend is online. it collects the selected scope, attachments, conversation history, model settings, and available tools.
-- the backend validates the request and builds the model messages. it sends them to the chosen provider and streams progress back. protocol version 2 gives errors stable codes, and the extension validates every final response and stream event before using it.
-- if the model gives a final answer, devmate shows it and saves the completed turn.
-- if the model asks for tools, the extension validates and executes them one by one. results return to the model. this loop can repeat through reading, editing, testing, reading a failure, repairing, and testing again.
-- when the request finishes, devmate shows a short answer and a file change summary. clicking a changed file opens a native diff when the snapshot is still available.
+A coding model and an embedding model have different jobs. The coding model writes answers and chooses tools. The embedding model returns numeric vectors for retrieval; it does not write the answer.
 
-## sessions
+DevMate supports configured Ollama and OpenAI-compatible embedding endpoints. No embedding model is bundled. Without an explicit selection, a configured local profile is preferred. A remote embedding endpoint requires explicit permission to receive source chunks and search queries. Selecting a chat model does not grant that permission.
 
-sessions are saved by vs code and tied to a workspace identity. this lets devmate show previous sessions without mixing projects.
-only complete user and assistant turns are replayed to the model. the visible session can keep more information than the smaller bounded model history.
-if a request fails, the user question still remains. if an agent run is interrupted after tool work, a checkpoint can offer to continue.
+Choose an actual embedding model supported by the endpoint. A model that only supports chat cannot be used merely by entering its ID in the embedding form. If setup is unavailable for the demo, leave embeddings unconfigured: lexical retrieval remains usable.
 
-## model profiles
+## Context budgeting and chat compaction
 
-devmate includes a built in nemotron profile, but the api key still belongs to the user. other openai compatible profiles and ollama profiles can be added.
-a profile stores normal connection information such as its name, model id, provider type, and base url. the secret key is stored separately. remote provider urls require https and must resolve only to public addresses, while plain http and non-public destinations are limited to exact local loopback services such as ollama. the backend pins each request to an address it checked so a later dns change cannot redirect the request into the local network.
-provider compatibility is not always equal. some models support normal function tools well, some return tool calls as text, and some only describe what they plan to do. devmate has recovery rules, but it cannot completely fix a provider that does not follow the expected format.
+The context planner reserves space for the model's output and a 10% estimation margin. It uses the profile's context-window setting, or a conservative 32,000-token fallback when the size is unknown. The global maximum input setting is optional; `0` means Auto.
 
-## what is stored where
+The latest question and explicit context take priority. Current tool state, recent chat, a compacted summary, project excerpts, and older tool results are then fitted into the remaining budget. The estimate uses character counts, not the model's exact tokenizer. If mandatory input does not fit, the request reports the problem instead of silently removing it.
 
-- model profiles and sessions use vs code storage.
-- api keys use vs code secret storage.
-- permissions and remembered command signatures use workspace storage.
-- the project index uses extension storage and can be rebuilt from the workspace.
-- the generated backend runtime and vsix are local release artifacts and are ignored by git.
-- source code, test code, and private project notes are not included in the final vsix unless they are needed at runtime.
+Automatic compaction starts when estimated context demand reaches 75% of usable input capacity and enough completed turns are available. It keeps the latest four completed turns outside the summary. The summary records the goal, constraints, decisions, important files, completed work, open tasks, and unresolved questions.
 
+Summaries belong to one chat. The active chat model creates them, and the backend validates and redacts the result before saving it. If compaction fails, the earlier summary is kept. Compaction itself does not delete transcript rows, but normal session size limits still apply. This is not an unlimited chat archive. There are no manual summary or pinned-memory controls in this submission.
 
+## Tools, edits, and permissions
 
-## limitations
+The model requests a tool by name and arguments. It does not execute the tool itself. The extension parses the request, checks limits and paths, asks for permission when required, and returns a bounded result.
 
-- devmate currently uses the first workspace folder only.
-- the project index is lexical, not semantic.
-- language navigation depends on installed vs code language support.
-- the extension controller is still large because it owns sessions, context, permissions, tools, and the agent loop.
-- the bundled backend must be built separately for each operating system and processor architecture.
-- the quality of tool use and final answers still depends on the selected model provider.
-- view port on different window sizes can be different
+Read-only tools can list files, read ranges, search text, inspect symbols and references, read diagnostics, and inspect recent terminal failures. Other tools can propose file changes, run allowed verification commands, or request supported dependency installation.
+
+Most edits use exact text replacements. Each old-text match must occur exactly once, so a stale or ambiguous edit is rejected. Before applying a change, DevMate checks workspace trust, eligible paths, symbolic links, file size/type, and unsaved user changes. It rechecks the relevant state after approval because the file may have changed while the user reviewed the diff.
+
+Create and update choices can be remembered for the current workspace. Delete, rename, move, and dependency installation remain one-time decisions. A remembered verification command matches the exact executable, arguments, working directory, and workspace. It does not grant general shell access.
+
+`run_command` accepts only registered test, lint, type-check, and build patterns. Shell composition, Git commands, servers, watchers, privilege changes, and unrelated commands are rejected. Dependency installation has its own restricted tool and approval path.
+
+## Sessions and recovery
+
+Chats are stored through the local backend in SQLite and tied to a workspace identity. The visible transcript and the smaller history sent to the model are separate views of the conversation.
+
+Session data is bounded: the extension keeps at most 20 sessions in its working set, up to 30 turns per session, and character limits. Long messages and old history can therefore be shortened. Do not use DevMate as the only copy of important notes.
+
+An unfinished agent run can also save a checkpoint in VS Code workspace state. This stores bounded tool history and run counters, not a second full transcript. Resume is restricted to the original workspace and chat; malformed, oversized, or expired checkpoints are rejected.
+
+## What is stored where
+
+| Data | Location |
+| --- | --- |
+| Chat and embedding profiles | VS Code global state |
+| Provider keys | VS Code SecretStorage |
+| Permissions, exact command approvals, unfinished checkpoint | VS Code workspace state |
+| Source chunks, full-text index, optional vectors | Private extension SQLite storage, outside the repository |
+| Chat sessions, turns, and summaries | The same SQLite database, isolated by workspace/chat |
+| Fallback lexical index | Extension workspace storage; rebuildable |
+| Backend executable, compiled JavaScript, VSIX | Generated build output; not source to edit |
+
+The database contains source text and chat content. Local storage is not the same as encryption or a guarantee that no data leaves the computer. Selected chat context goes to the configured chat provider, and optional remote embeddings send chunks and queries after opt-in.
+
+## Submission limitations
+
+- Only the first workspace folder is supported.
+- Semantic retrieval needs a working embedding profile and a built index. It cannot guarantee the right file will always be found.
+- Tool-driven `search_code` is still lexical.
+- Token counts are estimates, and long chat retention is bounded.
+- Definitions, references, and symbols depend on installed VS Code language support.
+- Command tracking depends on supported terminal shell integration.
+- The bundled backend is specific to the operating system and processor architecture on which it was built.
+- Model tool use and reasoning controls vary by provider. A compatible HTTP API does not guarantee identical model behavior.
+- Small-window layout and the chosen real provider should be checked before the presentation. See [known issues](known_bugs.md).
 

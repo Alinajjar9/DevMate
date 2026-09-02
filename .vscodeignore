@@ -8,6 +8,7 @@
 .vscodeignore
 .vscode/**
 .vscode-test/**
+release/**
 # Test databases are local artifacts, not extension resources.
 .devmate-test-*/**
 src/**
@@ -18,6 +19,7 @@ tests/**
 backend/tests/**
 docs/**
 backend/requirements-dev.txt
+backend/constraints-windows-py314.txt
 IMPLEMENTATION_PLAN.local.md
 package-lock.json
 scripts/**
@@ -26,4 +28,6 @@ scripts/**
 *.vsix
 *.zip
 tsconfig.json
+# The submission command substitutes VSIX_README.md as the packaged readme.
+README.md
 VSIX_README.md

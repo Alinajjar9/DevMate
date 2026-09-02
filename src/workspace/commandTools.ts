@@ -1,5 +1,5 @@
-// Validate structured verification commands and bounded dependency requests.
-// Also keep terminal-error filtering here; arbitrary shell commands are not allowed.
+// Validate the structured verification commands the agent may request.
+// Sanitize captured terminal errors before sending them back as model context.
 
 import { createHash } from 'crypto';
 

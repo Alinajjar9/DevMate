@@ -15,7 +15,7 @@ The project contains two applications:
 - Persistent sessions that are tied to their original workspace.
 - Built-in NVIDIA Nemotron profile plus custom OpenAI-compatible and Ollama profiles.
 - Streaming responses, cancellation, configurable timeouts, and retry handling.
-- Local semantic and lexical project retrieval with a private workspace index.
+- A private local project index with lexical and optional semantic retrieval.
 - File listing, ranged reading, and plain-text code search.
 - VS Code diagnostics, document symbols, definitions, and references.
 - Access to recent failed terminal commands captured through VS Code Shell Integration.
@@ -36,6 +36,8 @@ The project contains two applications:
 | Git | Recommended |
 
 The project is developed and tested primarily on Windows with PowerShell.
+
+The table lists declared minimum versions, not a claim that every minimum was tested for this release. The submission build uses Node.js 24.16.0, npm 11.13.0, Python 3.14.2, TypeScript 5.9.3, and VSCE 3.9.2 on Windows x64. `package-lock.json` pins the Node dependencies. `backend/constraints-windows-py314.txt` records the tested Python dependency versions for that environment.
 
 Check the installed versions with:
 
@@ -62,7 +64,7 @@ py -m venv .venv
 .venv\Scripts\python -m pip install -r backend\requirements-dev.txt
 ```
 
-On macOS or Linux, activate the environment with `.venv/bin/python` instead of `.venv\Scripts\python`.
+On macOS or Linux, use `.venv/bin/python` for these Python commands instead of `.venv\Scripts\python`.
 
 Compile the extension:
 
@@ -183,6 +185,8 @@ When the backend advertises semantic-search support and the selected profile has
 
 On the checked-in evaluation corpus, SQLite lexical retrieval produces 7 of 11 top-one hits, 7 of 11 top-three hits, and 0.6364 recall at five. These numbers remain the model-independent lexical baseline; hybrid effectiveness also depends on the configured embedding model.
 
+Hybrid retrieval applies to the initial context gathered in **Project** scope. The agent's separate `search_code` tool still performs a case-insensitive plain-text search; it is not an embedding search.
+
 ## Context budgeting
 
 Before every provider request, DevMate calculates a usable input budget from the selected profile's context window, the global input cap, the configured output reserve, and a ten-percent estimation margin. Unknown model capacities use the conservative 32,000-token fallback.
@@ -191,7 +195,7 @@ The current question and explicit selections, active files, and attachments are 
 
 ## Chat memory storage
 
-The private SQLite store now includes versioned foundations for chat sessions, raw turns, and structured summaries. Chat records use the same private database file as the project index but have an independent lifecycle, so rebuilding or deleting a code index does not delete conversation history. Deleting a chat also deletes its turns and summary.
+The private SQLite store holds chat sessions, raw turns, and structured summaries. Chat records use the same private database file as the project index but have an independent lifecycle, so rebuilding or deleting a code index does not delete conversation history. Deleting a chat also deletes its turns and summary.
 
 SQLite is the live persistent source for the current workspace's sessions. The extension loads recent sessions after the managed backend is authenticated, writes pending and completed turns directly through a focused session repository, and keeps unsaved changes in memory if local storage is temporarily unavailable. Pre-release VS Code chat state is intentionally not migrated or maintained as a second copy.
 
@@ -200,6 +204,8 @@ The managed backend advertises the optional `chat-memory-v1` capability and expo
 The TypeScript client sends chat data only to a verified loopback backend, forwards provider credentials only for a compaction request, and validates every response against that request. Before a model request, DevMate loads the current summary and estimates the planned input from the current question, collected code context, that summary, and all completed turns newer than its boundary. At 75% of usable input capacity it automatically compacts only the eligible older turns, always leaving the latest four completed turns verbatim. Up-to-date summaries are not regenerated, cancellation stops the maintenance request, and storage or provider failures are logged without blocking the user's main request.
 
 A validated summary is sent as a delimited untrusted memory block together with bounded recent exact turns after its compaction boundary. The context planner keeps current operation state and recent exact conversation ahead of the summary, while keeping the summary ahead of retrieved project chunks. If summary loading fails, DevMate continues with its existing bounded raw-history fallback. Manual memory controls are intentionally not included; summaries are maintained automatically.
+
+Compaction does not delete the retained raw turns, but this is not an unlimited transcript archive. The session layer has retention and size limits, including 20 sessions and 30 turns per session; old or oversized content can be trimmed by those limits independently of compaction.
 
 ## Agent tools
 
@@ -319,12 +325,13 @@ The tests do not make paid provider requests. Provider behaviour is tested with 
 
 ## Packaging a VSIX
 
-Install the development dependencies, including PyInstaller for the backend build:
+For the tested submission build, use Windows x64, Node.js 24.16.0 and Python 3.14.2. Start from a clean source copy and install the pinned dependencies, including PyInstaller:
 
 ```powershell
 npm ci
-py -m venv .venv
-.venv\Scripts\python -m pip install -r backend\requirements-dev.txt
+py -3.14 -m venv .venv
+.venv\Scripts\python -m pip install -r backend\requirements-dev.txt -c backend\constraints-windows-py314.txt
+.venv\Scripts\python -m pip check
 ```
 
 Build the standalone backend for the current operating system and architecture:
@@ -333,19 +340,22 @@ Build the standalone backend for the current operating system and architecture:
 npm run build:backend
 ```
 
-Run the tests and create an installable VSIX:
+Run the tests and create the Windows x64 submission VSIX in a separate output folder:
 
 ```powershell
-npm test
-npx --yes @vscode/vsce package --out devmate-1.0.0.vsix --allow-missing-repository
+npm run verify
+New-Item -ItemType Directory -Force release | Out-Null
+npx --yes @vscode/vsce@3.9.2 package --target win32-x64 --out release/devmate-1.0.0-win32-x64.vsix --readme-path VSIX_README.md --allow-missing-repository --skip-license
 ```
 
 The `vscode:prepublish` script rebuilds the backend and TypeScript extension automatically. PyInstaller builds for the computer it runs on, so a Windows x64 VSIX must be built on Windows x64.
 
+The packaging command uses the short quick-start guide inside the extension. The missing-repository and license flags are explicit because this university submission has no repository URL or project license configured; no license has been selected automatically. They do not disable the packager's secret checks.
+
 Install it with:
 
 ```powershell
-code --install-extension .\devmate-1.0.0.vsix
+code --install-extension .\release\devmate-1.0.0-win32-x64.vsix --force
 ```
 
 It can also be installed from VS Code through **Extensions: Install from VSIX**.
@@ -361,10 +371,12 @@ The Python backend source remains in the package as a fallback for development o
 Before sharing a build, inspect what the packager includes:
 
 ```powershell
-npx --yes @vscode/vsce ls --tree
+npx --yes @vscode/vsce@3.9.2 ls --tree
 ```
 
 The package needs `out`, `media`, and the backend runtime. It should not contain test databases, `.map` files, development dependencies, or previous VSIX files. `.gitignore` does not control this list; `.vscodeignore` does.
+
+Submit the final VSIX, `VSIX_README.md`, and a source archive made from version-controlled source files. Include the source docs and dependency lock/constraint files, but not `.git`, `.venv`, `node_modules`, build folders, test databases, credentials, or previous release artifacts. The generated `release/` directory is excluded from both Git and the extension package. `docs/` is kept in source control and excluded only from the VSIX.
 
 Test a release with a small throwaway project and separate VS Code user-data and extension directories. Use a different local backend port if your normal DevMate is already running. This keeps the check away from your real chats, settings, and installed extension.
 

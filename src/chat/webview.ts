@@ -119,7 +119,7 @@ export function getChatWebviewHtml(
           <span class="attachment-panel-title">Selected files</span>
           <div id="attachmentList" class="attachment-list" aria-label="Attached workspace files"></div>
         </div>
-        <textarea id="question" placeholder="Ask DevMate..."></textarea>
+        <textarea id="question" aria-label="Message to DevMate" placeholder="Ask DevMate..."></textarea>
         <div class="composer-actions">
           <button
             id="llmProfileSelector"

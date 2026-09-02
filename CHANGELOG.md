@@ -2,6 +2,30 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-09-02 — Prepare DevMate for the university submission
+
+### Changed
+
+- Updated the project guides and known-issues list to match the current folders, hybrid Project-scope retrieval, SQLite chats, automatic compaction, and bounded history. Removed the outdated symlink-gap claim while preserving honest provider and demo limitations.
+- Expanded the installation guide with embedding setup, remote-transfer consent, lexical fallback, replacement-install instructions, and a short demo checklist. The separate `search_code` tool is clearly described as plain-text search.
+- Added an accessible label to the message box and a regression test. Corrected one module-introduction comment; the code-hygiene review found no other safe dead-code removal worth making.
+- Recorded a pinned Windows/Python submission environment without upgrading application dependencies. Source docs are explicitly kept in Git; generated release artifacts remain ignored and excluded from the VSIX.
+- Archived four previous VSIX files and a leftover test-database folder under the ignored test directory, without deleting them. The final deliverables use a separate `release` directory.
+
+### Verification
+
+- Independently installed Node dependencies from `package-lock.json` and Python dependencies with the submission constraints in a clean source copy without Git metadata, build outputs, or shared site-packages.
+- `npm run verify` in that clean copy — 383 extension tests and 164 backend tests passed; 67 cross-language contracts, 46 cycle-free TypeScript modules, and 46 emitted JavaScript modules verified.
+- The final Windows x64 VSIX was built from the clean source copy with VSCE 3.9.2. Its 191 archive entries contain the current modules and one short installation guide, with no source maps, old builds, test databases, development dependencies, or private configuration.
+- The exact packaged UI passed 63 browser checks across three viewport sizes with a simulated extension bridge, including accessible control names and no horizontal overflow.
+- The actual installed VSIX passed activation, chat-view opening, backend authentication, private SQLite/lexical indexing, denied/cancelled/approved disposable file edits, a native diff tab, and watcher reindexing in isolated VS Code 1.136.0. Permission decisions used simulated callbacks; the filesystem/editor APIs were real. The owned backend stopped when the test instance exited.
+- A separate packaged-backend check preserved exact synthetic chat turns, Unicode, pending turns, and file-change metadata across a process restart. The new token rejected the previous token, deleting the test chat left lexical results unchanged, and both owned processes stopped.
+- Live chat-provider compatibility and real embedding-model search quality were not tested because the isolated environment had no reachable model endpoint or configured credentials. These remain explicit demo checks, not claimed passes.
+- The fresh Python test environment emits a Starlette deprecation warning about its supported `httpx` test adapter; tests pass. No dependency upgrade was introduced solely to silence that warning.
+- `npm run verify` also passed in the working tree, and its executable source/configuration matched the clean build copy. `git diff --check` passed. No commit was created.
+
+---
+
 ## 2026-09-02 — Organize source folders and explain the important code
 
 ### Changed

@@ -45,6 +45,14 @@ test('DevMate webview script has valid JavaScript syntax', () => {
   assert.doesNotThrow(() => new Function(script));
 });
 
+test('message input has an accessible name independent of its placeholder', () => {
+  const shellSource = readSource('src', 'chat', 'webview.ts');
+  const questionInput = shellSource.match(/<textarea\b[^>]*\bid="question"[^>]*>/)?.[0];
+
+  assert.ok(questionInput, 'The message input should exist.');
+  assert.match(questionInput, /\baria-label="Message to DevMate"/);
+});
+
 test('chat view provider delegates webview markup to packaged UI assets', () => {
   const providerSource = readSource('src', 'chat', 'chatViewProvider.ts');
   const shellSource = readSource('src', 'chat', 'webview.ts');

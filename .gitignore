@@ -1,7 +1,6 @@
 # Installed dependencies and local environments.
 node_modules/
 .venv/
-/docs/
 .env
 .env.*
 !.env.example
@@ -14,8 +13,10 @@ __pycache__/
 backend-runtime/
 .vscode-test/
 .devmate-test-*/
+/release/
 *.vsix
 *.zip
+CHANGELOG.md
 
 # Personal planning notes are not part of the product source.
 IMPLEMENTATION_PLAN.local.md
