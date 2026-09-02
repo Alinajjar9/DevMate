@@ -51,7 +51,7 @@ Module._load = function loadWithVscodeMock(request, parent, isMain) {
   return originalModuleLoad.call(this, request, parent, isMain);
 };
 
-const { AttachmentController } = require('../out/attachmentController');
+const { AttachmentController } = require('../out/context/attachmentController');
 const { MAX_ATTACHED_FILES } = require('../out/projectSearch/projectIndex');
 
 test.beforeEach(() => {

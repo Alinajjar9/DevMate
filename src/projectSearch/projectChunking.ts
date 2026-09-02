@@ -1,3 +1,6 @@
+// Turn document symbols into bounded source chunks, using line chunks as a fallback.
+// Chunk positions refer to exact source lines, not model-generated summaries.
+
 import {
   MAX_PROJECT_CHUNK_CHARACTERS,
   splitProjectContent
@@ -32,6 +35,7 @@ export function splitProjectContentWithSymbols(
 
   const chunks: ProjectIndexChunk[] = [];
   const normalizedPath = relativePath.replace(/\\/g, '/');
+  // Prefer symbol boundaries without producing lots of tiny chunks; oversized symbols still get split.
   const minimumPreferredSize = Math.floor(MAX_PROJECT_CHUNK_CHARACTERS * 0.6);
   let startOffset = 0;
 
@@ -115,6 +119,7 @@ function collectLineOffsets(content: string): number[] {
   return offsets;
 }
 
+// VS Code symbol positions are zero-based; stored chunk line numbers are one-based.
 function positionOffset(
   content: string,
   lineOffsets: number[],
@@ -157,6 +162,7 @@ function lastBoundaryWithin(
 }
 
 function lineNumberAtOffset(lineOffsets: number[], offset: number): number {
+  // Binary search finds the containing line without rescanning the whole file for each chunk.
   let low = 0;
   let high = lineOffsets.length;
   while (low < high) {

@@ -1,9 +1,12 @@
+// Send authenticated backend requests and decode untrusted responses.
+// Long model calls use explicit HTTP timers and bounded streaming buffers.
+
 import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
 import type { ClientRequest, IncomingMessage } from 'http';
 import { StringDecoder } from 'string_decoder';
-import { AGENT_TOOL_NAMES } from '../agentToolProtocol';
-import type { AgentToolCall } from '../agentToolProtocol';
+import { AGENT_TOOL_NAMES } from '../agent/agentToolProtocol';
+import type { AgentToolCall } from '../agent/agentToolProtocol';
 import {
   DEVMATE_BACKEND_ERROR_CODES,
   DEVMATE_BACKEND_PROTOCOL_VERSION,
@@ -706,6 +709,7 @@ type NodeJsonRequestInit = {
   body?: string;
 };
 
+// Node's HTTP client gives long provider calls an explicit deadline instead of fetch's header timeout.
 async function nodeHttpJsonRequest<T>(
   backendUrl: string,
   requestPath: string,
@@ -735,6 +739,7 @@ async function nodeHttpJsonRequest<T>(
     let timedOut = false;
     let cancelled = false;
 
+    // Timeout, cancellation, and socket errors can race; complete the promise and cleanup only once.
     const finish = (result: ApiResult<T>) => {
       if (settled) {
         return;
@@ -784,6 +789,7 @@ async function nodeHttpJsonRequest<T>(
         incomingResponse.on('data', (value: Buffer | string) => {
           const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
           receivedBytes += chunk.length;
+          // Bound the raw response before collecting/decoding untrusted JSON.
           if (receivedBytes > MAX_BACKEND_RESPONSE_BYTES) {
             finish({
               status: 'error',
@@ -869,6 +875,7 @@ async function nodeHttpStreamRequest(
     let lineBuffer = '';
     let finalResult: ApiResult<AskResponse> | undefined;
     let receivedStart = false;
+    // Network chunks can split a UTF-8 character or a JSON line. Preserve both partial fragments.
     const decoder = new StringDecoder('utf8');
 
     const finish = (result: AskStreamResult) => {
@@ -936,6 +943,7 @@ async function nodeHttpStreamRequest(
         finish(invalidStreamResult());
         return;
       }
+      // A valid stream has one start, intermediate events, and one terminal result in that order.
       if (finalResult) {
         finish(invalidStreamResult());
         return;
@@ -998,6 +1006,7 @@ async function nodeHttpStreamRequest(
       }, (incomingResponse) => {
         response = incomingResponse;
         const statusCode = incomingResponse.statusCode ?? 0;
+        // Only an unsupported streaming endpoint should trigger the ordinary completion fallback.
         if (statusCode === 404 || statusCode === 405) {
           incomingResponse.resume();
           finish({
@@ -1072,6 +1081,7 @@ async function nodeHttpStreamRequest(
             incomingResponse.destroy();
             return;
           }
+          // Process complete NDJSON lines now; keep the unfinished final line for the next chunk.
           lineBuffer += decoder.write(chunk);
           let newline = lineBuffer.indexOf('\n');
           while (newline >= 0) {
@@ -1088,6 +1098,7 @@ async function nodeHttpStreamRequest(
           if (lineBuffer.trim()) {
             processLine(lineBuffer);
           }
+          // Partial answer text is not a successful completion without a validated final event.
           finish({
             result: finalResult ?? {
               status: 'error',

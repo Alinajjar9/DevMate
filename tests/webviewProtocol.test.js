@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-const { parseWebviewMessage } = require('../out/webviewProtocol');
+const { parseWebviewMessage } = require('../out/chat/webviewProtocol');
 
 const validMessages = [
   {
@@ -150,7 +150,7 @@ test('rejects unknown, malformed, and unexpectedly extended webview messages', (
 test('browser-side handlers cover every typed extension event', () => {
   const repositoryRoot = path.join(__dirname, '..');
   const protocolSource = fs.readFileSync(
-    path.join(repositoryRoot, 'src', 'webviewProtocol.ts'),
+    path.join(repositoryRoot, 'src', 'chat', 'webviewProtocol.ts'),
     'utf8'
   );
   const browserSource = fs.readFileSync(

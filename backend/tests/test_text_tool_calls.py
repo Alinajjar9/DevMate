@@ -1,6 +1,6 @@
 import unittest
 
-from backend.app.text_tool_calls import (
+from backend.app.chat.text_tool_calls import (
     classify_text_tool_call_prefix,
     looks_like_text_tool_call,
     parse_text_tool_calls,

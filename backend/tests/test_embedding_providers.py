@@ -1,6 +1,6 @@
 import unittest
 
-from backend.app.embedding_providers import (
+from backend.app.providers.embedding_providers import (
     EmbeddingBatch,
     EmbeddingProvider,
     EmbeddingRequest,

@@ -6,7 +6,7 @@ const {
   MAX_CONVERSATION_HISTORY_CHARACTERS,
   MAX_CONVERSATION_TURNS,
   sessionModelHistoryAfter
-} = require('../out/sessions');
+} = require('../out/sessions/sessions');
 
 test('keeps the newest bounded conversation turns', () => {
   const session = sessionWithTurns(Array.from(

@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from backend.app.code_changes import (
+from backend.app.chat.code_changes import (
     MAX_FILE_CHANGE_CHARACTERS,
     CodeChangeParseError,
     parse_code_change_response,

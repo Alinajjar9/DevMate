@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from backend.app.prompts import MODE_INSTRUCTIONS, build_chat_messages
+from backend.app.chat.prompts import MODE_INSTRUCTIONS, build_chat_messages
 
 
 class PromptTests(unittest.TestCase):

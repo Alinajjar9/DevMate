@@ -1,4 +1,7 @@
-import { EMBEDDING_PROVIDER_NAMES } from '../embeddingProfiles';
+// Validate index and embedding responses before they enter extension state.
+// TypeScript types alone cannot guarantee the shape of received JSON.
+
+import { EMBEDDING_PROVIDER_NAMES } from '../settings/embeddingProfiles';
 import {
   MAX_CHUNK_CHARACTERS,
   MAX_CHUNK_STABLE_ID_CHARACTERS,

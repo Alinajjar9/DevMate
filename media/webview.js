@@ -1,5 +1,10 @@
+// Browser-side chat UI: state and DOM references first, event handlers next,
+// then rendering and form helpers. Messages ask the extension host to perform actions;
+// the extension host owns workspace access, saved secrets, and SQLite communication.
+
     const vscode = acquireVsCodeApi();
     const MAX_INTERMEDIATE_NARRATION_CHARACTERS = 220;
+    // This is the view's current display state, not the durable session/database state.
     const state = {
       mode: 'code',
       scope: {
@@ -175,6 +180,7 @@
       });
     });
 
+    // Snapshot the question/scope for this run and disable Send while the host handles it.
     askEl.addEventListener('click', () => {
       const question = questionEl.value.trim();
       if (!question) {
@@ -405,6 +411,7 @@
       vscode.postMessage({ command: 'deleteLlmProfile', profileId });
     });
 
+    // Never leave a newly entered credential in a closed form. Stored keys are not sent back here.
     llmProfileDialogEl.addEventListener('close', () => {
       llmProfileApiKeyEl.value = '';
       llmProfileDialogEl.dataset.hasApiKey = 'false';
@@ -582,9 +589,11 @@
       renderAttachments();
     });
 
+    // Extension events update the view; browser actions above send commands in the opposite direction.
     window.addEventListener('message', (event) => {
       const message = event.data;
 
+      // Status text alone does not complete a request. Only explicit lifecycle messages release Send.
       if (message.command === 'status') {
         if (message.level === 'info') {
           setStatus('Ready');
@@ -606,6 +615,7 @@
           response: message.response,
           fileChanges: Array.isArray(message.fileChanges) ? message.fileChanges : []
         };
+        // Finish queued preview animation before replacing it with the authoritative final response.
         if (state.streamQueue || state.streamPumpTimer) {
           state.pendingAssistantResponse = completion;
         } else {
@@ -1024,6 +1034,7 @@
       messageItem.appendChild(summary);
     }
 
+    // Build allowed Markdown with DOM nodes/textContent, never inject model output as raw HTML.
     function renderMarkdown(container, text) {
       const lines = String(text).replace(/\r\n/g, '\n').split('\n');
       const fence = String.fromCharCode(96).repeat(3);
@@ -1207,6 +1218,7 @@
       container.appendChild(button);
     }
 
+    // This only recognizes a potential link. The extension revalidates it before opening a file.
     function workspaceFileTarget(value) {
       const normalized = String(value).trim().replace(/^file:\/\//i, '');
       if (!normalized || /^https?:\/\//i.test(normalized) || normalized.includes(String.fromCharCode(0))) {
@@ -1281,6 +1293,7 @@
       }
     }
 
+    // Replace the visible transcript and stop the old elapsed-time display when restoring a session.
     function renderSessionMessages(messages) {
       clearWorkingTimer();
       messagesEl.replaceChildren();
@@ -1451,6 +1464,7 @@
         setStatus('Ready');
         startWorkingTurn();
         renderAskAvailability();
+        // Retry the pending question without appending a duplicate user turn to the session.
         vscode.postMessage({ ...state.lastRequest, isNewTurn: false });
       });
       footer.appendChild(retry);
@@ -1465,6 +1479,7 @@
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
+    // Always clear timers and queued deltas when a run ends so they cannot update the next run's card.
     function clearProviderStreamAnimation() {
       if (state.streamPumpTimer) {
         clearTimeout(state.streamPumpTimer);
@@ -1480,6 +1495,7 @@
       clearProviderStreamAnimation();
     }
 
+    // Queue provider bursts for readable rendering; this animation does not control the backend request.
     function appendProviderStreamDelta(text) {
       if (typeof text !== 'string' || !text) {
         return;
@@ -1778,6 +1794,7 @@
       }
     }
 
+    // Permission buttons send a decision tied to a request ID; only the host can apply the edit.
     function appendPermissionRequest(message) {
       const files = Array.isArray(message.files) ? message.files : [];
       const card = document.createElement('article');
@@ -1830,6 +1847,7 @@
           review.type = 'button';
           review.className = 'review-diff-button';
           review.textContent = 'Review diff';
+          // Opening a diff is read-only and leaves the approval decision pending.
           review.addEventListener('click', () => {
             vscode.postMessage({
               command: 'reviewPermissionDiff',
@@ -2075,6 +2093,7 @@
       intelligenceButtonEl.setAttribute('aria-expanded', 'false');
     }
 
+    // Keep profile/scope controls stable while the active request uses their original values.
     function renderAskAvailability() {
       askEl.disabled = !state.activeProfile || state.askPending;
       document.querySelectorAll('.mode-button, .scope-button[data-scope]').forEach((button) => {
@@ -2411,6 +2430,7 @@
       }
     }
 
+    // Only a has-key flag comes back from storage. A blank key field can keep the stored secret.
     function showEmbeddingProfileForm(profile, hasApiKey) {
       closeEmbeddingProfilePicker();
       embeddingProfileFormEl.reset();
@@ -2483,6 +2503,7 @@
       }
     }
 
+    // This drives the consent hint only; the extension and backend enforce the actual URL policy.
     function isRemoteEmbeddingUrl(value) {
       try {
         return !isLoopbackEmbeddingUrl(new URL(value));

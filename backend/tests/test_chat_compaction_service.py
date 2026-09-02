@@ -4,20 +4,20 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
-from backend.app.api_models import LlmSettings
-from backend.app.chat_compaction_service import (
+from backend.app.api.api_models import LlmSettings
+from backend.app.memory.chat_compaction_service import (
     ChatCompactionBoundaryError,
     ChatCompactionModelError,
     ChatCompactionService,
 )
-from backend.app.chat_memory_repository import (
+from backend.app.memory.chat_memory_repository import (
     ChatMemoryRepository,
     ChatSessionRecord,
     ChatSessionSnapshot,
     ChatTurnRecord,
 )
 from backend.app.knowledge_store import KnowledgeStore
-from backend.app.providers import ChatCompletionRequest, ProviderError
+from backend.app.providers.chat_provider import ChatCompletionRequest, ProviderError
 
 
 class RecordingProvider:

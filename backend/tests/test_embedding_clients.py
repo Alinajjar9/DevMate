@@ -4,13 +4,13 @@ import unittest
 
 import httpx
 
-from backend.app.embedding_clients import (
+from backend.app.providers.embedding_clients import (
     MAX_EMBEDDING_BATCH_SIZE,
     HttpEmbeddingProvider,
     create_embeddings_url,
 )
-from backend.app.embedding_providers import EmbeddingRequest
-from backend.app.providers import ProviderError
+from backend.app.providers.embedding_providers import EmbeddingRequest
+from backend.app.providers.chat_provider import ProviderError
 
 
 class EmbeddingUrlTests(unittest.TestCase):

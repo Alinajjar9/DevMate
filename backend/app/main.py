@@ -1,3 +1,6 @@
+# Compose one backend application and enforce its local authentication boundary.
+# The app factory keeps injected test dependencies separate from the normal runtime.
+
 import logging
 import os
 import secrets
@@ -9,7 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from .api_models import (
+from .api.api_models import (
     DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE,
     DEVMATE_BACKEND_TOKEN_HEADER,
     DEVMATE_BACKEND_VERSION,
@@ -19,28 +22,28 @@ from .api_models import (
     BackendErrorResult,
     ValidationIssue,
 )
-from .api_routes import api_router
-from .chat_compaction_service import ChatCompactionService
-from .chat_memory_contracts import DEVMATE_CHAT_MEMORY_API_VERSION
-from .chat_memory_repository import ChatMemoryRepository
-from .chat_memory_routes import chat_memory_router
-from .chat_service import ChatService
+from .api.api_routes import api_router
+from .memory.chat_compaction_service import ChatCompactionService
+from .memory.chat_memory_contracts import DEVMATE_CHAT_MEMORY_API_VERSION
+from .memory.chat_memory_repository import ChatMemoryRepository
+from .memory.chat_memory_routes import chat_memory_router
+from .chat.chat_service import ChatService
 from .dependencies import (
     BackendDependencies,
     BackendTokenProvider,
     backend_dependencies,
 )
 from .errors import BackendApiError
-from .embedding_clients import HttpEmbeddingProvider
-from .embedding_index_service import EmbeddingIndexService
-from .embedding_repository import EmbeddingRepository
-from .knowledge_contracts import DEVMATE_KNOWLEDGE_INDEX_API_VERSION
-from .knowledge_repository import KnowledgeRepository
-from .knowledge_routes import knowledge_router
+from .providers.embedding_clients import HttpEmbeddingProvider
+from .indexing.embedding_index_service import EmbeddingIndexService
+from .indexing.embedding_repository import EmbeddingRepository
+from .indexing.knowledge_contracts import DEVMATE_KNOWLEDGE_INDEX_API_VERSION
+from .indexing.knowledge_repository import KnowledgeRepository
+from .indexing.knowledge_routes import knowledge_router
 from .knowledge_store import KnowledgeStore, knowledge_store_path_from_environment
-from .providers import ChatProvider, OpenAICompatibleProvider
-from .semantic_search_service import SemanticSearchService
-from .tool_catalog import AGENT_TOOL_DEFINITIONS
+from .providers.chat_provider import ChatProvider, OpenAICompatibleProvider
+from .indexing.semantic_search_service import SemanticSearchService
+from .chat.tool_catalog import AGENT_TOOL_DEFINITIONS
 
 
 logger = logging.getLogger(__name__)
@@ -108,6 +111,7 @@ async def authenticate_backend_request(request: Request, call_next):
     if not requires_authentication:
         return await call_next(request)
 
+    # Read the current app's token for every request so a rotated token invalidates earlier clients.
     expected_token = backend_dependencies(request).backend_token_provider()
     provided_token = request.headers.get(DEVMATE_BACKEND_TOKEN_HEADER)
     if (
@@ -117,6 +121,7 @@ async def authenticate_backend_request(request: Request, call_next):
         or not provided_token.isascii()
         or not MIN_BACKEND_TOKEN_CHARACTERS <= len(expected_token) <= MAX_BACKEND_TOKEN_CHARACTERS
         or not MIN_BACKEND_TOKEN_CHARACTERS <= len(provided_token) <= MAX_BACKEND_TOKEN_CHARACTERS
+        # Constant-time comparison avoids revealing matching token prefixes through timing.
         or not secrets.compare_digest(provided_token, expected_token)
     ):
         return JSONResponse(

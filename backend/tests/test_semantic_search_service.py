@@ -4,15 +4,15 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
-from backend.app.embedding_providers import EmbeddingBatch, EmbeddingRequest
-from backend.app.embedding_repository import (
+from backend.app.providers.embedding_providers import EmbeddingBatch, EmbeddingRequest
+from backend.app.indexing.embedding_repository import (
     ChunkEmbeddingWrite,
     EmbeddingConfiguration,
     EmbeddingRepository,
 )
-from backend.app.knowledge_repository import IndexedChunk, IndexedFile, KnowledgeRepository
+from backend.app.indexing.knowledge_repository import IndexedChunk, IndexedFile, KnowledgeRepository
 from backend.app.knowledge_store import KnowledgeStore
-from backend.app.semantic_search_service import (
+from backend.app.indexing.semantic_search_service import (
     SemanticSearchError,
     SemanticSearchProfile,
     SemanticSearchService,

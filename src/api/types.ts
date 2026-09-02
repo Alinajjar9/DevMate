@@ -1,4 +1,7 @@
-import type { AgentToolCall, AgentToolName } from '../agentToolProtocol';
+// Share request/response shapes and protocol limits with extension features.
+// The contract checker keeps matching TypeScript and Python definitions aligned.
+
+import type { AgentToolCall, AgentToolName } from '../agent/agentToolProtocol';
 
 export type AssistantMode = 'ideas' | 'code' | 'debug';
 export type ScopeType = 'project' | 'file' | 'selection';

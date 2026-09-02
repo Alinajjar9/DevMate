@@ -1,11 +1,11 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { PermissionController } = require('../out/permissionController');
-const { PermissionPresenter } = require('../out/permissionPresenter');
+const { PermissionController } = require('../out/workspace/permissionController');
+const { PermissionPresenter } = require('../out/workspace/permissionPresenter');
 const {
   REMEMBERED_COMMANDS_STORAGE_KEY
-} = require('../out/permissions');
+} = require('../out/workspace/permissions');
 
 test('publishes file requests and removes the replaced diff review', async () => {
   const fixture = createFixture();

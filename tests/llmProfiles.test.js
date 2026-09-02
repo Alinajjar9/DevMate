@@ -14,7 +14,7 @@ const {
   reasoningEffortOptionsForProfile,
   secretKeyForProfile,
   validateProfileDraft
-} = require('../out/llmProfiles');
+} = require('../out/settings/llmProfiles');
 
 test('normalizes profile labels, model IDs, and trailing URL slashes', () => {
   const profile = normalizeProfileDraft({

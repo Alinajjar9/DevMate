@@ -5,7 +5,7 @@ from typing import get_args
 
 from fastapi.testclient import TestClient
 
-from backend.app.api_models import (
+from backend.app.api.api_models import (
     AgentToolName,
     DEVMATE_BACKEND_TOKEN_ENVIRONMENT_VARIABLE,
     DEVMATE_BACKEND_TOKEN_HEADER,
@@ -21,7 +21,7 @@ from backend.app.main import (
     app,
     create_app,
 )
-from backend.app.providers import (
+from backend.app.providers.chat_provider import (
     ChatCompletion,
     ChatCompletionRequest,
     ChatStreamEvent,
@@ -29,7 +29,7 @@ from backend.app.providers import (
     ChatToolCall,
     ProviderError,
 )
-from backend.app.tool_catalog import AGENT_TOOL_DEFINITIONS
+from backend.app.chat.tool_catalog import AGENT_TOOL_DEFINITIONS
 
 
 class RecordingProvider:

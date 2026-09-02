@@ -7,18 +7,18 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
-from backend.app.api_models import DEVMATE_BACKEND_TOKEN_HEADER
-from backend.app.embedding_index_service import EmbeddingIndexService
-from backend.app.chat_memory_repository import ChatMemoryRepository
-from backend.app.embedding_providers import EmbeddingBatch, EmbeddingRequest
-from backend.app.embedding_repository import EmbeddingRepository
+from backend.app.api.api_models import DEVMATE_BACKEND_TOKEN_HEADER
+from backend.app.indexing.embedding_index_service import EmbeddingIndexService
+from backend.app.memory.chat_memory_repository import ChatMemoryRepository
+from backend.app.providers.embedding_providers import EmbeddingBatch, EmbeddingRequest
+from backend.app.indexing.embedding_repository import EmbeddingRepository
 from backend.app.main import create_app
-from backend.app.providers import (
+from backend.app.providers.chat_provider import (
     ChatCompletion,
     ChatCompletionRequest,
     ProviderError,
 )
-from backend.app.semantic_search_service import SemanticSearchService
+from backend.app.indexing.semantic_search_service import SemanticSearchService
 from backend.app.knowledge_store import KnowledgeStore
 
 

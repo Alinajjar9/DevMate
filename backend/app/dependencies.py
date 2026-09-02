@@ -1,17 +1,20 @@
+# Keep each FastAPI app's services in one dependency container.
+# Routes retrieve the current app's objects instead of sharing mutable module globals.
+
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from fastapi import Request
 
-from .chat_compaction_service import ChatCompactionService
-from .chat_memory_repository import ChatMemoryRepository
-from .chat_service import ChatService
-from .embedding_index_service import EmbeddingIndexService
+from .memory.chat_compaction_service import ChatCompactionService
+from .memory.chat_memory_repository import ChatMemoryRepository
+from .chat.chat_service import ChatService
+from .indexing.embedding_index_service import EmbeddingIndexService
 from .errors import BackendApiError
-from .knowledge_repository import KnowledgeRepository
+from .indexing.knowledge_repository import KnowledgeRepository
 from .knowledge_store import KnowledgeStore
-from .providers import ChatProvider
-from .semantic_search_service import SemanticSearchService
+from .providers.chat_provider import ChatProvider
+from .indexing.semantic_search_service import SemanticSearchService
 
 
 BackendTokenProvider = Callable[[], str | None]

@@ -1101,7 +1101,7 @@ function chatMemorySummaryContent() {
       decision: 'Use structured summaries.',
       reason: 'They can be validated before storage.'
     }],
-    importantFiles: ['src/contextPlanner.ts'],
+    importantFiles: ['src/context/contextPlanner.ts'],
     completedWork: ['Added SQLite chat storage.'],
     openTasks: ['Generate summaries.'],
     unresolvedQuestions: ['When should compaction run?']

@@ -28,7 +28,7 @@ Module._load = function loadWithVscodeMock(request, parent, isMain) {
 const {
   DIFF_DOCUMENT_SCHEME,
   DiffPresenter
-} = require('../out/diffPresenter');
+} = require('../out/workspace/diffPresenter');
 
 test.beforeEach(() => {
   openedDiffs.length = 0;

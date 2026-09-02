@@ -11,11 +11,11 @@ const {
   LocalBackendManager,
   parseLocalBackendTarget,
   pythonLaunchCandidates
-} = require('../out/backendManager');
+} = require('../out/api/backendManager');
 
 test('manager source handles synchronous process-launch failures', () => {
   const source = require('node:fs').readFileSync(
-    require('node:path').join(__dirname, '..', 'src', 'backendManager.ts'),
+    require('node:path').join(__dirname, '..', 'src', 'api', 'backendManager.ts'),
     'utf8'
   );
   assert.match(source, /try \{[\s\S]*?child = spawn\(/);

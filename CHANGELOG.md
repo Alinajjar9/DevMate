@@ -2,6 +2,28 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-09-02 — Organize source folders and explain the important code
+
+### Changed
+
+- Grouped the TypeScript source into eight feature folders: chat, agent, context, project search, sessions, workspace, settings, and API. Only the activation entry point remains directly in `src`.
+- Moved 37 existing files and updated their imports, test paths, and contract checks. There are still 46 TypeScript modules, with no extra wrappers or folder-wide re-export files.
+- Grouped `backend/app` into API, chat, providers, indexing, and memory packages. Moved 20 existing modules, renamed the chat provider file for clarity, and reduced the app root from 25 Python files to five shared setup/storage files.
+- Added simple-English file introductions and comments explaining context budgets, compaction, retries, streaming, indexing, persistence, and workspace safety in TypeScript, Python, and the browser UI.
+- Removed two leftover end-marker comments and replaced the README's long file inventory with a folder guide and starting points for following a request through the code.
+- Updated Python imports, test patch targets, source-reading tests, and contract paths. The only additional Python files are five one-line package markers; no wrapper services or application behavior were added. Temporary comparison and smoke-test files remain ignored.
+
+### Verification
+
+- `npm run verify` — all 382 extension tests and 164 backend tests passed; 67 cross-language contracts, 46 cycle-free TypeScript modules, and 46 emitted JavaScript modules verified.
+- Syntax comparisons confirmed that all 47 TypeScript/browser files changed only in comments and relocated imports. An import-aware Python comparison confirmed that all 25 existing app files retain the same logic and docstrings after moving; the backend entry point is unchanged. No Python module import cycles were found.
+- Built the updated `devmate-1.0.0-organized-backend.vsix` and inspected all 191 archive entries. The grouped TypeScript and Python modules are present; old flat modules, test databases, source maps, development dependencies, and previous release archives are absent. Earlier VSIX files were left untouched.
+- Ran the packaged backend manager and HTTP client against the bundled executable with an isolated database. Authenticated health, unauthenticated rejection, SQLite startup, and owned-process shutdown passed without contacting a model provider.
+- A full packaged VS Code activation rerun remains pending while VS Code's updater holds its installation lock. The earlier activation result below belongs to the previous package; repeat the UI startup check after the update finishes.
+- `git diff --check`
+
+---
+
 ## 2026-09-02 — Check the release package and keep test databases out
 
 ### Changed

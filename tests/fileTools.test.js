@@ -9,7 +9,7 @@ const {
   parseEditFileArguments,
   parseMoveFileArguments,
   parseRenameFileArguments
-} = require('../out/fileTools');
+} = require('../out/workspace/fileTools');
 
 test('parses safe create and edit arguments', () => {
   assert.deepEqual(parseCreateFileArguments({

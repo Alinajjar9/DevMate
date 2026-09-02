@@ -6,7 +6,7 @@ const {
   isPythonVerificationCommand,
   workspacePythonCandidates,
   workspacePythonExecutable
-} = require('../out/backendManager');
+} = require('../out/api/backendManager');
 
 test('recognizes Python verification executables', () => {
   assert.equal(isPythonVerificationCommand({ executable: 'python', args: [], cwd: '', timeoutSeconds: 30 }), true);

@@ -4,12 +4,12 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
-from backend.app.embedding_repository import (
+from backend.app.indexing.embedding_repository import (
     ChunkEmbeddingWrite,
     EmbeddingConfiguration,
     EmbeddingRepository,
 )
-from backend.app.knowledge_repository import (
+from backend.app.indexing.knowledge_repository import (
     IndexedChunk,
     IndexedFile,
     KnowledgeRepository,

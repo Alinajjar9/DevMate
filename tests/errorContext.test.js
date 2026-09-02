@@ -5,7 +5,7 @@ const {
   MAX_CAPTURED_TERMINAL_OUTPUT_CHARACTERS,
   formatCapturedTerminalErrors,
   sanitizeCapturedTerminalText
-} = require('../out/commandTools');
+} = require('../out/workspace/commandTools');
 
 test('sanitizes terminal control sequences and common secrets', () => {
   const value = [

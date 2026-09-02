@@ -7,7 +7,7 @@ const {
   parseStoredEmbeddingProfiles,
   preferredEmbeddingProfile,
   validateEmbeddingProfileDraft
-} = require('../out/embeddingProfiles');
+} = require('../out/settings/embeddingProfiles');
 
 test('normalizes embedding models and provider URLs without changing consent', () => {
   assert.deepEqual(normalizeEmbeddingProfileDraft({

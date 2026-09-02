@@ -21,7 +21,7 @@ Module._load = function loadWithVscodeMock(request, parent, isMain) {
   return originalModuleLoad.call(this, request, parent, isMain);
 };
 
-const { SessionPresenter } = require('../out/sessionPresenter');
+const { SessionPresenter } = require('../out/sessions/sessionPresenter');
 
 test.beforeEach(() => {
   vscodeState.input = undefined;

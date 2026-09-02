@@ -5,7 +5,7 @@ const {
   emptyResponseRecoveryAction,
   isRetryableProviderFailure,
   providerRetryDelay
-} = require('../out/agentTools');
+} = require('../out/agent/agentTools');
 
 test('escalates empty model responses through bounded recovery stages', () => {
   const message = 'The model provider returned an empty final answer.';

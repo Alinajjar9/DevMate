@@ -5,7 +5,7 @@ const {
   collectFileChangeSummary,
   parseAppliedFileChangeOutcome,
   parseFileChangeSummary
-} = require('../out/fileTools');
+} = require('../out/workspace/fileTools');
 
 test('collects successful file mutations into a compact net summary', () => {
   const summary = collectFileChangeSummary([

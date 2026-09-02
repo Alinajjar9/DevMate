@@ -1,3 +1,6 @@
+# Own the private SQLite connection, schema versions, and transaction boundary.
+# The database is supplied by extension storage, not created inside the user's project.
+
 from __future__ import annotations
 
 import os
@@ -267,6 +270,7 @@ class KnowledgeStore:
         connection = self.connection
         if connection.in_transaction:
             raise KnowledgeStoreError("Nested knowledge-store transactions are not supported.")
+        # Acquire the write transaction up front; the multi-statement update commits or rolls back together.
         connection.execute("BEGIN IMMEDIATE")
         try:
             yield connection
@@ -278,11 +282,13 @@ class KnowledgeStore:
 
     @staticmethod
     def _configure(connection: sqlite3.Connection) -> None:
+        # Cascading file/chunk deletes rely on foreign keys being enforced on this connection.
         connection.execute("PRAGMA foreign_keys = ON")
         foreign_keys = connection.execute("PRAGMA foreign_keys").fetchone()[0]
         if foreign_keys != 1:
             raise KnowledgeStoreError("SQLite foreign-key enforcement is unavailable.")
 
+        # WAL lets readers use committed data while a writer prepares the next update.
         journal_mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
         if str(journal_mode).lower() != "wal":
             raise KnowledgeStoreError("SQLite WAL mode is unavailable for the knowledge store.")
@@ -307,6 +313,7 @@ class KnowledgeStore:
         known_migrations = {migration.version: migration for migration in _SCHEMA_MIGRATIONS}
         applied_versions = [int(row["version"]) for row in applied_rows]
 
+        # Do not guess how to repair an unknown/newer schema or a missing migration in the middle.
         if applied_versions != list(range(1, len(applied_versions) + 1)):
             raise KnowledgeStoreMigrationError("Knowledge-store migrations are not contiguous.")
         for row in applied_rows:
@@ -323,6 +330,7 @@ class KnowledgeStore:
                 "The knowledge-store schema version metadata is inconsistent."
             )
 
+        # Each schema change and its version record are committed together.
         for migration in _SCHEMA_MIGRATIONS:
             if migration.version <= current_version:
                 continue

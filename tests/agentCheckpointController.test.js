@@ -3,10 +3,10 @@ const test = require('node:test');
 
 const {
   AgentCheckpointController
-} = require('../out/agentCheckpointController');
+} = require('../out/agent/agentCheckpointController');
 const {
   AGENT_CHECKPOINT_STORAGE_KEY
-} = require('../out/sessions');
+} = require('../out/sessions/sessions');
 
 const NOW = 2_000_000_000_000;
 

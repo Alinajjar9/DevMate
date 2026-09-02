@@ -1,11 +1,11 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { PermissionController } = require('../out/permissionController');
+const { PermissionController } = require('../out/workspace/permissionController');
 const {
   FILE_PERMISSION_POLICY_STORAGE_KEY,
   REMEMBERED_COMMANDS_STORAGE_KEY
-} = require('../out/permissions');
+} = require('../out/workspace/permissions');
 
 test('reads safe defaults and filters invalid saved permission data', () => {
   const persistence = memoryPersistence({

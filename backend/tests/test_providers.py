@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import httpx
 
-from backend.app.providers import (
+from backend.app.providers.chat_provider import (
     ChatCompletion,
     ChatCompletionRequest,
     ChatMessage,
@@ -127,7 +127,7 @@ class ProviderUrlTests(unittest.TestCase):
 class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self._resolver_patcher = patch(
-            "backend.app.providers.resolve_provider_addresses",
+            "backend.app.providers.chat_provider.resolve_provider_addresses",
             self._resolve_public_provider,
         )
         self._resolver_patcher.start()

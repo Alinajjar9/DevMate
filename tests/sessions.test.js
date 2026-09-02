@@ -18,7 +18,7 @@ const {
   sessionBelongsToWorkspace,
   sessionModelHistoryAfter,
   sessionTitleFromQuestion
-} = require('../out/sessions');
+} = require('../out/sessions/sessions');
 
 const workspaceA = { id: 'file:///project-a', name: 'Project A' };
 const workspaceB = { id: 'file:///project-b', name: 'Project B' };

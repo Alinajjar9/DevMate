@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
-from backend.app.chat_memory_repository import (
+from backend.app.memory.chat_memory_repository import (
     ChatDecision,
     ChatMemoryNotFoundError,
     ChatMemoryRepository,
@@ -14,7 +14,7 @@ from backend.app.chat_memory_repository import (
     ChatSummaryContent,
     ChatTurnRecord,
 )
-from backend.app.knowledge_repository import KnowledgeRepository
+from backend.app.indexing.knowledge_repository import KnowledgeRepository
 from backend.app.knowledge_store import KnowledgeStore
 
 

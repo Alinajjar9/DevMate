@@ -1,10 +1,10 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { SessionController } = require('../out/sessionController');
+const { SessionController } = require('../out/sessions/sessionController');
 const {
   createConversationSessionStore
-} = require('../out/sessions');
+} = require('../out/sessions/sessions');
 
 const workspace = {
   id: 'file:///workspace-one',

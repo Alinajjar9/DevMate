@@ -1,12 +1,12 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { ChatRequestController } = require('../out/chatRequestController');
-const { SessionController } = require('../out/sessionController');
+const { ChatRequestController } = require('../out/chat/chatRequestController');
+const { SessionController } = require('../out/sessions/sessionController');
 const {
   appendConversationSessionTurn,
   createConversationSessionStore
-} = require('../out/sessions');
+} = require('../out/sessions/sessions');
 
 const TEST_BACKEND_TOKEN = 'test-backend-token-that-is-long-enough';
 const workspace = { id: 'workspace-a', name: 'Workspace A' };

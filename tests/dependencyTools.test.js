@@ -4,7 +4,7 @@ const test = require('node:test');
 const {
   parseInstallDependenciesArguments,
   validatePythonRequirementsManifest
-} = require('../out/agentTools');
+} = require('../out/agent/agentTools');
 
 test('parses a workspace requirements manifest and derives its working directory', () => {
   assert.deepEqual(parseInstallDependenciesArguments({

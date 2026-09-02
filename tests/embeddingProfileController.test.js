@@ -3,12 +3,12 @@ const test = require('node:test');
 
 const {
   EmbeddingProfileController
-} = require('../out/embeddingProfileController');
+} = require('../out/settings/embeddingProfileController');
 const {
   ACTIVE_EMBEDDING_PROFILE_STORAGE_KEY,
   EMBEDDING_PROFILES_STORAGE_KEY,
   embeddingSecretKeyForProfile
-} = require('../out/embeddingProfiles');
+} = require('../out/settings/embeddingProfiles');
 
 test('uses validated stored profiles and prefers local Ollama by default', () => {
   const persistence = memoryPersistence({

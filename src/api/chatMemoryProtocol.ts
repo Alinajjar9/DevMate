@@ -1,3 +1,6 @@
+// Validate persisted sessions and summaries returned by the backend.
+// Reject malformed data before it can replace local conversation state.
+
 import {
   CHAT_SUMMARY_VERSION,
   MAX_CHAT_DIFF_ID_CHARACTERS,

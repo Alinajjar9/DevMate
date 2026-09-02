@@ -1,3 +1,6 @@
+// Build the bounded local code index and its lexical ranking fallback.
+// Shared file filters keep credentials, generated output, and binary files out.
+
 import * as path from 'path';
 import type { AskContextItem, ContextSource } from '../api/types';
 
@@ -29,7 +32,6 @@ export type ProjectContextLimits = {
   maxFiles?: number;
   maxCharacters?: number;
 };
-//end
 export type ProjectIndexChunk = {
   id: string;
   startLine: number;

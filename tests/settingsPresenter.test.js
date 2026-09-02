@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { SettingsPresenter } = require('../out/settingsPresenter');
+const { SettingsPresenter } = require('../out/settings/settingsPresenter');
 
 test('publishes saved settings with workspace permission information', () => {
   const fixture = createFixture();

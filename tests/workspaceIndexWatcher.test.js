@@ -86,7 +86,7 @@ Module._load = function loadWithVscodeMock(request, parent, isMain) {
 const {
   VsCodeWorkspaceIndexChangeSource,
   WorkspaceIndexCoordinator
-} = require('../out/workspaceIndexWatcher');
+} = require('../out/projectSearch/workspaceIndexWatcher');
 Module._load = originalModuleLoad;
 
 const ACCESS = {

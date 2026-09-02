@@ -26,7 +26,7 @@ const {
   summarizedAgentToolArguments,
   summarizeAgentToolHistory,
   truncateAgentToolResult
-} = require('../out/agentTools');
+} = require('../out/agent/agentTools');
 
 const workspace = {
   name: 'testing the ai project',

@@ -1,8 +1,8 @@
 import unittest
 
-from backend.app.api_models import AskRequest, TokenUsage
-from backend.app.chat_service import ChatService
-from backend.app.providers import ChatCompletion, ChatToolCall, ChatToolDefinition
+from backend.app.api.api_models import AskRequest, TokenUsage
+from backend.app.chat.chat_service import ChatService
+from backend.app.providers.chat_provider import ChatCompletion, ChatToolCall, ChatToolDefinition
 
 
 class ChatServiceTests(unittest.TestCase):

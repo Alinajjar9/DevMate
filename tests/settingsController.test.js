@@ -1,8 +1,8 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { SettingsController } = require('../out/settingsController');
-const { FILE_PERMISSION_POLICY_STORAGE_KEY } = require('../out/permissions');
+const { SettingsController } = require('../out/settings/settingsController');
+const { FILE_PERMISSION_POLICY_STORAGE_KEY } = require('../out/workspace/permissions');
 
 test('reads bounded settings and fills in understandable defaults', () => {
   const persistence = memoryPersistence({

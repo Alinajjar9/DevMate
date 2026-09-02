@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
-from backend.app.knowledge_repository import IndexedChunk, IndexedFile, KnowledgeRepository
+from backend.app.indexing.knowledge_repository import IndexedChunk, IndexedFile, KnowledgeRepository
 from backend.app.knowledge_store import KnowledgeStore
 
 

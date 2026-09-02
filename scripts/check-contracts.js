@@ -47,16 +47,16 @@ function stringConstant(source, name, language) {
 }
 
 const apiTypes = read('src/api/types.ts');
-const agentToolProtocol = read('src/agentToolProtocol.ts');
-const agentTools = read('src/agentTools.ts');
+const agentToolProtocol = read('src/agent/agentToolProtocol.ts');
+const agentTools = read('src/agent/agentTools.ts');
 const projectIndex = read('src/projectSearch/projectIndex.ts');
-const sessions = read('src/sessions.ts');
-const backendApiModels = read('backend/app/api_models.py');
-const embeddingProfiles = read('src/embeddingProfiles.ts');
-const backendEmbeddingProviders = read('backend/app/embedding_providers.py');
+const sessions = read('src/sessions/sessions.ts');
+const backendApiModels = read('backend/app/api/api_models.py');
+const embeddingProfiles = read('src/settings/embeddingProfiles.ts');
+const backendEmbeddingProviders = read('backend/app/providers/embedding_providers.py');
 const backendKnowledgeStore = read('backend/app/knowledge_store.py');
-const backendKnowledgeContracts = read('backend/app/knowledge_contracts.py');
-const backendChatMemoryContracts = read('backend/app/chat_memory_contracts.py');
+const backendKnowledgeContracts = read('backend/app/indexing/knowledge_contracts.py');
+const backendChatMemoryContracts = read('backend/app/memory/chat_memory_contracts.py');
 
 const literalContracts = [
   {

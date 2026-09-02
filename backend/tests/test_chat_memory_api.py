@@ -8,9 +8,9 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
-from backend.app.api_models import DEVMATE_BACKEND_TOKEN_HEADER
+from backend.app.api.api_models import DEVMATE_BACKEND_TOKEN_HEADER
 from backend.app.main import create_app
-from backend.app.providers import ChatCompletion, ChatCompletionRequest
+from backend.app.providers.chat_provider import ChatCompletion, ChatCompletionRequest
 from backend.app.knowledge_store import KnowledgeStore
 
 

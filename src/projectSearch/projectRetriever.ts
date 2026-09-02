@@ -1,3 +1,6 @@
+// Retrieve project candidates through SQLite when available, with a local lexical fallback.
+// Reread and validate source before returning context so stale index text is not trusted.
+
 import { createHash } from 'crypto';
 import {
   searchKnowledgeIndex,
@@ -17,8 +20,8 @@ import type {
   KnowledgeIndexSemanticSearchRequest,
   KnowledgeIndexSemanticSearchResponse
 } from '../api/types';
-import type { ResolvedEmbeddingProfile } from '../embeddingProfiles';
-import type { KnowledgeIndexAccess } from '../indexSynchronization';
+import type { ResolvedEmbeddingProfile } from '../settings/embeddingProfiles';
+import type { KnowledgeIndexAccess } from './indexSynchronization';
 import { retrieveProjectChunks } from './projectIndex';
 import type {
   ProjectChunkRetrievalLimits,
@@ -132,6 +135,7 @@ export class SqliteProjectRetriever implements ProjectRetriever {
     }
 
     const resultLimit = Math.max(20, maxChunks * 4);
+    // Ask both retrievers independently. A missing embedding profile must not disable lexical search.
     const [lexicalResponse, semanticResponse] = await Promise.all([
       this.tryLexicalSearch(
         access,
@@ -144,6 +148,7 @@ export class SqliteProjectRetriever implements ProjectRetriever {
         Math.min(MAX_SEMANTIC_RESULTS, resultLimit)
       )
     ]);
+    // Cancellation is not a search failure: do not start a fallback after the user stops the request.
     if (request.signal?.aborted
       || lexicalResponse?.errorKind === 'cancelled'
       || semanticResponse?.errorKind === 'cancelled') {
@@ -157,6 +162,7 @@ export class SqliteProjectRetriever implements ProjectRetriever {
       request.question,
       resultLimit
     );
+    // The in-memory lexical index is still useful when the backend is unavailable or has no matches.
     if (rankedResults.length === 0) {
       return this.fallback.retrieve(request);
     }
@@ -231,6 +237,7 @@ export class SqliteProjectRetriever implements ProjectRetriever {
       [...(request.limits.excludedFilePaths ?? [])].map(normalizeFilePath)
     );
     const selected: RetrievedProjectChunk[] = [];
+    // One result per file provides broader project coverage within the small context allowance.
     const selectedFiles = new Set<string>();
     let remainingCharacters = maxCharacters;
 
@@ -254,6 +261,7 @@ export class SqliteProjectRetriever implements ProjectRetriever {
         || normalizeFilePath(currentFile.relativePath) !== normalizedRelativePath) {
         continue;
       }
+      // Indexed text is only a candidate. Reject it if the current file no longer contains that chunk.
       const exactContent = exactCurrentChunk(currentFile.content, result);
       if (exactContent === undefined) {
         continue;
@@ -298,6 +306,7 @@ function exactCurrentChunk(
   if (expectedLineIndex < 0 || expectedLineIndex >= lineOffsets.length) {
     return undefined;
   }
+  // Check both content and location; identical text elsewhere in the file is not the indexed chunk.
   const firstMatchOffset = lineOffsets[expectedLineIndex];
   const maximumMatchOffset = lineOffsets[expectedLineIndex + 1] ?? fileContent.length + 1;
   let matchOffset = fileContent.indexOf(result.content, firstMatchOffset);

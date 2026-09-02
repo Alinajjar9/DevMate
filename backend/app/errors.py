@@ -1,4 +1,7 @@
-from .api_models import BackendErrorCode
+# Describe backend failures independently of FastAPI.
+# The API layer maps these failures to stable HTTP error responses.
+
+from .api.api_models import BackendErrorCode
 
 
 class BackendApiError(Exception):

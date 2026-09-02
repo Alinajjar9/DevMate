@@ -6,8 +6,8 @@ const {
   SqliteSessionRepository,
   chatMemorySnapshotsToConversationStore,
   conversationSessionToChatMemorySnapshot
-} = require('../out/sessionRepository');
-const { createConversationSessionStore } = require('../out/sessions');
+} = require('../out/sessions/sessionRepository');
+const { createConversationSessionStore } = require('../out/sessions/sessions');
 
 const ACCESS = {
   backendUrl: 'http://127.0.0.1:8000',

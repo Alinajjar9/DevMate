@@ -368,83 +368,50 @@ The package needs `out`, `media`, and the backend runtime. It should not contain
 
 Test a release with a small throwaway project and separate VS Code user-data and extension directories. Use a different local backend port if your normal DevMate is already running. This keeps the check away from your real chats, settings, and installed extension.
 
-The automated packaging check for this cleanup passed activation, chat-view opening, authenticated backend startup, private SQLite creation, and lexical indexing in VS Code 1.134.0 on Windows x64. The owned backend also stopped after the test window closed. It did not contact a model or embedding provider.
+A startup smoke check should confirm activation, chat-view opening, authenticated backend startup, private SQLite creation, lexical indexing, and backend shutdown when the test window closes. It should not need a model or embedding provider. See the latest changelog entry for checks completed against the current layout and any remaining limitations.
 
 Before a demo, still do a short manual check: open the profile/settings forms, send one question with your chosen model, and review then cancel one proposed edit. Automated startup checks do not prove that the UI looks right or that a particular external provider works.
 
 ## Repository structure
 
-| Path | Purpose |
+There are still 46 TypeScript modules. The files are grouped by feature; we did not add a wrapper or an `index.ts` just to create a folder.
+
+| Path | Responsibility |
 | --- | --- |
-| `src/extension.ts` | Extension activation, registrations, and dependency composition |
-| `src/chatViewProvider.ts` | Feature wiring, grouped chat command routing, shared request cancellation, view lifecycle, and typed UI forwarding |
-| `src/chatRequestController.ts` | Chat request validation, context preparation, compaction, agent coordination, and saved responses |
-| `src/webviewProtocol.ts` | Runtime-validated UI commands and typed extension-to-webview events |
-| `src/agentCheckpointController.ts` | Unfinished agent-run storage, active-chat matching, cleanup, and UI-ready state |
-| `src/attachmentController.ts` | Attached-file state, native workspace picker, limits, and candidate validation |
-| `src/llmProfiles.ts` | Pure model-profile normalization, validation, labels, and reasoning-model rules |
-| `src/llmProfileController.ts` | Model-profile storage, selection, reasoning preferences, and credential operations |
-| `src/profilePresenter.ts` | Model and embedding profile forms, pickers, typed UI state, and status messages |
-| `src/permissionController.ts` | Permission policy, remembered commands, pending approvals, and decision rules |
-| `src/permissionPresenter.ts` | Permission prompts, decisions, diff-review flow, warnings, and UI updates |
-| `src/diffPresenter.ts` | Native VS Code diff documents, pending reviews, and completed change snapshots |
-| `src/settingsController.ts` | General and agent-tool setting defaults, validation, reading, and persistence |
-| `src/settingsPresenter.ts` | Settings-screen state, save flows, validation feedback, and typed UI updates |
-| `src/sessionController.ts` | Chat session state, ordered persistence, repository synchronization, and pending writes |
-| `src/sessionPresenter.ts` | Session dialogs, project checks, chat-list formatting, and typed session UI messages |
-| `src/agentRunController.ts` | Provider retries, checkpointed agent-loop policy, recovery, and tool iteration |
-| `src/toolExecutor.ts` | Validated tool dispatch, workspace inspection, terminal execution, and mutation routing |
-| `src/workspaceContext.ts` | Workspace identity, scope collection, attachments, and project-index orchestration |
-| `src/indexSynchronization.ts` | Cancellable workspace-to-SQLite reconciliation and bounded change batching |
-| `src/embeddingIndexScheduler.ts` | Capability-gated background generation of missing workspace embeddings |
-| `src/workspaceIndexSource.ts` | Safe, bounded VS Code workspace scanning and file revalidation for indexing |
-| `src/workspaceIndexWatcher.ts` | Debounced workspace-change monitoring and authenticated synchronization scheduling |
-| `src/projectSearch/` | Cohesive project chunking, local index, ranking, and retrieval feature |
-| `src/projectSearch/projectChunking.ts` | Validated document-symbol chunk boundaries with bounded line-based fallback |
-| `src/projectSearch/projectIndex.ts` | Local index representation, chunking, and lexical scoring |
-| `src/projectSearch/projectRetriever.ts` | Capability-gated project retrieval, exact-source validation, and lexical fallback |
-| `src/projectSearch/projectSearchRanking.ts` | Reciprocal Rank Fusion plus bounded filename, path, and exact-identifier boosts |
-| `src/workspaceMutations.ts` | File writes, trust checks, symlink protection, and pre-apply revalidation |
-| `src/webview.ts` | CSP-protected webview shell and packaged asset URLs |
-| `media/webview.css` | Sidebar layout and visual styles |
-| `media/webview.js` | Browser-side chat state, rendering, and interactions |
-| `src/agentToolProtocol.ts` | Dependency-free tool names, groups, and shared call types |
-| `src/agentTools.ts` | Tool argument parsing, limits, retry policy, and history compaction |
-| `src/api/` | Extension-to-backend HTTP transport, request types, and strict knowledge-index response decoding |
-| `src/api/knowledgeIndexProtocol.ts` | Runtime validation for versioned knowledge-index responses |
-| `src/backendManager.ts` | Local backend startup, monitoring, and restart logic |
-| `src/embeddingProfiles.ts` | Local-first embedding profile validation, selection, consent, and SecretStorage keys |
-| `src/embeddingProfileController.ts` | Validated embedding-profile persistence and UI-facing operations |
-| `src/providerUrlPolicy.ts` | Shared chat and embedding provider URL security policy |
-| `src/contextPlanner.ts` | Token-budget calculation and deterministic context-priority policy |
-| `src/sessions.ts` | Pure session types, limits, validation, and immutable state transformations |
-| `src/permissions.ts` | File and command permission storage |
-| `backend/app/api_models.py` | Backend protocol constants and validated request/response contracts |
-| `backend/app/api_routes.py` | HTTP endpoints and NDJSON streaming orchestration |
-| `backend/app/chat_service.py` | Model-request construction, completion normalization, and token accounting |
-| `backend/app/dependencies.py` | Per-application backend dependency container and route accessors |
-| `backend/app/errors.py` | Shared backend application errors |
-| `backend/app/embedding_clients.py` | Safe bounded Ollama and OpenAI-compatible embedding HTTP clients |
-| `backend/app/embedding_index_service.py` | Bounded resumable generation of missing workspace vectors |
-| `backend/app/embedding_providers.py` | Batched embedding-provider request, result, and protocol boundary |
-| `backend/app/embedding_repository.py` | Workspace-isolated normalized vector persistence and invalidation |
-| `backend/app/semantic_search_service.py` | Query embedding and exact cosine ranking over cached workspace vectors |
-| `backend/app/knowledge_contracts.py` | Shared version, states, and size limits for the knowledge-index protocol |
-| `backend/app/knowledge_routes.py` | Authenticated version-one knowledge-index HTTP routes |
-| `backend/app/knowledge_store.py` | Isolated versioned SQLite schema and transaction boundary for the code index |
-| `backend/app/knowledge_repository.py` | Transactional workspace, file, chunk, metadata, and FTS data access |
-| `backend/app/main.py` | FastAPI application composition, authentication, and exception handling |
-| `backend/app/prompts.py` | Mode and agent-loop prompts |
-| `backend/app/providers.py` | OpenAI-compatible provider client |
-| `backend/app/tool_catalog.py` | Agent tool descriptions and JSON parameter schemas |
-| `backend/run_backend.py` | Entry point for the standalone backend |
-| `scripts/build-backend.js` | Platform-aware PyInstaller build command |
-| `backend-runtime/` | Generated platform backend included in the VSIX |
-| `tests/fixtures/project-retrieval-evaluation.json` | Shared corpus and relevance judgments for comparing project retrievers |
-| `tests/helpers/projectRetrievalEvaluation.js` | Retrieval-quality metrics and evaluation harness |
-| `tests/` | Extension tests |
-| `backend/tests/` | Backend tests |
-| `out/` | Compiled JavaScript used by VS Code |
+| `src/extension.ts` | VS Code activation, service composition, and registrations |
+| `src/chat/` | Chat view, validated webview messages, HTML shell, and request coordination |
+| `src/agent/` | Model/tool loop, tool dispatch, retry rules, and unfinished-run checkpoints |
+| `src/context/` | Workspace context, explicit attachments, and input-token budgeting |
+| `src/projectSearch/` | Local/SQLite retrieval, chunking, ranking, file watching, and embedding scheduling |
+| `src/sessions/` | Chat state, persistence, session dialogs, and automatic summary compaction |
+| `src/workspace/` | File changes, verification-command rules, permissions, and native diffs |
+| `src/settings/` | General settings and separate chat-model/embedding profile configuration |
+| `src/api/` | Backend HTTP transport, protocol types/decoders, URL policy, and backend lifecycle |
+| `media/` | Browser-side chat behavior, styles, and extension icon |
+| `backend/app/` | App setup (`main.py`), dependency wiring, shared errors, and SQLite lifecycle (`knowledge_store.py`) |
+| `backend/app/api/` | Validated HTTP request/response models and chat endpoints |
+| `backend/app/chat/` | Chat service, prompts, tool catalog, and answer/tool/edit parsing |
+| `backend/app/providers/` | Chat and embedding clients, provider data types, and connection safety |
+| `backend/app/indexing/` | Project-index endpoints, lexical/vector storage, embedding updates, and semantic search |
+| `backend/app/memory/` | Chat-memory endpoints, raw-turn storage, and summary compaction |
+| `backend/run_backend.py` | Standalone backend entry point |
+| `tests/` and `backend/tests/` | Extension and Python tests |
+| `scripts/` | Build, clean, contract, import-cycle, and emitted-file checks |
+| `out/` and `backend-runtime/` | Generated extension JavaScript and platform-specific backend executable |
+
+Controllers and presenters for the same feature stay together. Imports point to the actual owner module rather than a folder-wide re-export file. The folders help navigation; the import-cycle check still verifies the module dependencies.
+
+The Python folders group existing files, not extra abstraction layers. Their small `__init__.py` files only mark packages and do not re-export services. `knowledge_store.py` stays at the app root because both project indexing and chat memory use the same database lifecycle. The backend entry point remains `backend.app.main:app`.
+
+### Where to start reading
+
+- **Follow a question:** `chat/chatViewProvider.ts` routes it to `chat/chatRequestController.ts`, which prepares context/history and calls `agent/agentRunController.ts`. The agent delegates local actions to `agent/toolExecutor.ts`.
+- **Understand search:** `projectSearch/indexSynchronization.ts` updates the code index. `projectSearch/projectRetriever.ts` combines search results and checks current source before including it in a request.
+- **Understand memory:** `sessions/sessionController.ts` coordinates persistence through `sessions/sessionRepository.ts`. `sessions/chatCompaction.ts` decides when to request a summary; `context/contextPlanner.ts` decides what fits in a model request.
+- **Understand file safety:** `workspace/workspaceMutations.ts` owns approval-time revalidation and file application. Permission and diff presenters live beside it.
+- **Follow the backend:** start at `backend/app/main.py`. Chat requests enter `api/api_routes.py`, use `chat/chat_service.py`, and call `providers/chat_provider.py`. Project-search endpoints live in `indexing/`; chat-memory endpoints and compaction live in `memory/`.
+
+Paths in the reading guide are relative to `src/` unless they begin with `backend/`. Short file introductions describe responsibilities; inline comments explain non-obvious decisions rather than every assignment.
 
 ## Troubleshooting
 

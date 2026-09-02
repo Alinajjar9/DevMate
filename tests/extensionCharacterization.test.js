@@ -68,25 +68,25 @@ Module._load = function loadWithVscodeMock(request, parent, isMain) {
   }
   return originalModuleLoad.call(this, request, parent, isMain);
 };
-const { DevMateChatViewProvider } = require('../out/chatViewProvider');
-const { AgentRunController } = require('../out/agentRunController');
+const { DevMateChatViewProvider } = require('../out/chat/chatViewProvider');
+const { AgentRunController } = require('../out/agent/agentRunController');
 const {
   StartedCommandError,
   StartedDependencyInstallError,
   ToolExecutor
-} = require('../out/toolExecutor');
-const { WorkspaceContext } = require('../out/workspaceContext');
-const { WorkspaceMutations } = require('../out/workspaceMutations');
+} = require('../out/agent/toolExecutor');
+const { WorkspaceContext } = require('../out/context/workspaceContext');
+const { WorkspaceMutations } = require('../out/workspace/workspaceMutations');
 const { LexicalProjectRetriever } = require('../out/projectSearch/projectRetriever');
 Module._load = originalModuleLoad;
 
-const { parseAgentToolCall } = require('../out/agentTools');
-const { LLM_PROFILES_STORAGE_KEY, secretKeyForProfile } = require('../out/llmProfiles');
+const { parseAgentToolCall } = require('../out/agent/agentTools');
+const { LLM_PROFILES_STORAGE_KEY, secretKeyForProfile } = require('../out/settings/llmProfiles');
 const {
   EMBEDDING_PROFILES_STORAGE_KEY,
   embeddingSecretKeyForProfile
-} = require('../out/embeddingProfiles');
-const { FILE_PERMISSION_POLICY_STORAGE_KEY } = require('../out/permissions');
+} = require('../out/settings/embeddingProfiles');
+const { FILE_PERMISSION_POLICY_STORAGE_KEY } = require('../out/workspace/permissions');
 const {
   createEmptyProjectIndex,
   createIndexedProjectFile

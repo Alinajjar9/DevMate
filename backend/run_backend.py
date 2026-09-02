@@ -1,3 +1,6 @@
+# Command-line entry point used by the packaged backend executable.
+# Only loopback hosts and non-privileged ports may be selected.
+
 from __future__ import annotations
 
 import argparse

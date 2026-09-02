@@ -6,7 +6,7 @@ const {
   KNOWLEDGE_INDEX_CHUNKING_VERSION,
   KnowledgeIndexSynchronizer,
   knowledgeIndexWorkspaceKey
-} = require('../out/indexSynchronization');
+} = require('../out/projectSearch/indexSynchronization');
 const {
   MAX_FILE_CHANGES_PER_BATCH,
   MAX_INDEX_BATCH_CONTENT_CHARACTERS

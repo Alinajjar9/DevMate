@@ -8,7 +8,7 @@ const {
   MAX_MODEL_COMMAND_OUTPUT_CHARACTERS,
   parseRunCommandArguments,
   sanitizeCommandOutput
-} = require('../out/commandTools');
+} = require('../out/workspace/commandTools');
 
 test('accepts bounded verification commands', () => {
   const commands = [

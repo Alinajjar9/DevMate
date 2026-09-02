@@ -147,7 +147,7 @@ Module._load = function loadWithVscodeMock(request, parent, isMain) {
   }
   return originalModuleLoad.call(this, request, parent, isMain);
 };
-const { WorkspaceMutations } = require('../out/workspaceMutations');
+const { WorkspaceMutations } = require('../out/workspace/workspaceMutations');
 Module._load = originalModuleLoad;
 
 function resetWorkspace() {

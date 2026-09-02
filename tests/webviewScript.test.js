@@ -10,31 +10,31 @@ function readSource(...segments) {
 function readExtensionHostSource() {
   return [
     readSource('src', 'extension.ts'),
-    readSource('src', 'agentCheckpointController.ts'),
-    readSource('src', 'agentRunController.ts'),
-    readSource('src', 'attachmentController.ts'),
-    readSource('src', 'chatViewProvider.ts'),
-    readSource('src', 'chatRequestController.ts'),
-    readSource('src', 'diffPresenter.ts'),
-    readSource('src', 'llmProfileController.ts'),
-    readSource('src', 'permissionController.ts'),
-    readSource('src', 'permissionPresenter.ts'),
-    readSource('src', 'profilePresenter.ts'),
-    readSource('src', 'settingsController.ts'),
-    readSource('src', 'settingsPresenter.ts'),
-    readSource('src', 'sessionController.ts'),
-    readSource('src', 'sessionPresenter.ts'),
-    readSource('src', 'toolExecutor.ts'),
-    readSource('src', 'workspaceContext.ts'),
-    readSource('src', 'workspaceMutations.ts'),
-    readSource('src', 'embeddingProfileController.ts')
+    readSource('src', 'agent', 'agentCheckpointController.ts'),
+    readSource('src', 'agent', 'agentRunController.ts'),
+    readSource('src', 'context', 'attachmentController.ts'),
+    readSource('src', 'chat', 'chatViewProvider.ts'),
+    readSource('src', 'chat', 'chatRequestController.ts'),
+    readSource('src', 'workspace', 'diffPresenter.ts'),
+    readSource('src', 'settings', 'llmProfileController.ts'),
+    readSource('src', 'workspace', 'permissionController.ts'),
+    readSource('src', 'workspace', 'permissionPresenter.ts'),
+    readSource('src', 'settings', 'profilePresenter.ts'),
+    readSource('src', 'settings', 'settingsController.ts'),
+    readSource('src', 'settings', 'settingsPresenter.ts'),
+    readSource('src', 'sessions', 'sessionController.ts'),
+    readSource('src', 'sessions', 'sessionPresenter.ts'),
+    readSource('src', 'agent', 'toolExecutor.ts'),
+    readSource('src', 'context', 'workspaceContext.ts'),
+    readSource('src', 'workspace', 'workspaceMutations.ts'),
+    readSource('src', 'settings', 'embeddingProfileController.ts')
   ].join('\n');
 }
 
 function readDevMateSource() {
   return [
     readExtensionHostSource(),
-    readSource('src', 'webview.ts'),
+    readSource('src', 'chat', 'webview.ts'),
     readSource('media', 'webview.css'),
     readSource('media', 'webview.js')
   ].join('\n');
@@ -46,8 +46,8 @@ test('DevMate webview script has valid JavaScript syntax', () => {
 });
 
 test('chat view provider delegates webview markup to packaged UI assets', () => {
-  const providerSource = readSource('src', 'chatViewProvider.ts');
-  const shellSource = readSource('src', 'webview.ts');
+  const providerSource = readSource('src', 'chat', 'chatViewProvider.ts');
+  const shellSource = readSource('src', 'chat', 'webview.ts');
 
   assert.match(providerSource, /getChatWebviewHtml\(webviewView\.webview, this\.extensionUri\)/);
   assert.match(
@@ -132,7 +132,7 @@ test('only explicit request events release the pending UI state', () => {
 test('managed backend state and recovery controls are exposed in the UI', () => {
   const source = readDevMateSource();
   const managerSource = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'backendManager.ts'),
+    path.join(__dirname, '..', 'src', 'api', 'backendManager.ts'),
     'utf8'
   );
   assert.match(source, /id="backendStatus"/);
@@ -287,7 +287,7 @@ test('working UI exposes tool usage and resumable agent checkpoints', () => {
 test('agent can inspect workspace diagnostics and captured terminal failures', () => {
   const source = readDevMateSource();
   const backendSource = fs.readFileSync(
-    path.join(__dirname, '..', 'backend', 'app', 'tool_catalog.py'),
+    path.join(__dirname, '..', 'backend', 'app', 'chat', 'tool_catalog.py'),
     'utf8'
   );
   assert.match(source, /onDidStartTerminalShellExecution/);
@@ -303,7 +303,7 @@ test('agent can inspect workspace diagnostics and captured terminal failures', (
 test('agent can navigate symbols, definitions, and references through VS Code providers', () => {
   const source = readDevMateSource();
   const backendSource = fs.readFileSync(
-    path.join(__dirname, '..', 'backend', 'app', 'tool_catalog.py'),
+    path.join(__dirname, '..', 'backend', 'app', 'chat', 'tool_catalog.py'),
     'utf8'
   );
   assert.match(source, /'vscode\.executeDocumentSymbolProvider'/);

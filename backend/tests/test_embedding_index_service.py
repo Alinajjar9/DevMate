@@ -4,14 +4,14 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
-from backend.app.embedding_index_service import (
+from backend.app.indexing.embedding_index_service import (
     EmbeddingIndexError,
     EmbeddingIndexProfile,
     EmbeddingIndexService,
 )
-from backend.app.embedding_providers import EmbeddingBatch, EmbeddingRequest
-from backend.app.embedding_repository import EmbeddingRepository
-from backend.app.knowledge_repository import (
+from backend.app.providers.embedding_providers import EmbeddingBatch, EmbeddingRequest
+from backend.app.indexing.embedding_repository import EmbeddingRepository
+from backend.app.indexing.knowledge_repository import (
     IndexedChunk,
     IndexedFile,
     KnowledgeRepository,

@@ -6,7 +6,7 @@ const {
   CHAT_COMPACTION_TRIGGER_RATIO,
   ChatCompactionController,
   chatCompactionBoundary
-} = require('../out/chatCompaction');
+} = require('../out/sessions/chatCompaction');
 
 const ACCESS = {
   backendUrl: 'http://127.0.0.1:8000',

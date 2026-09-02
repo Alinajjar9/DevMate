@@ -1,14 +1,14 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { LlmProfileController } = require('../out/llmProfileController');
+const { LlmProfileController } = require('../out/settings/llmProfileController');
 const {
   ACTIVE_LLM_PROFILE_STORAGE_KEY,
   BUILT_IN_NEMOTRON_PROFILE_ID,
   LLM_PROFILES_STORAGE_KEY,
   LLM_REASONING_EFFORT_STORAGE_KEY,
   secretKeyForProfile
-} = require('../out/llmProfiles');
+} = require('../out/settings/llmProfiles');
 
 test('adds the built-in model and synchronizes the fallback selection', async () => {
   const persistence = memoryPersistence({

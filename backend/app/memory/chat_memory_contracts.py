@@ -1,0 +1,33 @@
+# Define bounded session and summary fields shared by storage and API models.
+# These limits are also checked against the extension's contract definitions.
+
+from typing import Literal
+
+
+DEVMATE_CHAT_MEMORY_API_VERSION = 1
+MAX_CHAT_SESSION_ID_CHARACTERS = 120
+MAX_CHAT_WORKSPACE_IDENTITY_CHARACTERS = 2_048
+MAX_CHAT_WORKSPACE_NAME_CHARACTERS = 120
+MAX_CHAT_SESSION_TITLE_CHARACTERS = 80
+MAX_CHAT_TURN_CHARACTERS = 6_000
+MAX_CHAT_FILE_CHANGES = 20
+MAX_CHAT_FILE_CHANGE_PATH_CHARACTERS = 2_048
+MAX_CHAT_DIFF_ID_CHARACTERS = 120
+MAX_CHAT_FILE_CHANGES_JSON_CHARACTERS = 16_000
+MAX_CHAT_TURNS_PER_SNAPSHOT = 1_000
+MAX_CHAT_SESSIONS_PER_REQUEST = 20
+MAX_CHAT_SESSIONS_RETURNED = 100
+MAX_CHAT_SUMMARY_CHARACTERS = 32_000
+MAX_CHAT_SUMMARY_ITEMS = 50
+MAX_CHAT_SUMMARY_ITEM_CHARACTERS = 1_000
+MAX_CHAT_INTEGER = 9_007_199_254_740_991
+CHAT_SUMMARY_VERSION = 1
+
+FileChangeKind = Literal["created", "updated", "deleted", "renamed", "moved"]
+FILE_CHANGE_KINDS: tuple[FileChangeKind, ...] = (
+    "created",
+    "updated",
+    "deleted",
+    "renamed",
+    "moved",
+)

@@ -9,7 +9,7 @@ const {
   permissionBehaviorForAction,
   rememberCommand,
   revokeRememberedCommand
-} = require('../out/permissions');
+} = require('../out/workspace/permissions');
 
 test('defaults missing or invalid permissions to ask', () => {
   assert.deepEqual(parseFilePermissionPolicy(undefined), {

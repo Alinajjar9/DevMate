@@ -91,7 +91,7 @@ Module._load = function loadWithVscodeMock(request, parent, isMain) {
   }
   return originalModuleLoad.call(this, request, parent, isMain);
 };
-const { VsCodeWorkspaceIndexSource } = require('../out/workspaceIndexSource');
+const { VsCodeWorkspaceIndexSource } = require('../out/projectSearch/workspaceIndexSource');
 Module._load = originalModuleLoad;
 
 test('workspace source keeps only bounded regular files behind safe directories', async () => {

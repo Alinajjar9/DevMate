@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
-from backend.app.knowledge_repository import (
+from backend.app.indexing.knowledge_repository import (
     FileFingerprint,
     IndexedChunk,
     IndexedFile,

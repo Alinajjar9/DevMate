@@ -1,3 +1,6 @@
+// Combine lexical and semantic result positions, then boost exact code/path matches.
+// The providers' raw scores use different scales, so they are not added directly.
+
 import type { KnowledgeIndexSearchItem } from '../api/types';
 
 export const RECIPROCAL_RANK_FUSION_CONSTANT = 60;
@@ -54,6 +57,8 @@ function mergeRankings(
       }
       seen.add(key);
       const rank = index + 1;
+      // Reciprocal Rank Fusion rewards high positions in either list without comparing raw scores.
+      // The constant softens the difference between nearby ranks.
       const contribution = 1 / (RECIPROCAL_RANK_FUSION_CONSTANT + rank);
       const existing = entries.get(key);
       if (existing) {
@@ -156,6 +161,7 @@ function querySignalBoost(
       ? MAX_IDENTIFIER_BOOST * 0.5
       : 0;
 
+  // Exact-name hints help navigation, but this cap stops them overwhelming the retrieval ranking.
   return Math.min(
     MAX_PROJECT_SEARCH_QUERY_BOOST,
     filenameBoost + pathBoost + identifierBoost

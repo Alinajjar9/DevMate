@@ -1,27 +1,30 @@
+// VS Code starts here. Create the shared services and register UI entry points;
+// the feature folders own the actual workflows.
+
 import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { health } from './api/client';
 import { DEVMATE_KNOWLEDGE_STORE_FILE_NAME } from './api/types';
-import { LocalBackendManager } from './backendManager';
-import { DevMateChatViewProvider, getBackendUrl } from './chatViewProvider';
-import { EmbeddingIndexScheduler } from './embeddingIndexScheduler';
+import { LocalBackendManager } from './api/backendManager';
+import { DevMateChatViewProvider, getBackendUrl } from './chat/chatViewProvider';
+import { EmbeddingIndexScheduler } from './projectSearch/embeddingIndexScheduler';
 import {
   ACTIVE_EMBEDDING_PROFILE_STORAGE_KEY,
   EMBEDDING_PROFILES_STORAGE_KEY,
   embeddingSecretKeyForProfile,
   readPreferredEmbeddingProfile
-} from './embeddingProfiles';
+} from './settings/embeddingProfiles';
 import {
   KnowledgeIndexSynchronizer,
   defaultKnowledgeIndexApi
-} from './indexSynchronization';
+} from './projectSearch/indexSynchronization';
 import { SqliteProjectRetriever } from './projectSearch/projectRetriever';
-import { SqliteSessionRepository } from './sessionRepository';
-import { VsCodeWorkspaceIndexSource } from './workspaceIndexSource';
+import { SqliteSessionRepository } from './sessions/sessionRepository';
+import { VsCodeWorkspaceIndexSource } from './projectSearch/workspaceIndexSource';
 import {
   VsCodeWorkspaceIndexChangeSource,
   WorkspaceIndexCoordinator
-} from './workspaceIndexWatcher';
+} from './projectSearch/workspaceIndexWatcher';
 
 export function activate(context: vscode.ExtensionContext): void {
   const backendOutput = vscode.window.createOutputChannel('DevMate Backend');

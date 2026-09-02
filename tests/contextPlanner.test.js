@@ -14,7 +14,7 @@ const {
   omittedAgentToolResult,
   planAskRequestContext,
   planContextCandidates
-} = require('../out/contextPlanner');
+} = require('../out/context/contextPlanner');
 
 test('uses a conservative default context window and reserves output capacity', () => {
   const budget = createContextBudget({ reservedOutputTokens: 8_000 });

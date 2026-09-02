@@ -4,8 +4,8 @@ const test = require('node:test');
 const {
   BUILT_IN_NEMOTRON_PROFILE,
   BUILT_IN_NEMOTRON_PROFILE_ID
-} = require('../out/llmProfiles');
-const { ProfilePresenter } = require('../out/profilePresenter');
+} = require('../out/settings/llmProfiles');
+const { ProfilePresenter } = require('../out/settings/profilePresenter');
 
 test('publishes a readable active model and its intelligence options', async () => {
   const profile = {

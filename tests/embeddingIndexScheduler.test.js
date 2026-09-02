@@ -7,7 +7,7 @@ const {
   EMBEDDING_INDEX_CAPABILITY,
   EMBEDDING_INDEX_VECTOR_VERSION,
   EmbeddingIndexScheduler
-} = require('../out/embeddingIndexScheduler');
+} = require('../out/projectSearch/embeddingIndexScheduler');
 
 const ACCESS = {
   backendUrl: 'http://127.0.0.1:8000',
