@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const http = require('node:http');
+const path = require('node:path');
 const test = require('node:test');
 
 const {
@@ -26,6 +27,46 @@ const {
 } = require('../out/api/client');
 
 const TEST_BACKEND_TOKEN = 'test-backend-token-that-is-long-enough';
+
+test('API result types require data on success and a message on failure', () => {
+  const ts = require('typescript');
+  const fixturePath = path.join(__dirname, 'apiResult.typecheck.ts');
+  const source = `
+    import type { ApiResult } from '../src/api/types';
+    const success: ApiResult<number> = { status: 'ok', data: 42 };
+    const failure: ApiResult<number> = { status: 'error', message: 'Request failed.' };
+    // @ts-expect-error A successful response cannot omit its payload.
+    const missingData: ApiResult<number> = { status: 'ok' };
+    // @ts-expect-error A failed response must explain the failure.
+    const missingMessage: ApiResult<number> = { status: 'error' };
+    // @ts-expect-error A response cannot be both successful and failed.
+    const mixed: ApiResult<number> = { status: 'ok', data: 42, errorKind: 'network' };
+    function value(result: ApiResult<number>): number {
+      return result.status === 'ok' ? result.data : result.message.length;
+    }
+  `;
+  const options = {
+    strict: true,
+    noEmit: true,
+    skipLibCheck: true,
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.CommonJS,
+    moduleResolution: ts.ModuleResolutionKind.Node10
+  };
+  // Compile an in-memory caller against the real contract; no fixture or build file is written.
+  const host = ts.createCompilerHost(options);
+  const readSource = host.getSourceFile.bind(host);
+  host.getSourceFile = (filename, languageVersion, onError, shouldCreateNewSourceFile) => (
+    path.resolve(filename) === fixturePath
+      ? ts.createSourceFile(filename, source, languageVersion, true)
+      : readSource(filename, languageVersion, onError, shouldCreateNewSourceFile)
+  );
+  const program = ts.createProgram([fixturePath], options, host);
+  const diagnostics = ts.getPreEmitDiagnostics(program);
+  assert.deepEqual(diagnostics.map((diagnostic) => (
+    ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')
+  )), []);
+});
 
 test('keeps the extension timeout above the fifteen-minute provider limit', () => {
   assert.equal(DEFAULT_ASK_TIMEOUT_MS, 930_000);
@@ -474,6 +515,62 @@ test('rejects invalid chat-compaction secrets and timeouts before transport', as
   assert.equal(invalidTimeout.errorKind, 'configuration');
 });
 
+test('memory and index requests share validation while keeping their own messages', async (context) => {
+  const clients = [
+    {
+      name: 'chat memory',
+      request: (url, secrets, timeout) => compactChatMemorySummary(
+        url, chatMemoryCompactionRequest(), secrets, timeout
+      ),
+      nonLocalMessage: 'DevMate only sends chat history to a backend running on this computer.',
+      invalidKeyMessage: 'The selected provider API key is invalid.',
+      invalidTimeoutMessage: 'The chat-memory request timeout is invalid.'
+    },
+    {
+      name: 'knowledge index',
+      request: (url, secrets, timeout) => synchronizeKnowledgeIndexEmbeddings(
+        url, knowledgeIndexEmbeddingRequest(), secrets, timeout
+      ),
+      nonLocalMessage: 'DevMate only stores workspace source in a backend running on this computer.',
+      invalidKeyMessage: 'The embedding provider API key is invalid.',
+      invalidTimeoutMessage: 'The knowledge-index request timeout is invalid.'
+    }
+  ];
+  for (const client of clients) {
+    await context.test(client.name, async () => {
+      let receivedRequests = 0;
+      await withServer((_request, response) => {
+        receivedRequests += 1;
+        response.end();
+      }, async (backendUrl) => {
+        for (const providerApiKey of ['', 'secret\nheader', 'secret\rheader']) {
+          const result = await client.request(backendUrl, {
+            backendToken: TEST_BACKEND_TOKEN,
+            providerApiKey
+          }, 1_000);
+          assert.equal(result.message, client.invalidKeyMessage);
+          assert.equal(result.errorKind, 'configuration');
+        }
+        for (const timeout of [0, -1, NaN, Infinity]) {
+          const result = await client.request(backendUrl, backendSecrets(), timeout);
+          assert.equal(result.message, client.invalidTimeoutMessage);
+          assert.equal(result.errorKind, 'configuration');
+        }
+        const missingAuthentication = await client.request(
+          backendUrl, { backendToken: 'short' }, 1_000
+        );
+        assert.equal(missingAuthentication.message, 'No authenticated DevMate backend connection is available.');
+        assert.equal(receivedRequests, 0);
+      });
+      const remote = await client.request(
+        'https://backend.example.com', backendSecrets(), 1_000
+      );
+      assert.equal(remote.message, client.nonLocalMessage);
+      assert.equal(remote.errorKind, 'configuration');
+    });
+  }
+});
+
 test('rejects malformed knowledge-index responses field by field', async (context) => {
   const cases = [
     {
@@ -865,10 +962,45 @@ test('parses progressive backend events and returns the validated final result',
   });
 });
 
+test('preserves split UTF-8 characters and a final NDJSON line without a newline', async () => {
+  const answer = 'Grüße 👋';
+  const receivedEvents = [];
+  const bytes = Buffer.from([
+    JSON.stringify({ type: 'start' }),
+    JSON.stringify({ type: 'delta', text: answer }),
+    JSON.stringify({ type: 'final', result: { status: 'ok', data: { ...askData(), answer } } })
+  ].join('\n'));
+  const firstSplit = bytes.indexOf(Buffer.from('ü')) + 1;
+  const secondSplit = bytes.indexOf(Buffer.from('👋')) + 2;
+  await withServer((_request, response) => {
+    response.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+    response.write(bytes.subarray(0, firstSplit));
+    setImmediate(() => {
+      response.write(bytes.subarray(firstSplit, secondSplit));
+      setImmediate(() => response.end(bytes.subarray(secondSplit)));
+    });
+  }, async (backendUrl) => {
+    const streamed = await askStream(
+      backendUrl, askRequest(), backendSecrets(), 10_000, undefined,
+      (event) => receivedEvents.push(event)
+    );
+    assert.equal(streamed.result.status, 'ok');
+    assert.equal(streamed.result.data.answer, answer);
+    assert.deepEqual(receivedEvents, [{ type: 'delta', text: answer }]);
+  });
+});
+
 test('rejects unknown, out-of-order, and malformed streaming events', async (context) => {
   const eventSequences = [
     [{ type: 'delta', text: 'before start' }],
+    [{ type: 'start' }, { type: 'start' }],
     [{ type: 'start' }, { type: 'unknown' }],
+    [{ type: 'start' }, { type: 'delta', text: 'No completed answer' }],
+    [
+      { type: 'start' },
+      { type: 'final', result: { status: 'ok', data: askData() } },
+      { type: 'delta', text: 'Too late' }
+    ],
     [{ type: 'start' }, { type: 'usage', usage: { inputTokens: -1 } }],
     [{
       type: 'start',
@@ -908,6 +1040,29 @@ test('marks an older backend stream endpoint as unsupported for fallback', async
     assert.equal(streamed.unsupported, true);
     assert.equal(streamed.result.statusCode, 404);
   });
+});
+
+test('streaming size limits report invalid responses without enabling fallback', async (context) => {
+  const cases = [
+    { label: 'answer stream', statusCode: 200, contentType: 'application/x-ndjson', bytes: 4_000_001 },
+    { label: 'HTTP error', statusCode: 502, contentType: 'application/json', bytes: 64_001 }
+  ];
+  for (const item of cases) {
+    await context.test(item.label, async () => {
+      let receivedRequests = 0;
+      await withServer((_request, response) => {
+        receivedRequests += 1;
+        response.writeHead(item.statusCode, { 'Content-Type': item.contentType });
+        response.end('x'.repeat(item.bytes));
+      }, async (backendUrl) => {
+        const streamed = await askStream(backendUrl, askRequest(), backendSecrets(), 10_000);
+        assert.equal(streamed.result.errorKind, 'invalid-response');
+        assert.match(streamed.result.message, /oversized/);
+        assert.equal(streamed.unsupported, false);
+        assert.equal(receivedRequests, 1);
+      });
+    });
+  }
 });
 
 test('surfaces safe FastAPI validation details from the streaming endpoint', async () => {

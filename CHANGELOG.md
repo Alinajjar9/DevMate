@@ -2,6 +2,31 @@
 
 Record meaningful changes here before creating each commit. Keep the newest entry first and describe the result rather than listing every edited file.
 
+## 2026-09-06 — Make the code easier to read and maintain
+
+### Changed
+
+- Gave path helpers names that distinguish separator formatting, tool-path parsing and write-path validation. Renamed the backend session adapter and hybrid retriever to describe their actual roles, and removed duplicate local guards and an unused API status alias.
+- Replaced internal parsing of English file-change messages with typed applied, denied and cancelled outcomes. Kept applied paths separate from optional editor notices, and made dependency permission denial explicit metadata.
+- Reduced the agent loop's main method from about 426 lines to about 60 lines. Request preparation, response recovery, tool batches and checkpoint persistence are named phases in the same file, with one state object per run.
+- Reused the terminal-completion lifecycle for verification and dependency installation while preserving their separate approval rules. Retained trust, path, symlink, dirty-document and pre-apply revalidation checks.
+- Separated API endpoint orchestration from HTTP/NDJSON transport and strict response decoding. Shared the identical authenticated index/memory request preparation, and made API success/error results a discriminated union.
+- Grouped browser event setup by feature, replaced the long message branch chain with named handlers, shared profile-picker layout and named animation constants. Normalized indentation and added CSS section headings without changing style rules.
+- Moved common provider-network safety and index validation to two focused Python modules. Made completion and streaming contracts explicit, shared the embedding profile, and grouped prompt instructions by topic without changing emitted prompt text.
+- Removed the unused incremental chat-memory write methods; production and tests now use the same snapshot persistence path. Raw-history, pending-turn and failed-save coverage remains in place.
+- Replaced browser function-text tests with behavior tests that execute the real script. Added a scoped VS Code import helper and direct tests for agent phases, cancellation, mutation outcomes, permissions, terminal cleanup and API transport limits.
+- Updated the reading guide and source map. Added four production modules in total, without splitting every helper into a separate file, introducing a framework, or changing application dependencies.
+
+### Verification
+
+- `npm run verify` — 415 extension tests and 168 backend tests passed; 67 cross-language contracts, 48 cycle-free TypeScript modules and 48 emitted JavaScript files verified.
+- The extension tests include 27 browser-script behavior tests using a small DOM/message harness; these are not a real-browser layout or installed-extension smoke test.
+- Prompt equivalence checked across 144 mode/flag combinations. Independent reviews checked workspace safety ordering and agent recovery/counter/checkpoint equivalence; a new cancellation boundary found during review was fixed and covered by a regression test.
+- A static import-graph check found no cycles among 26 Python app modules. The CSS diff ignoring whitespace contains only section comments.
+- `git diff --check` passed. No commit, provider request, VSIX replacement or installed-extension change was made. Existing report files were left untouched.
+
+---
+
 ## 2026-09-02 — Prepare DevMate for the university submission
 
 ### Changed

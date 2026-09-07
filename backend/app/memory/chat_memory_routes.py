@@ -52,7 +52,8 @@ from ..dependencies import (
     get_chat_provider,
 )
 from ..errors import BackendApiError
-from ..providers.chat_provider import ChatProvider, ProviderError
+from ..providers.chat_provider import ChatProvider
+from ..providers.provider_network import ProviderError
 
 
 chat_memory_router = APIRouter(

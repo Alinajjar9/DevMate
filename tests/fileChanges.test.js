@@ -3,7 +3,7 @@ const test = require('node:test');
 
 const {
   MAX_FILE_CHANGE_CHARACTERS,
-  normalizeWorkspaceRelativePath,
+  validateMutationPath,
   validateFileChanges
 } = require('../out/workspace/fileTools');
 
@@ -28,7 +28,7 @@ test('rejects absolute paths, traversal, and invalid Windows paths', () => {
     'src/CON.txt',
     'src/bad?.ts'
   ]) {
-    assert.throws(() => normalizeWorkspaceRelativePath(path));
+    assert.throws(() => validateMutationPath(path));
   }
 });
 

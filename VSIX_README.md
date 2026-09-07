@@ -1,4 +1,4 @@
-# DevMate 1.0 — Quick Start
+# DevMate 1.0.0 — Quick Start
 
 DevMate is a coding assistant for Visual Studio Code. This package is for **64-bit Windows** and includes its local backend, so Python and Node.js are not required to use the installed extension. A chat-model endpoint and any required account/API key must be configured separately; models are not bundled.
 
@@ -63,7 +63,7 @@ Use a disposable project with saved files and a working chat profile.
 5. Reload VS Code and reopen the chat. Confirm the saved turns are visible.
 6. Narrow the sidebar and open settings/profile forms. Confirm the controls remain reachable by scrolling.
 
-These live-provider/native-editor checks are separate from unit tests and the browser-only UI smoke test. See the accompanying verification report for what was actually completed for the submitted build.
+These live-provider/native-editor checks are separate from automated tests. They still need to be completed for this rebuilt version 1.0.0 before the presentation; the release notes list the automated checks completed for this build.
 
 ## Troubleshooting
 

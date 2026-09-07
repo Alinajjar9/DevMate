@@ -9,7 +9,6 @@ import sqlite3
 import struct
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import PurePosixPath
 
 from ..providers.embedding_providers import (
     EMBEDDING_PROVIDER_NAMES,
@@ -23,11 +22,13 @@ from ..providers.embedding_providers import (
 from .knowledge_contracts import (
     MAX_CHUNK_STABLE_ID_CHARACTERS,
     MAX_CONTENT_HASH_CHARACTERS,
-    MAX_RELATIVE_PATH_CHARACTERS,
-    MAX_SQLITE_INTEGER,
     MAX_WORKSPACE_KEY_CHARACTERS,
 )
-from .knowledge_repository import (
+from .index_validation import (
+    bounded_text,
+    validate_relative_path,
+    positive_integer,
+    nonnegative_integer,
     KnowledgeRepositoryError,
     KnowledgeRepositoryNotFoundError,
     KnowledgeRepositoryValidationError,
@@ -487,7 +488,7 @@ class EmbeddingRepository:
     ) -> tuple[StoredEmbeddingRecord, ...]:
         validated_key = _workspace_key(workspace_key)
         validated_configuration = _validated_configuration(configuration)
-        validated_cursor = _nonnegative_integer(after_chunk_id, "embedding cursor")
+        validated_cursor = nonnegative_integer(after_chunk_id, "embedding cursor")
         validated_limit = _bounded_limit(
             limit,
             MAX_EMBEDDING_READ_BATCH_SIZE,
@@ -647,12 +648,12 @@ def _validated_configuration(value: object) -> EmbeddingConfiguration:
         raise KnowledgeRepositoryValidationError(
             "The embedding provider is invalid."
         )
-    model = _bounded_text(
+    model = bounded_text(
         value.model,
         "embedding model",
         MAX_EMBEDDING_MODEL_CHARACTERS,
     )
-    dimensions = _positive_integer(value.dimensions, "embedding dimensions")
+    dimensions = positive_integer(value.dimensions, "embedding dimensions")
     if dimensions > MAX_EMBEDDING_DIMENSIONS:
         raise KnowledgeRepositoryValidationError(
             "The embedding dimensions are too large."
@@ -662,7 +663,7 @@ def _validated_configuration(value: object) -> EmbeddingConfiguration:
         provider=value.provider,
         model=model,
         dimensions=dimensions,
-        vector_version=_positive_integer(value.vector_version, "vector version"),
+        vector_version=positive_integer(value.vector_version, "vector version"),
     )
 
 
@@ -674,13 +675,13 @@ def _validated_write(
         raise KnowledgeRepositoryValidationError("The embedding write is invalid.")
     vector_blob = _encode_normalized_vector(value.vector, dimensions)
     write = ChunkEmbeddingWrite(
-        relative_path=_relative_path(value.relative_path),
-        stable_id=_bounded_text(
+        relative_path=validate_relative_path(value.relative_path),
+        stable_id=bounded_text(
             value.stable_id,
             "chunk stable identifier",
             MAX_CHUNK_STABLE_ID_CHARACTERS,
         ),
-        content_hash=_bounded_text(
+        content_hash=bounded_text(
             value.content_hash,
             "chunk content hash",
             MAX_CONTENT_HASH_CHARACTERS,
@@ -773,53 +774,7 @@ def _chunk_record(row: sqlite3.Row) -> EmbeddingChunkRecord:
 
 
 def _workspace_key(value: object) -> str:
-    return _bounded_text(value, "workspace key", MAX_WORKSPACE_KEY_CHARACTERS)
-
-
-def _bounded_text(value: object, label: str, maximum: int) -> str:
-    if (
-        not isinstance(value, str)
-        or not value
-        or value != value.strip()
-        or len(value) > maximum
-        or any(ord(character) < 32 for character in value)
-    ):
-        raise KnowledgeRepositoryValidationError(f"The {label} is invalid.")
-    return value
-
-
-def _relative_path(value: object) -> str:
-    relative_path = _bounded_text(value, "relative path", MAX_RELATIVE_PATH_CHARACTERS)
-    normalized = relative_path.replace("\\", "/")
-    parsed = PurePosixPath(normalized)
-    if (
-        parsed.is_absolute()
-        or normalized.startswith("//")
-        or re.match(r"^[A-Za-z]:", normalized)
-        or any(part in ("", ".", "..") for part in parsed.parts)
-    ):
-        raise KnowledgeRepositoryValidationError("The relative path is invalid.")
-    return parsed.as_posix()
-
-
-def _positive_integer(value: object, label: str) -> int:
-    if (
-        not isinstance(value, int)
-        or isinstance(value, bool)
-        or not 1 <= value <= MAX_SQLITE_INTEGER
-    ):
-        raise KnowledgeRepositoryValidationError(f"The {label} is invalid.")
-    return value
-
-
-def _nonnegative_integer(value: object, label: str) -> int:
-    if (
-        not isinstance(value, int)
-        or isinstance(value, bool)
-        or not 0 <= value <= MAX_SQLITE_INTEGER
-    ):
-        raise KnowledgeRepositoryValidationError(f"The {label} is invalid.")
-    return value
+    return bounded_text(value, "workspace key", MAX_WORKSPACE_KEY_CHARACTERS)
 
 
 def _bounded_limit(value: object, maximum: int, label: str) -> int:

@@ -13,10 +13,12 @@ from backend.app.indexing.knowledge_repository import (
     IndexedChunk,
     IndexedFile,
     KnowledgeRepository,
+)
+from backend.app.knowledge_store import KnowledgeStore
+from backend.app.indexing.index_validation import (
     KnowledgeRepositoryNotFoundError,
     KnowledgeRepositoryValidationError,
 )
-from backend.app.knowledge_store import KnowledgeStore
 
 
 class EmbeddingRepositoryTests(unittest.TestCase):

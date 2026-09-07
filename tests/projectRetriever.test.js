@@ -9,7 +9,7 @@ const {
 } = require('../out/projectSearch/projectIndex');
 const {
   LexicalProjectRetriever,
-  SqliteProjectRetriever
+  HybridProjectRetriever
 } = require('../out/projectSearch/projectRetriever');
 const {
   rankProjectSearchResults,
@@ -67,7 +67,7 @@ test('SQLite lexical retrieval returns only exact current source without loading
     ['src/auth.ts', currentFile('src/auth.ts', authContent)],
     ['src/catalog.ts', currentFile('src/catalog.ts', catalogContent)]
   ]);
-  const retriever = new SqliteProjectRetriever({
+  const retriever = new HybridProjectRetriever({
     getAccess: () => ACCESS,
     readCurrentFile: async (relativePath) => files.get(relativePath),
     search: async (access, request, signal) => {
@@ -127,7 +127,7 @@ test('SQLite project retrieval uses semantic ranking when a selected profile is 
   ].join('\n');
   const semanticCalls = [];
   let lexicalCalls = 0;
-  const retriever = new SqliteProjectRetriever({
+  const retriever = new HybridProjectRetriever({
     getAccess: () => SEMANTIC_ACCESS,
     getEmbeddingProfile: async () => ({
       id: 'local-embedding',
@@ -264,7 +264,7 @@ test('semantic failures and stale semantic chunks fall through to SQLite lexical
     }
   ]) {
     let lexicalCalls = 0;
-    const retriever = new SqliteProjectRetriever({
+    const retriever = new HybridProjectRetriever({
       getAccess: () => SEMANTIC_ACCESS,
       getEmbeddingProfile: async () => ({
         id: 'local-embedding',
@@ -300,7 +300,7 @@ test('semantic failures and stale semantic chunks fall through to SQLite lexical
 test('cancelled hybrid searches do not continue into JSON retrieval', async () => {
   let lexicalCalls = 0;
   let fallbackCalls = 0;
-  const retriever = new SqliteProjectRetriever({
+  const retriever = new HybridProjectRetriever({
     getAccess: () => SEMANTIC_ACCESS,
     getEmbeddingProfile: async () => ({
       id: 'local-embedding',
@@ -350,7 +350,7 @@ test('SQLite lexical retrieval falls back for missing access, failed searches, a
       return [fallbackResult];
     }
   };
-  const noAccess = new SqliteProjectRetriever({
+  const noAccess = new HybridProjectRetriever({
     getAccess: () => undefined,
     readCurrentFile: async () => undefined,
     fallback,
@@ -366,7 +366,7 @@ test('SQLite lexical retrieval falls back for missing access, failed searches, a
 
   assert.deepEqual(await noAccess.retrieve(request), [fallbackResult]);
 
-  const failedSearch = new SqliteProjectRetriever({
+  const failedSearch = new HybridProjectRetriever({
     getAccess: () => ACCESS,
     readCurrentFile: async () => undefined,
     fallback,
@@ -378,7 +378,7 @@ test('SQLite lexical retrieval falls back for missing access, failed searches, a
   });
   assert.deepEqual(await failedSearch.retrieve(request), [fallbackResult]);
 
-  const emptySearch = new SqliteProjectRetriever({
+  const emptySearch = new HybridProjectRetriever({
     getAccess: () => ACCESS,
     readCurrentFile: async () => undefined,
     fallback,
@@ -389,7 +389,7 @@ test('SQLite lexical retrieval falls back for missing access, failed searches, a
   });
   assert.deepEqual(await emptySearch.retrieve(request), [fallbackResult]);
 
-  const stale = new SqliteProjectRetriever({
+  const stale = new HybridProjectRetriever({
     getAccess: () => ACCESS,
     readCurrentFile: async (relativePath) => currentFile(
       relativePath,
@@ -416,7 +416,7 @@ test('SQLite lexical retrieval falls back for missing access, failed searches, a
 
 test('cancelled SQLite searches do not start expensive fallback indexing', async () => {
   let fallbackCalls = 0;
-  const retriever = new SqliteProjectRetriever({
+  const retriever = new HybridProjectRetriever({
     getAccess: () => ACCESS,
     readCurrentFile: async () => undefined,
     fallback: {

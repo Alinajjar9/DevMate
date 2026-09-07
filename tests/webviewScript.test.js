@@ -2,375 +2,345 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const { createWebviewHarness } = require('./helpers/webviewHarness');
 
-function readSource(...segments) {
-  return fs.readFileSync(path.join(__dirname, '..', ...segments), 'utf8');
+function readyView() {
+  const view = createWebviewHarness();
+  view.receive({ command: 'llmProfilesUpdated', profileCount: 1, activeProfile: {
+    id: 'chat-one', name: 'Local model', provider: 'ollama', providerLabel: 'Ollama', model: 'local-chat'
+  } });
+  return view;
 }
 
-function readExtensionHostSource() {
-  return [
-    readSource('src', 'extension.ts'),
-    readSource('src', 'agent', 'agentCheckpointController.ts'),
-    readSource('src', 'agent', 'agentRunController.ts'),
-    readSource('src', 'context', 'attachmentController.ts'),
-    readSource('src', 'chat', 'chatViewProvider.ts'),
-    readSource('src', 'chat', 'chatRequestController.ts'),
-    readSource('src', 'workspace', 'diffPresenter.ts'),
-    readSource('src', 'settings', 'llmProfileController.ts'),
-    readSource('src', 'workspace', 'permissionController.ts'),
-    readSource('src', 'workspace', 'permissionPresenter.ts'),
-    readSource('src', 'settings', 'profilePresenter.ts'),
-    readSource('src', 'settings', 'settingsController.ts'),
-    readSource('src', 'settings', 'settingsPresenter.ts'),
-    readSource('src', 'sessions', 'sessionController.ts'),
-    readSource('src', 'sessions', 'sessionPresenter.ts'),
-    readSource('src', 'agent', 'toolExecutor.ts'),
-    readSource('src', 'context', 'workspaceContext.ts'),
-    readSource('src', 'workspace', 'workspaceMutations.ts'),
-    readSource('src', 'settings', 'embeddingProfileController.ts')
-  ].join('\n');
+function ask(view, question = 'Explain this code') {
+  view.element('question').value = question;
+  view.element('ask').click();
 }
 
-function readDevMateSource() {
-  return [
-    readExtensionHostSource(),
-    readSource('src', 'chat', 'webview.ts'),
-    readSource('media', 'webview.css'),
-    readSource('media', 'webview.js')
-  ].join('\n');
+function buttonWithText(container, text) {
+  const button = container.querySelectorAll('button').find((item) => item.textContent === text);
+  assert.ok(button, 'Expected a button labelled ' + text);
+  return button;
 }
 
-test('DevMate webview script has valid JavaScript syntax', () => {
-  const script = readSource('media', 'webview.js');
-  assert.doesNotThrow(() => new Function(script));
+test('the packaged browser script starts and requests its initial state', () => {
+  assert.deepEqual(createWebviewHarness().messages, [
+    { command: 'setScope', scope: 'project' }, { command: 'ready' }
+  ]);
 });
 
 test('message input has an accessible name independent of its placeholder', () => {
-  const shellSource = readSource('src', 'chat', 'webview.ts');
-  const questionInput = shellSource.match(/<textarea\b[^>]*\bid="question"[^>]*>/)?.[0];
-
-  assert.ok(questionInput, 'The message input should exist.');
-  assert.match(questionInput, /\baria-label="Message to DevMate"/);
+  assert.equal(createWebviewHarness().element('question').getAttribute('aria-label'), 'Message to DevMate');
 });
 
-test('chat view provider delegates webview markup to packaged UI assets', () => {
-  const providerSource = readSource('src', 'chat', 'chatViewProvider.ts');
-  const shellSource = readSource('src', 'chat', 'webview.ts');
-
-  assert.match(providerSource, /getChatWebviewHtml\(webviewView\.webview, this\.extensionUri\)/);
-  assert.match(
-    providerSource,
-    /localResourceRoots:\s*\[vscode\.Uri\.joinPath\(this\.extensionUri, 'media'\)\]/
-  );
-  assert.doesNotMatch(providerSource, /<style>|<script/);
-  assert.match(shellSource, /asWebviewUri\([\s\S]*?'media', 'webview\.css'/);
-  assert.match(shellSource, /asWebviewUri\([\s\S]*?'media', 'webview\.js'/);
-  assert.match(shellSource, /style-src \$\{webview\.cspSource\}/);
-  assert.match(shellSource, /script-src 'nonce-\$\{nonce\}'/);
-  assert.match(shellSource, /<link rel="stylesheet" href="\$\{stylesheetUri\}">/);
-  assert.match(shellSource, /<script nonce="\$\{nonce\}" src="\$\{scriptUri\}"><\/script>/);
+test('the HTML shell loads only the packaged styles and nonce-protected script', () => {
+  const shell = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'webview.ts'), 'utf8');
+  assert.match(shell, /style-src \$\{webview.cspSource\}/);
+  assert.match(shell, /script-src 'nonce-\$\{nonce\}'/);
+  assert.match(shell, /<link rel="stylesheet" href="\$\{stylesheetUri\}">/);
+  assert.match(shell, /<script nonce="\$\{nonce\}" src="\$\{scriptUri\}"><\/script>/);
+  assert.doesNotMatch(shell, /<style>|<script(?! nonce)/);
 });
 
-test('working card has visible motion with a reduced-motion fallback', () => {
-  const source = readDevMateSource();
-  for (const animation of [
-    'working-card-sheen',
-    'working-edge-travel',
-    'working-indicator-ring',
-    'working-phase-sweep'
-  ]) {
-    assert.match(source, new RegExp('@keyframes\\s+' + animation));
+test('working cards retain visible motion, stable layout and a reduced-motion fallback', () => {
+  const css = fs.readFileSync(path.join(__dirname, '..', 'media', 'webview.css'), 'utf8');
+  for (const animation of ['working-card-sheen', 'working-edge-travel', 'working-indicator-ring', 'working-phase-sweep']) {
+    assert.match(css, new RegExp('@keyframes\\s+' + animation));
   }
-  assert.match(source, /@media \(prefers-reduced-motion: reduce\)/);
-  assert.match(source, /\.working-card\[data-state="working"\][\s\S]+position:\s*sticky/);
-  assert.match(source, /\.messages\s*>\s*\*\s*\{[\s\S]*?flex:\s*0\s+0\s+auto/);
-  assert.match(source, /\.working-card\[data-state="working"\][\s\S]*?flex-shrink:\s*0/);
-  assert.doesNotMatch(source, /working-ellipsis/);
-  assert.doesNotMatch(source, /\.working-heading::after/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
+  assert.match(css, /\.working-card\[data-state="working"\][\s\S]+position:\s*sticky/);
+  assert.match(css, /\.messages\s*>\s*\*\s*\{[\s\S]*?flex:\s*0\s+0\s+auto/);
 });
 
-test('narration compaction preserves letters while normalizing whitespace', () => {
-  const cookedScript = readSource('media', 'webview.js');
-  const functionStart = cookedScript.indexOf('function compactProviderNarration(value)');
-  const functionEnd = cookedScript.indexOf('function completeAssistantResponse', functionStart);
-  const functionSource = cookedScript.slice(functionStart, functionEnd);
-  const compact = new Function(
-    'MAX_INTERMEDIATE_NARRATION_CHARACTERS',
-    functionSource + '; return compactProviderNarration;'
-  )(220);
-
+test('narration summaries preserve letters and normalize whitespace without extracting source text', () => {
+  const view = createWebviewHarness();
   const narration = 'Now I understand the issue. The styles reference CSS classes.';
-  assert.equal(compact(narration), narration);
-  assert.equal(compact('Multiple   spaces\nstay readable.'), 'Multiple spaces stay readable.');
+  assert.equal(view.call('compactProviderNarration', narration), narration);
+  assert.equal(view.call('compactProviderNarration', 'Multiple   spaces\nstay readable.'), 'Multiple spaces stay readable.');
+  assert.ok(view.call('compactProviderNarration', 'A long update '.repeat(50)).length <= 220);
 });
 
-test('settings expose the bounded tool-call limit', () => {
-  const source = readDevMateSource();
-  assert.match(source, /id="settingsToolCallLimit"[^>]+min="4"[^>]+max="100"/);
-  assert.match(source, /toolCallLimit:\s*16/);
+test('only explicit request events release Send and the profile/scope controls', () => {
+  const view = readyView();
+  ask(view);
+  for (const id of ['ask', 'attachFiles', 'llmProfileSelector', 'sessionSelector', 'newSessionButton']) {
+    assert.equal(view.element(id).disabled, true, id);
+  }
+  view.receive({ command: 'status', text: 'Ready', level: 'info' });
+  assert.equal(view.element('ask').disabled, true);
+  view.receive({ command: 'requestFailed', message: 'Provider unavailable', retryable: true });
+  assert.equal(view.element('ask').disabled, false);
+  assert.equal(view.element('llmProfileSelector').disabled, false);
+  assert.equal(view.activeIntervals(), 0);
+  assert.match(view.element('messages').textContent, /Provider unavailable/);
 });
 
-test('dependency installation permission cannot be remembered', () => {
-  const source = readDevMateSource();
-  assert.match(source, /Permission required to install Python dependencies/);
-  assert.match(source, /rememberable:\s*false/);
-  assert.match(source, /if \(message\.rememberable !== false\)/);
+test('retry sends the existing question without displaying another user turn', () => {
+  const view = readyView();
+  ask(view);
+  view.receive({ command: 'requestFailed', message: 'Try again', retryable: true });
+  buttonWithText(view.element('messages'), 'Retry now').click();
+  assert.equal(view.messages.at(-1).isNewTurn, false);
+  assert.equal(view.messages.at(-1).question, 'Explain this code');
+  assert.equal(view.element('messages').querySelectorAll('.message.user').length, 1);
 });
 
-test('file lifecycle permissions are always one-time and reviewable', () => {
-  const source = readDevMateSource();
-  assert.match(source, /action === 'create' \|\| action === 'update'/);
-  assert.match(source, /delete: 'Delete'/);
-  assert.match(source, /rename: 'Rename'/);
-  assert.match(source, /move: 'Move'/);
-  assert.match(source, /review\.textContent = 'Review diff'/);
+test('streamed preview drains before the final answer replaces it and releases Send', () => {
+  const view = readyView();
+  ask(view);
+  view.receive({ command: 'providerStreamDelta', text: 'Reading the current implementation.' });
+  view.receive({ command: 'assistantResponse', response: 'The final answer.', fileChanges: [] });
+  assert.equal(view.element('ask').disabled, true);
+  assert.ok(view.pendingTimeouts() > 0);
+  view.flushTimeouts();
+  assert.equal(view.element('ask').disabled, false);
+  assert.equal(view.element('workingTurn'), null);
+  assert.equal(view.element('providerNarration'), null);
+  assert.match(view.element('messages').textContent, /The final answer\./);
+  assert.equal(view.activeIntervals(), 0);
 });
 
-test('only explicit request events release the pending UI state', () => {
-  const source = readDevMateSource();
-  assert.doesNotMatch(source, /const terminalStatus = message\.level/);
-  assert.match(source, /if \(message\.command === 'requestFailed'\)[\s\S]*?state\.askPending = false/);
-  assert.match(source, /postRequestFailure\('Open a file first\.|message\.scope\.kind === 'selection'/);
-  assert.match(source, /finally \{[\s\S]*?this\.activeRequest = undefined/);
-  assert.match(source, /button\.disabled = state\.askPending/);
-  assert.match(source, /attachFilesEl\.disabled = state\.askPending/);
-  assert.match(source, /llmProfileSelectorEl\.disabled = state\.askPending/);
+test('cancellation clears queued previews and disables pending permission decisions', () => {
+  const view = readyView();
+  ask(view);
+  view.receive({ command: 'permissionRequest', requestId: 'edit-one', rememberable: false,
+    files: [{ path: 'app.ts', operation: 'update', canReview: true }] });
+  view.receive({ command: 'providerStreamDelta', text: 'An unfinished update' });
+  view.receive({ command: 'requestCancelling' });
+  assert.equal(buttonWithText(view.element('messages'), 'Cancelling…').disabled, true);
+  view.receive({ command: 'requestCancelled' });
+  assert.equal(view.pendingTimeouts(), 0);
+  assert.equal(view.element('ask').disabled, false);
+  const permission = view.element('messages').querySelector('.permission-card');
+  assert.equal(permission.querySelectorAll('button').every((button) => button.disabled), true);
+  assert.equal(permission.querySelector('.permission-resolution').textContent, 'Cancelled with request');
 });
 
-test('managed backend state and recovery controls are exposed in the UI', () => {
-  const source = readDevMateSource();
-  const managerSource = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'api', 'backendManager.ts'),
-    'utf8'
-  );
-  assert.match(source, /id="backendStatus"/);
-  assert.match(source, /id="restartBackend"/);
-  assert.match(source, /id="openBackendLogs"/);
-  assert.match(source, /message\.command === 'backendStatusUpdated'/);
-  assert.match(source, /backendDropped[\s\S]*?retryable:/);
-  assert.doesNotMatch(managerSource, /['"]--reload['"]/);
+test('Markdown is rendered as safe DOM nodes, not model-supplied HTML', () => {
+  const view = readyView();
+  view.receive({ command: 'assistantResponse', response: '**Important**\n<script>alert(1)</script>', fileChanges: [] });
+  assert.equal(view.element('messages').querySelector('strong').textContent, 'Important');
+  assert.equal(view.element('messages').querySelector('script'), null);
+  assert.match(view.element('messages').textContent, /<script>alert\(1\)<\/script>/);
 });
 
-test('slow provider calls replace the static generating phase with a waiting heartbeat', () => {
-  const source = readDevMateSource();
-  assert.match(source, /Waiting for model response — the selected model is still working/);
-  assert.match(source, /}, 15_000\);/);
-  assert.match(source, /clearTimeout\(waitingTimer\)/);
+test('the composer estimates input tokens and replaces the estimate with reported usage', () => {
+  const view = readyView();
+  view.element('question').value = '12345678';
+  view.element('question').dispatch('input');
+  assert.equal(view.element('tokenEstimate').textContent, '≈ 2 tokens');
+  view.element('question').value = '';
+  view.receive({ command: 'tokenUsageUpdated', usage: { inputTokens: 20, outputTokens: 10, totalTokens: 30, exact: true } });
+  assert.equal(view.element('tokenEstimate').textContent, '30 total');
 });
 
-test('provider streaming and safe rich answer rendering are wired into the chat', () => {
-  const source = readDevMateSource();
-  const clientSource = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'api', 'client.ts'),
-    'utf8'
-  );
-  assert.match(clientSource, /export async function askStream/);
-  assert.match(clientSource, /'\/ask\/stream'/);
-  assert.match(source, /command: 'providerStreamDelta'/);
-  assert.match(source, /message\.command === 'providerStreamDelta'/);
-  assert.match(source, /function renderMarkdown/);
-  assert.match(source, /function appendHighlightedCode/);
-  assert.match(source, /command: 'copyText'/);
-  assert.match(source, /command: 'openWorkspaceFile'/);
-  assert.doesNotMatch(source, /\.innerHTML\s*=/);
+test('backend state labels and recovery buttons follow incoming backend state', () => {
+  const view = readyView();
+  for (const [state, label] of Object.entries({ online: 'Online', starting: 'Starting', restarting: 'Restarting',
+    disabled: 'Unmanaged', checking: 'Checking', offline: 'Offline' })) {
+    view.receive({ command: 'backendStatusUpdated', label: 'Backend status', status: { state, detail: 'Detail', canRestart: true } });
+    assert.equal(view.element('backendSettingsBadge').textContent, label);
+  }
+  view.element('restartBackend').click();
+  assert.deepEqual(view.messages.at(-1), { command: 'restartBackend' });
+  assert.equal(view.element('restartBackend').disabled, true);
+  view.element('openBackendLogs').click();
+  assert.deepEqual(view.messages.at(-1), { command: 'openBackendLogs' });
 });
 
-test('streamed output is visibly drained before the final answer replaces it', () => {
-  const source = readDevMateSource();
-  assert.match(source, /streamQueue:\s*''/);
-  assert.match(source, /pendingAssistantResponse:\s*undefined/);
-  assert.match(source, /function pumpProviderStream\(\)/);
-  assert.match(source, /className = 'message assistant model-narration'/);
-  assert.match(source, /MAX_INTERMEDIATE_NARRATION_CHARACTERS = 220/);
-  assert.match(source, /function compactProviderNarration\(value\)/);
-  assert.match(source, /author\.textContent = 'DevMate update'/);
-  assert.match(source, /finalizeProviderNarration\(\);[\s\S]*?renderAgentToolActivity/);
-  assert.doesNotMatch(source, /#workingTurn \.working-stream/);
-  assert.match(source, /state\.pendingAssistantResponse = completion/);
-  assert.match(source, /completeAssistantResponse\(completion\.response, completion\.fileChanges\)/);
-  assert.match(source, /Live streaming unavailable — waiting for the completed response/);
+test('file diff review does not approve the pending operation', () => {
+  const view = readyView();
+  view.receive({ command: 'permissionRequest', requestId: 'edit-one', rememberable: false,
+    files: [{ path: 'app.ts', operation: 'delete', canReview: true }] });
+  const card = view.element('messages').querySelector('.permission-card');
+  buttonWithText(card, 'Review diff').click();
+  assert.deepEqual(view.messages.at(-1), { command: 'reviewPermissionDiff', requestId: 'edit-one', path: 'app.ts' });
+  assert.equal(card.querySelector('.permission-resolution').hidden, true);
+  assert.equal(card.querySelectorAll('button').some((button) => /Always/.test(button.textContent)), false);
+  buttonWithText(card, 'Allow once').click();
+  assert.deepEqual(view.messages.at(-1), { command: 'permissionDecision', requestId: 'edit-one', decision: 'allowOnce' });
 });
 
-test('composer shows a live token estimate and a compact ask action', () => {
-  const source = readDevMateSource();
-  assert.match(source, /id="tokenEstimate"/);
-  assert.match(source, /class="action-button primary ask-button"/);
-  assert.doesNotMatch(source, /ask-button-icon/);
-  assert.match(source, /questionEl\.addEventListener\('input', renderTokenEstimate\)/);
-  assert.match(source, /Math\.ceil\(characterCount \/ 4\)/);
-  assert.match(source, /full prompt and response usage appears here/);
-  assert.match(source, /message\.command === 'tokenUsageUpdated'/);
-  assert.match(source, /Input ' \+ marker/);
-  assert.match(source, /formatTokenCount\(usage\.totalTokens\) \+ ' total'/);
+test('non-rememberable dependency permissions offer only one-time approval or denial', () => {
+  const view = readyView();
+  view.receive({ command: 'commandPermissionRequest', requestId: 'dependency-one', rememberable: false,
+    title: 'Install dependencies', label: 'pip install', cwd: 'C:/repo' });
+  const card = view.element('messages').querySelector('.permission-card');
+  assert.equal(card.querySelectorAll('button').some((button) => /Always/.test(button.textContent)), false);
+  buttonWithText(card, 'Allow once').click();
+  assert.deepEqual(view.messages.at(-1), { command: 'commandPermissionDecision', requestId: 'dependency-one', decision: 'allowOnce' });
 });
 
-test('built-in Nemotron setup locks provider fields while keeping the API key configurable', () => {
-  const source = readDevMateSource();
-  assert.match(source, /profile\?\.builtIn === true/);
-  assert.match(source, /llmProfileNameEl\.disabled = isBuiltIn/);
-  assert.match(source, /llmProfileProviderEl\.disabled = isBuiltIn/);
-  assert.match(source, /Configure built-in Nemotron/);
-  assert.match(source, /Save API key/);
-  assert.match(source, /The built-in Nemotron profile cannot be deleted/);
+test('chat and embedding pickers share their layout but send their own commands', () => {
+  const view = readyView();
+  view.receive({ command: 'showLlmProfilePicker', profiles: [{ id: 'chat-one', name: 'Chat model',
+    model: 'chat', providerLabel: 'Local', builtIn: true, selected: true }] });
+  const chat = view.element('llmProfilePickerList');
+  assert.equal(chat.querySelector('.model-picker-name').textContent, 'Chat model');
+  assert.equal(chat.querySelector('.model-picker-select').getAttribute('aria-selected'), 'true');
+  buttonWithText(chat, 'Configure').click();
+  assert.deepEqual(view.messages.at(-1), { command: 'editLlmProfile', profileId: 'chat-one' });
+
+  view.receive({ command: 'showEmbeddingProfilePicker', profiles: [{ id: 'embed-one', model: 'embed',
+    provider: 'ollama', providerLabel: 'Ollama', baseUrl: 'http://localhost:11434', remoteAllowed: false, selected: true }] });
+  const embeddings = view.element('embeddingProfilePickerList');
+  assert.equal(embeddings.querySelector('.model-picker-url').textContent, 'http://localhost:11434');
+  embeddings.querySelector('.model-picker-select').click();
+  assert.deepEqual(view.messages.at(-1), { command: 'selectEmbeddingProfile', profileId: 'embed-one' });
+  assert.equal(view.element('permissionDialog').open, true);
 });
 
-test('model selection uses a DevMate-styled modal instead of a native Quick Pick', () => {
-  const source = readDevMateSource();
-  assert.match(source, /id="llmProfilePickerDialog"/);
-  assert.match(source, /class="profile-dialog model-picker-dialog"/);
-  assert.match(source, /command: 'showLlmProfilePicker'/);
-  assert.match(source, /command: 'selectLlmProfile'/);
-  assert.match(source, /command: 'editLlmProfile'/);
-  assert.match(source, /deleteLlmProfileEl\.dataset\.confirm/);
-  const selectorImplementation = source.slice(
-    source.indexOf('chooseLlmProfile(): void'),
-    source.indexOf('async selectLlmProfile')
-  );
-  assert.doesNotMatch(selectorImplementation, /showQuickPick/);
+test('built-in model fields are locked and closing its form removes the entered credential', () => {
+  const view = readyView();
+  view.receive({ command: 'showLlmProfileForm', hasApiKey: true, profile: { id: 'built-in', name: 'Nemotron',
+    model: 'nemotron', provider: 'openai', builtIn: true } });
+  for (const id of ['llmProfileName', 'llmProfileProvider', 'llmProfileModel', 'llmProfileBaseUrl']) {
+    assert.equal(view.element(id).disabled, true, id);
+  }
+  assert.equal(view.element('deleteLlmProfile').hidden, true);
+  view.element('llmProfileApiKey').value = 'not-a-real-key';
+  view.element('cancelLlmProfile').click();
+  assert.equal(view.element('llmProfileApiKey').value, '');
+  assert.equal(view.element('llmProfileDialog').open, false);
 });
 
-test('recognized reasoning models expose a compact icon intelligence menu beside the model', () => {
-  const source = readDevMateSource();
-  assert.match(source, /id="intelligenceButton"/);
-  assert.match(source, /class="intelligence-icon-button"/);
-  assert.match(source, /id="intelligenceMenu"/);
-  assert.match(source, /className = 'intelligence-menu-option'/);
-  assert.match(source, /command: 'setReasoningEffort'/);
-  assert.match(source, /reasoningEffortOptionsForProfile/);
-  assert.match(source, /intelligenceControlEl\.hidden = reasoningOptions\.length <= 1/);
-  assert.match(source, /intelligenceButtonEl\.disabled = state\.askPending/);
-  assert.doesNotMatch(source, /id="modelIntelligencePanel"/);
-  assert.doesNotMatch(source, /id="reasoningEffort"/);
+test('model context-window input rejects out-of-range values and preserves Auto', () => {
+  const view = readyView();
+  view.receive({ command: 'showLlmProfileForm', hasApiKey: false });
+  view.element('llmProfileName').value = 'Local';
+  view.element('llmProfileModel').value = 'local-chat';
+  view.element('llmProfileProvider').value = 'ollama';
+  for (const invalid of ['512', '4000001']) {
+    view.element('llmProfileContextWindowTokens').value = invalid;
+    view.element('llmProfileForm').dispatch('submit');
+    assert.match(view.element('llmProfileFormError').textContent, /1,024 to 4,000,000/);
+  }
+  view.element('llmProfileContextWindowTokens').value = '';
+  view.element('llmProfileForm').dispatch('submit');
+  assert.equal(view.messages.at(-1).command, 'saveLlmProfile');
+  assert.equal(Object.hasOwn(view.messages.at(-1).profile, 'contextWindowTokens'), false);
 });
 
-test('settings expose a separate bounded agent-tool limits dialog', () => {
-  const source = readDevMateSource();
-  assert.match(source, /id="openAgentToolSettings"/);
-  assert.match(source, /id="agentToolSettingsDialog"/);
-  assert.match(source, /id="settingsReadFileMaxLines"[^>]*max="1000"/);
-  assert.match(source, /command: 'saveAgentToolSettings'/);
-  assert.match(source, /agentTools: this\.agentToolSettings\(\)/);
+test('remote embeddings need explicit consent and clear newly entered credentials on close', () => {
+  const view = readyView();
+  view.receive({ command: 'showEmbeddingProfileForm', hasApiKey: false });
+  view.element('embeddingProfileModel').value = 'embedding-model';
+  view.element('embeddingProfileBaseUrl').value = 'https://models.example/v1';
+  view.element('embeddingProfileBaseUrl').dispatch('input');
+  assert.equal(view.element('embeddingRemoteConsentField').hidden, false);
+  view.element('embeddingProfileForm').dispatch('submit');
+  assert.match(view.element('embeddingProfileFormError').textContent, /Confirm that this remote provider/);
+  view.element('embeddingProfileRemoteAllowed').checked = true;
+  view.element('embeddingProfileForm').dispatch('submit');
+  assert.equal(view.messages.at(-1).profile.remoteAllowed, true);
+  view.element('embeddingProfileApiKey').value = 'not-a-real-key';
+  view.element('cancelEmbeddingProfile').click();
+  assert.equal(view.element('embeddingProfileApiKey').value, '');
 });
 
-test('model and global context limits expose validated Auto controls', () => {
-  const source = readDevMateSource();
-  assert.match(source, /id="llmProfileContextWindowTokens"/);
-  assert.match(source, /id="settingsMaxInputContextTokens"/);
-  assert.match(source, /contextWindowTokens < 1024/);
-  assert.match(source, /contextWindowTokens > 4000000/);
-  assert.match(source, /maxInputContextTokens: 0/);
-  assert.match(source, /settingsMaxInputContextTokensEl\.value\.trim\(\)/);
-  assert.match(source, /contextWindowTokens,/);
-  assert.match(source, /maxInputContextTokens,/);
+test('reasoning choices appear only for supported profiles and send the selected effort', () => {
+  const view = readyView();
+  assert.equal(view.element('intelligenceControl').hidden, true);
+  view.receive({ command: 'llmProfilesUpdated', profileCount: 1, activeProfile: { id: 'reasoning', name: 'Reasoning',
+    model: 'reasoner', providerLabel: 'Local', reasoningEffort: 'auto',
+    reasoningEffortOptions: [{ value: 'auto', label: 'Auto' }, { value: 'high', label: 'High' }] } });
+  assert.equal(view.element('intelligenceControl').hidden, false);
+  view.element('intelligenceMenuOptions').querySelectorAll('button')[1].click();
+  assert.deepEqual(view.messages.at(-1), { command: 'setReasoningEffort', effort: 'high' });
 });
 
-test('settings manage separate embedding profiles with explicit remote consent', () => {
-  const source = readDevMateSource();
-  assert.match(source, /id="manageEmbeddingProfiles"/);
-  assert.match(source, /id="embeddingProfilePickerDialog"/);
-  assert.match(source, /id="embeddingProfileDialog"/);
-  assert.match(source, /id="embeddingProfileRemoteAllowed"/);
-  assert.match(
-    source,
-    /Allow this remote provider to receive project source code and search queries/
-  );
-  assert.match(source, /command: 'saveEmbeddingProfile'/);
-  assert.match(source, /remoteAllowed: remote && embeddingProfileRemoteAllowedEl\.checked/);
-  assert.match(source, /embeddingSecretKeyForProfile/);
-  assert.match(source, /extensionContext\.secrets\.store/);
-  assert.match(source, /refreshActiveProfile/);
+test('settings keep Auto input budgets and tool limits in separate submissions', () => {
+  const view = readyView();
+  view.element('settingsButton').click();
+  assert.equal(view.element('settingsMaxInputContextTokens').value, '');
+  view.element('permissionForm').dispatch('submit');
+  assert.equal(view.messages.at(-1).settings.maxInputContextTokens, 0);
+  view.element('openAgentToolSettings').click();
+  assert.equal(view.element('agentToolSettingsDialog').open, true);
+  view.element('agentToolSettingsForm').dispatch('submit');
+  assert.equal(view.messages.at(-1).command, 'saveAgentToolSettings');
+  assert.equal(view.messages.at(-1).settings.readFileMaxLines, 400);
 });
 
-test('working UI exposes tool usage and resumable agent checkpoints', () => {
-  const source = readDevMateSource();
-  assert.match(source, /className = 'working-tool-usage'/);
-  assert.match(source, /Tools ' \+ state\.toolUsage\.used \+ ' \/ '/);
-  assert.match(source, /id="continueAgent"/);
-  assert.match(source, /command: 'continueAgentRun'/);
-  assert.match(source, /message\.command === 'agentCheckpointUpdated'/);
-  assert.match(source, /retrying with reasoning disabled/);
-  assert.match(source, /requesting final summary without tools/);
+test('checkpoint controls and tool usage reflect host events', () => {
+  const view = readyView();
+  view.receive({ command: 'agentCheckpointUpdated', available: true, used: 3, limit: 16 });
+  assert.equal(view.element('continueAgent').hidden, false);
+  view.element('continueAgent').click();
+  assert.deepEqual(view.messages.at(-1), { command: 'continueAgentRun' });
+  view.receive({ command: 'toolUsageUpdated', used: 4, limit: 16 });
+  assert.equal(view.element('workingTurn').querySelector('.working-tool-usage').textContent, 'Tools 4 / 16');
 });
 
-test('agent can inspect workspace diagnostics and captured terminal failures', () => {
-  const source = readDevMateSource();
-  const backendSource = fs.readFileSync(
-    path.join(__dirname, '..', 'backend', 'app', 'chat', 'tool_catalog.py'),
-    'utf8'
-  );
-  assert.match(source, /onDidStartTerminalShellExecution/);
-  assert.match(source, /vscode\.languages\.getDiagnostics\(\)/);
-  assert.match(source, /event\.terminal\.name\.startsWith\('DevMate:'\)/);
-  assert.match(source, /shouldSkipProjectFile\(relativePath\)/);
-  assert.match(source, /'get_diagnostics'/);
-  assert.match(source, /'read_terminal_errors'/);
-  assert.match(backendSource, /name="get_diagnostics"/);
-  assert.match(backendSource, /name="read_terminal_errors"/);
+test('sessions restore the transcript and workspace mismatch warnings return to the landing screen', () => {
+  const view = readyView();
+  ask(view);
+  view.receive({ command: 'sessionsUpdated', sessions: [], activeSessionId: 'saved', activeTitle: 'Saved chat',
+    currentWorkspaceName: 'Project A', openChat: true, messages: [{ role: 'user', text: 'Saved question' }] });
+  assert.equal(view.element('messages').querySelectorAll('.message').length, 1);
+  assert.match(view.element('messages').textContent, /Saved question/);
+  assert.equal(view.element('chatApp').hidden, false);
+  assert.equal(view.element('ask').disabled, false);
+  assert.equal(view.activeIntervals(), 0);
+  view.receive({ command: 'sessionProjectWarning', message: 'This chat belongs to another project.' });
+  assert.equal(view.element('sessionHome').hidden, false);
+  assert.equal(view.element('sessionProjectWarning').hidden, false);
 });
 
-test('agent can navigate symbols, definitions, and references through VS Code providers', () => {
-  const source = readDevMateSource();
-  const backendSource = fs.readFileSync(
-    path.join(__dirname, '..', 'backend', 'app', 'chat', 'tool_catalog.py'),
-    'utf8'
-  );
-  assert.match(source, /'vscode\.executeDocumentSymbolProvider'/);
-  assert.match(source, /'vscode\.executeDefinitionProvider'/);
-  assert.match(source, /'vscode\.executeReferenceProvider'/);
-  assert.match(source, /codeNavigationMaxResults/);
-  assert.match(backendSource, /name="get_symbols"/);
-  assert.match(backendSource, /name="find_definition"/);
-  assert.match(backendSource, /name="find_references"/);
+test('attachments can be removed through their own host command', () => {
+  const view = readyView();
+  view.receive({ command: 'attachmentsUpdated', attachments: [{ id: 'file-one', label: 'app.ts' }] });
+  assert.equal(view.element('attachmentList').querySelector('.attachment-label').textContent, 'app.ts');
+  buttonWithText(view.element('attachmentList'), 'Remove').click();
+  assert.deepEqual(view.messages.at(-1), { command: 'removeAttachment', id: 'file-one' });
 });
 
-test('completed answers show persistent green and red file-change summaries', () => {
-  const source = readDevMateSource();
-  assert.match(source, /className = 'file-change-summary'/);
-  assert.match(source, /className = 'file-change-row'/);
-  assert.match(source, /gitDecoration-addedResourceForeground/);
-  assert.match(source, /gitDecoration-deletedResourceForeground/);
-  assert.match(source, /appendFileChangeSummary\(narration, fileChanges\)/);
-  assert.match(source, /fileChanges: turn\.fileChanges \?\? \[\]/);
-  assert.match(
-    source,
-    /collectFileChangeSummary\(\s*outcome\.toolHistory,\s*appliedResponseChanges\s*\)/
-  );
-  assert.match(source, /command: 'openFileChangeDiff'/);
-  assert.match(source, /'vscode\.diff'/);
-  assert.match(source, /rememberCompletedFileDiff/);
+test('code-copy and source-link buttons send commands to the extension', () => {
+  const view = readyView();
+  view.receive({ command: 'assistantResponse', fileChanges: [],
+    response: 'Read `src/app.ts:12`.\n```ts\nconst answer = 42;\n```' });
+  buttonWithText(view.element('messages'), 'src/app.ts:12').click();
+  assert.deepEqual(view.messages.at(-1), { command: 'openWorkspaceFile', path: 'src/app.ts', line: 12 });
+  buttonWithText(view.element('messages'), 'Copy').click();
+  assert.deepEqual(view.messages.at(-1), { command: 'copyText', text: 'const answer = 42;' });
 });
 
-test('project-bound sessions open from a dedicated landing screen', () => {
-  const source = readDevMateSource();
-  assert.match(source, /id="sessionSelector"/);
-  assert.match(source, /id="newSessionButton"/);
-  assert.match(source, /id="sessionHome"/);
-  assert.match(source, /id="chatApp"[^>]+hidden/);
-  assert.match(source, /id="sessionProjectWarning"/);
-  assert.match(source, /message\.command === 'sessionsUpdated'/);
-  assert.match(source, /message\.command === 'sessionProjectWarning'/);
-  assert.match(source, /command: 'selectSession'/);
-  assert.match(source, /command: 'renameSession'/);
-  assert.match(source, /command: 'deleteSession'/);
-  assert.match(source, /sessionSelectorEl\.disabled = state\.askPending/);
-  assert.match(source, /newSessionButtonEl\.disabled = state\.askPending/);
-  assert.match(source, /sessionBelongsToWorkspace\(session, workspace\)/);
-  assert.match(source, /repository\.loadWorkspace/);
+test('completed file-change summaries preserve counts and open the saved diff', () => {
+  const view = readyView();
+  view.receive({ command: 'assistantResponse', response: 'Updated.', fileChanges: [
+    { kind: 'updated', path: 'app.ts', diffId: 'saved-diff' },
+    { kind: 'deleted', path: 'old.ts' }
+  ] });
+  const summary = view.element('messages').querySelector('.file-change-summary');
+  assert.equal(summary.querySelector('.changed').textContent, '+1');
+  assert.equal(summary.querySelector('.deleted').textContent, '−1');
+  buttonWithText(summary, 'app.ts').click();
+  assert.deepEqual(view.messages.at(-1), { command: 'openFileChangeDiff', diffId: 'saved-diff', path: 'app.ts' });
+  assert.equal(summary.querySelectorAll('button').length, 1);
 });
 
-test('new user messages persist independently from failed assistant requests', () => {
-  const source = readDevMateSource();
-  assert.match(source, /appendConversationSessionUserMessage\(/);
-  assert.match(source, /isNewTurn:\s*true/);
-  assert.match(source, /isNewTurn:\s*false/);
-  assert.match(source, /turn\.assistant[\s\S]*?role: 'assistant'/);
+test('session rows send distinct select, rename and delete commands', () => {
+  const view = readyView();
+  view.receive({ command: 'sessionsUpdated', sessions: [{ id: 'saved', title: 'Saved chat',
+    belongsToCurrentWorkspace: true, workspaceName: 'Project A', turnCount: 2 }],
+    activeSessionId: 'saved', activeTitle: 'Saved chat', currentWorkspaceName: 'Project A', openChat: false });
+  const list = view.element('sessionList');
+  list.querySelector('.session-select').click();
+  assert.deepEqual(view.messages.at(-1), { command: 'selectSession', sessionId: 'saved' });
+  list.querySelector('[aria-label="Rename session"]').click();
+  assert.deepEqual(view.messages.at(-1), { command: 'renameSession', sessionId: 'saved' });
+  list.querySelector('[aria-label="Delete session"]').click();
+  assert.deepEqual(view.messages.at(-1), { command: 'deleteSession', sessionId: 'saved' });
 });
 
-test('exhausted agent runs finalize locally instead of looping checkpoints', () => {
-  const source = readDevMateSource();
-  assert.match(source, /consecutiveAgentInspectionCalls\(toolHistory\)/);
-  assert.match(source, /Finalizing from completed project-tool work/);
-  assert.match(source, /summarizeAgentToolHistory\(toolHistory, errorMessage\)/);
-  assert.match(source, /Model stopped before acting — retrying with project tools/);
-  assert.match(source, /described what it would do but did not call a project tool/);
+test('tool-setting acknowledgements close only the open tool form and return to settings', () => {
+  const view = readyView();
+  view.receive({ command: 'agentToolSettingsSaved' });
+  assert.equal(view.element('permissionDialog').open, false);
+  view.element('openAgentToolSettings').click();
+  view.receive({ command: 'agentToolSettingsSaved' });
+  assert.equal(view.element('agentToolSettingsDialog').open, false);
+  assert.equal(view.element('permissionDialog').open, true);
+  view.receive({ command: 'settingsSaved' });
+  assert.equal(view.element('permissionDialog').open, false);
 });

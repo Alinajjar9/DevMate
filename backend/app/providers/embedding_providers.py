@@ -23,6 +23,17 @@ MAX_EMBEDDING_INDEX_BATCHES_PER_RUN = 16
 
 
 @dataclass(frozen=True, slots=True)
+class EmbeddingProfile:
+    profile_id: str
+    provider: EmbeddingProviderName
+    model: str
+    base_url: str
+    api_key: str | None
+    remote_allowed: bool = False
+    vector_version: int = 1
+
+
+@dataclass(frozen=True, slots=True)
 class EmbeddingRequest:
     provider: EmbeddingProviderName
     model: str

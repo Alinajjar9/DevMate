@@ -18,7 +18,7 @@ from .embedding_providers import (
     EmbeddingProviderName,
     EmbeddingRequest,
 )
-from .chat_provider import (
+from .provider_network import (
     ProviderAddressResolver,
     ProviderError,
     is_loopback_provider_hostname,

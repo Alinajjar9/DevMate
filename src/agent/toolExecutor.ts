@@ -39,6 +39,7 @@ import {
 import type { CapturedTerminalError, ValidatedCommand } from '../workspace/commandTools';
 import {
   applyExactReplacements,
+  formatFileChangeApplicationOutcome,
   validateFileChanges
 } from '../workspace/fileTools';
 import {
@@ -50,7 +51,7 @@ import {
 } from '../projectSearch/projectIndex';
 import {
   WorkspaceContext,
-  normalizeRelativeWorkspacePath
+  toForwardSlashes
 } from '../context/workspaceContext';
 import { WorkspaceMutations } from '../workspace/workspaceMutations';
 
@@ -71,6 +72,9 @@ export type AgentToolExecution = {
   pythonEnvironment?: string;
   installAttempted?: boolean;
   environmentChanged?: boolean;
+  // Explicit denial metadata, currently used to stop repeated dependency-install requests.
+  // Its absence does not mean that a tool has permission to run.
+  permissionDenied?: boolean;
 };
 
 type ActiveTerminalCapture = {
@@ -96,6 +100,8 @@ export class StartedCommandError extends Error {
 export class StartedDependencyInstallError extends Error {
   readonly installAttempted = true;
 }
+
+export class ToolPermissionDeniedError extends Error {}
 
 export type ToolExecutionContext = {
   remainingMutationCharacters: number;
@@ -231,7 +237,8 @@ export class ToolExecutor {
         pythonEnvironment: error instanceof StartedCommandError
           ? error.pythonEnvironment
           : undefined,
-        installAttempted: error instanceof StartedDependencyInstallError
+        installAttempted: error instanceof StartedDependencyInstallError,
+        permissionDenied: error instanceof ToolPermissionDeniedError
       };
     }
   }
@@ -279,11 +286,12 @@ export class ToolExecutor {
         `Create ${call.arguments.path}`,
         signal
       );
-      if (!outcome.startsWith('Applied file changes:')) {
-        throw new Error('Permission to create the file was denied.');
+      if (outcome.kind !== 'applied') {
+        const message = 'Permission to create the file was denied.';
+        throw outcome.kind === 'denied' ? new ToolPermissionDeniedError(message) : new Error(message);
       }
       return {
-        result: outcome,
+        result: formatFileChangeApplicationOutcome(outcome),
         resultSummary: `Created ${call.arguments.path}`,
         usedFiles: [uri.scheme === 'file' ? uri.fsPath : uri.toString()],
         mutationCharacters: call.arguments.content.length,
@@ -319,11 +327,12 @@ export class ToolExecutor {
         `Edit ${call.arguments.path}`,
         signal
       );
-      if (!outcome.startsWith('Applied file changes:')) {
-        throw new Error('Permission to edit the file was denied.');
+      if (outcome.kind !== 'applied') {
+        const message = 'Permission to edit the file was denied.';
+        throw outcome.kind === 'denied' ? new ToolPermissionDeniedError(message) : new Error(message);
       }
       return {
-        result: outcome,
+        result: formatFileChangeApplicationOutcome(outcome),
         resultSummary: `Updated ${call.arguments.path}`,
         usedFiles: [uri.scheme === 'file' ? uri.fsPath : uri.toString()],
         mutationCharacters: updatedContent.length,
@@ -342,7 +351,7 @@ export class ToolExecutor {
     if (call.name === 'list_files') {
       const uris = await this.findAgentFiles(folder, call.arguments.path);
       const relativePaths = uris
-        .map((uri) => normalizeRelativeWorkspacePath(vscode.workspace.asRelativePath(uri, false)))
+        .map((uri) => toForwardSlashes(vscode.workspace.asRelativePath(uri, false)))
         .sort((left, right) => left.localeCompare(right))
         .slice(0, Math.min(call.arguments.maxResults, toolSettings.listFilesMaxResults));
       const result = relativePaths.length > 0
@@ -362,7 +371,7 @@ export class ToolExecutor {
       if (
         !candidate
         || !agentPathMatches(
-          normalizeRelativeWorkspacePath(candidate.relativePath),
+          toForwardSlashes(candidate.relativePath),
           call.arguments.path
         )
       ) {
@@ -451,7 +460,7 @@ export class ToolExecutor {
         if (!candidate) {
           continue;
         }
-        const relativePath = normalizeRelativeWorkspacePath(candidate.relativePath);
+        const relativePath = toForwardSlashes(candidate.relativePath);
         const lines = candidate.content.split(/\r?\n/);
         for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
           if (!lines[lineIndex].toLocaleLowerCase().includes(query)) {
@@ -509,7 +518,7 @@ export class ToolExecutor {
       if (!diagnosticFolder || diagnosticFolder.uri.toString() !== folder.uri.toString()) {
         continue;
       }
-      const relativePath = normalizeRelativeWorkspacePath(
+      const relativePath = toForwardSlashes(
         vscode.workspace.asRelativePath(uri, false)
       );
       if (shouldSkipProjectFile(relativePath)) {
@@ -723,7 +732,7 @@ export class ToolExecutor {
     const candidate = await this.workspaceContext.readProjectCandidate(uri);
     if (
       !candidate
-      || !agentPathMatches(normalizeRelativeWorkspacePath(candidate.relativePath), relativePath)
+      || !agentPathMatches(toForwardSlashes(candidate.relativePath), relativePath)
     ) {
       throw new Error('The code-navigation source does not exist or is excluded from DevMate context.');
     }
@@ -750,7 +759,7 @@ export class ToolExecutor {
     if (!locationFolder || locationFolder.uri.toString() !== folder.uri.toString()) {
       return undefined;
     }
-    const relativePath = normalizeRelativeWorkspacePath(vscode.workspace.asRelativePath(uri, false));
+    const relativePath = toForwardSlashes(vscode.workspace.asRelativePath(uri, false));
     if (shouldSkipProjectFile(relativePath)) {
       return undefined;
     }
@@ -840,7 +849,7 @@ export class ToolExecutor {
     const signature = commandSignature(command);
     const allowed = await this.callbacks.requestCommandPermission(signature, label, command.cwd);
     if (!allowed) {
-      throw new Error('Permission to run the verification command was denied.');
+      throw new ToolPermissionDeniedError('Permission to run the verification command was denied.');
     }
     if (!vscode.workspace.isTrusted) {
       throw new Error('Workspace Trust changed while command permission was pending; the command was not run.');
@@ -871,11 +880,16 @@ export class ToolExecutor {
       throw new Error('VS Code terminal shell integration was unavailable after 5 seconds; the command was not run.');
     }
 
-    const execution = shellIntegration.executeCommand(command.executable, command.args);
     const startedAt = Date.now();
     let output = '';
-    const outputReader = (async () => {
-      for await (const data of execution.read()) {
+    const outcome = await this.executeTerminalStep(
+      terminal,
+      shellIntegration,
+      command.executable,
+      command.args,
+      timeoutSeconds * 1_000,
+      signal,
+      (data) => {
         output = sanitizeCommandOutput(output + data);
         this.callbacks.postAgentToolActivity(
           call.id,
@@ -886,39 +900,7 @@ export class ToolExecutor {
           true
         );
       }
-    })();
-
-    const outcome = await new Promise<{
-      state: 'completed' | 'cancelled' | 'timeout';
-      exitCode?: number;
-    }>((resolve) => {
-      let settled = false;
-      const finish = (value: { state: 'completed' | 'cancelled' | 'timeout'; exitCode?: number }) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timeout);
-        signal.removeEventListener('abort', cancel);
-        endDisposable.dispose();
-        resolve(value);
-      };
-      const endDisposable = vscode.window.onDidEndTerminalShellExecution((event) => {
-        if (event.execution === execution) {
-          finish({ state: 'completed', exitCode: event.exitCode });
-        }
-      });
-      const cancel = () => {
-        terminal.dispose();
-        finish({ state: 'cancelled' });
-      };
-      const timeout = setTimeout(() => {
-        terminal.dispose();
-        finish({ state: 'timeout' });
-      }, timeoutSeconds * 1_000);
-      signal.addEventListener('abort', cancel, { once: true });
-    });
-    await Promise.race([outputReader, wait(250)]);
+    );
     const durationSeconds = Math.max(0, (Date.now() - startedAt) / 1_000);
     const modelOutput = boundedModelCommandOutput(output);
     const result = [
@@ -1024,7 +1006,7 @@ export class ToolExecutor {
       }
     );
     if (!allowed) {
-      throw new Error('Permission to install dependencies was denied.');
+      throw new ToolPermissionDeniedError('Permission to install dependencies was denied.');
     }
     if (!vscode.workspace.isTrusted) {
       throw new Error('Workspace Trust changed while installation permission was pending; nothing was installed.');
@@ -1293,7 +1275,7 @@ export class ToolExecutor {
 
     const capture: ActiveTerminalCapture = {
       command: sanitizeCapturedTerminalText(event.execution.commandLine.value),
-      cwd: normalizeRelativeWorkspacePath(vscode.workspace.asRelativePath(cwd, false)),
+      cwd: toForwardSlashes(vscode.workspace.asRelativePath(cwd, false)),
       terminalName: sanitizeCapturedTerminalText(event.terminal.name),
       output: ''
     };
@@ -1379,7 +1361,7 @@ export class ToolExecutor {
     );
     return uris
       .filter((uri) => {
-        const relativePath = normalizeRelativeWorkspacePath(
+        const relativePath = toForwardSlashes(
           vscode.workspace.asRelativePath(uri, false)
         );
         return !shouldSkipProjectFile(relativePath)

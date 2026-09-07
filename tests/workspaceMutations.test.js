@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const Module = require('node:module');
+const { withVscodeMock } = require('./helpers/withVscodeMock');
 const path = require('node:path');
 const test = require('node:test');
 
@@ -140,15 +140,7 @@ const vscode = {
   }
 };
 
-const originalModuleLoad = Module._load;
-Module._load = function loadWithVscodeMock(request, parent, isMain) {
-  if (request === 'vscode') {
-    return vscode;
-  }
-  return originalModuleLoad.call(this, request, parent, isMain);
-};
-const { WorkspaceMutations } = require('../out/workspace/workspaceMutations');
-Module._load = originalModuleLoad;
+const { WorkspaceMutations } = withVscodeMock(vscode, () => require('../out/workspace/workspaceMutations'));
 
 function resetWorkspace() {
   entries.clear();
@@ -183,7 +175,7 @@ test('permission denial performs no workspace edit', async () => {
     new AbortController().signal
   );
 
-  assert.equal(outcome, 'Proposed file changes were not applied.');
+  assert.deepEqual(outcome, { kind: 'denied', message: 'Proposed file changes were not applied.' });
   assert.deepEqual(requestedFiles.map(({ path: filePath, operation }) => ({ filePath, operation })), [{
     filePath: 'src/new.ts',
     operation: 'create'
@@ -207,7 +199,7 @@ test('cancellation after approval performs no workspace edit', async () => {
     controller.signal
   );
 
-  assert.equal(outcome, 'Proposed file changes were not applied.');
+  assert.deepEqual(outcome, { kind: 'cancelled', message: 'Proposed file changes were not applied.' });
   assert.equal(applyEditCalls, 0);
   assert.equal(recordedDiffs.length, 0);
 });
@@ -332,7 +324,7 @@ test('an approved unchanged file is applied and recorded', async () => {
     new AbortController().signal
   );
 
-  assert.equal(outcome, 'Applied file changes:\n- Updated src/app.ts');
+  assert.deepEqual(outcome, { kind: 'applied', changes: [{ kind: 'updated', path: 'src/app.ts' }] });
   assert.deepEqual(statuses, ['Waiting for permission', 'Applying file changes']);
   assert.equal(applyEditCalls, 1);
   assert.deepEqual(recordedDiffs, [[
@@ -340,4 +332,24 @@ test('an approved unchanged file is applied and recorded', async () => {
     'export const value = 1;',
     'export const value = 2;'
   ]]);
+});
+
+test('an editor display failure does not change an already applied outcome', async () => {
+  resetWorkspace();
+  addFile('src/app.ts', 'before');
+  const { mutations, recordedDiffs } = createMutations(async () => true);
+  const originalShow = vscode.window.showTextDocument;
+  vscode.window.showTextDocument = async () => { throw new Error('Editor unavailable'); };
+  try {
+    const outcome = await mutations.confirmAndApplyFileChanges(
+      [{ path: 'src/app.ts', content: 'after' }], 'Update app.ts', new AbortController().signal
+    );
+    assert.equal(outcome.kind, 'applied');
+    assert.deepEqual(outcome.changes, [{ kind: 'updated', path: 'src/app.ts' }]);
+    assert.equal(outcome.notice, 'The changes were applied, but VS Code could not open the first file.');
+    assert.equal(applyEditCalls, 1);
+    assert.equal(recordedDiffs.length, 1);
+  } finally {
+    vscode.window.showTextDocument = originalShow;
+  }
 });

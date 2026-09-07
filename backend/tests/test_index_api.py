@@ -16,8 +16,8 @@ from backend.app.main import create_app
 from backend.app.providers.chat_provider import (
     ChatCompletion,
     ChatCompletionRequest,
-    ProviderError,
 )
+from backend.app.providers.provider_network import ProviderError
 from backend.app.indexing.semantic_search_service import SemanticSearchService
 from backend.app.knowledge_store import KnowledgeStore
 

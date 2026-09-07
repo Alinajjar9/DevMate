@@ -12,7 +12,7 @@ from ..providers.embedding_providers import (
     MAX_EMBEDDING_READ_BATCH_SIZE,
     EmbeddingBatch,
     EmbeddingProvider,
-    EmbeddingProviderName,
+    EmbeddingProfile,
     EmbeddingRequest,
 )
 from .embedding_repository import (
@@ -28,17 +28,6 @@ from .knowledge_contracts import (
 
 class SemanticSearchError(RuntimeError):
     """Raised when query-time embedding data breaks the retrieval contract."""
-
-
-@dataclass(frozen=True, slots=True)
-class SemanticSearchProfile:
-    profile_id: str
-    provider: EmbeddingProviderName
-    model: str
-    base_url: str
-    api_key: str | None
-    remote_allowed: bool = False
-    vector_version: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,11 +74,11 @@ class SemanticSearchService:
         self,
         workspace_key: str,
         query: str,
-        profile: SemanticSearchProfile,
+        profile: EmbeddingProfile,
         *,
         limit: int,
     ) -> SemanticSearchResult:
-        if not isinstance(profile, SemanticSearchProfile):
+        if not isinstance(profile, EmbeddingProfile):
             raise SemanticSearchError("The semantic search profile is invalid.")
         if (
             not isinstance(query, str)

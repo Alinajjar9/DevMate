@@ -38,10 +38,9 @@ from ..dependencies import (
 )
 from .embedding_index_service import (
     EmbeddingIndexError,
-    EmbeddingIndexProfile,
     EmbeddingIndexService,
 )
-from ..providers.embedding_providers import MAX_EMBEDDING_API_KEY_CHARACTERS
+from ..providers.embedding_providers import MAX_EMBEDDING_API_KEY_CHARACTERS, EmbeddingProfile
 from ..errors import BackendApiError
 from .knowledge_contracts import DEVMATE_KNOWLEDGE_INDEX_API_VERSION
 from .knowledge_repository import (
@@ -49,15 +48,16 @@ from .knowledge_repository import (
     IndexedFile,
     IndexMetadataRecord,
     KnowledgeRepository,
+)
+from ..providers.provider_network import ProviderError
+from .semantic_search_service import (
+    SemanticSearchError,
+    SemanticSearchService,
+)
+from .index_validation import (
     KnowledgeRepositoryError,
     KnowledgeRepositoryNotFoundError,
     KnowledgeRepositoryValidationError,
-)
-from ..providers.chat_provider import ProviderError
-from .semantic_search_service import (
-    SemanticSearchError,
-    SemanticSearchProfile,
-    SemanticSearchService,
 )
 
 
@@ -245,7 +245,7 @@ async def synchronize_knowledge_index_embeddings(
     try:
         result = await service.synchronize_workspace(
             request.workspaceKey,
-            EmbeddingIndexProfile(
+            EmbeddingProfile(
                 profile_id=request.profileId,
                 provider=request.provider,
                 model=request.model,
@@ -313,7 +313,7 @@ async def search_knowledge_index_semantically(
         result = await service.search_workspace(
             request.workspaceKey,
             request.query,
-            SemanticSearchProfile(
+            EmbeddingProfile(
                 profile_id=request.profileId,
                 provider=request.provider,
                 model=request.model,

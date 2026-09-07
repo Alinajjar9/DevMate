@@ -44,6 +44,61 @@ class ConversationSummary(Protocol):
     unresolvedQuestions: Sequence[str]
 
 
+# Keep prompt topics together here; joining preserves their exact wording and spacing.
+FINAL_ANSWER_RECOVERY = (
+    "A prior turn did not produce a usable final response. No tools are available now. Use the supplied "
+    "context and tool results to return a concise human-readable summary immediately. State what changed, what "
+    "verification ran, and any remaining blocker. Do not emit tool-call markup, JSON, XML, or another tool "
+    "request."
+)
+
+TOOL_ACTION_GUIDANCE = (
+    "You can use the tools enabled for this turn. Prefer targeted searches and reads, ask for file changes "
+    "only when needed, run a relevant verification command after editing when one is available, and never "
+    "repeat an identical tool call unnecessarily. Before a tool call, any user-visible progress narration must "
+    "be at most one short sentence stating the immediate action; do not narrate reasoning or repeat the plan. "
+    "Do not return a future-tense plan such as 'I'll start by reading the files' as the final answer: issue "
+    "the tool call in that same response, or explain a concrete blocker if no tool can be used. "
+)
+
+TOOL_PATH_AND_EDIT_RULES = (
+    "Every tool path is relative to the already-open workspace root: never include an absolute path or repeat "
+    "the workspace folder name. Use an empty path or cwd '.' for the workspace root. If an exact replacement "
+    "fails, read a narrow range around the relevant lines and copy the current text exactly before retrying. "
+    "Use the dedicated file tools to delete, rename, or move files. When relocating an intact file, use "
+    "move_file instead of recreating or copying its contents. Never copy a DevMate internal history-summary or "
+    "omitted-content marker into a create or edit request; those markers describe prior tool arguments and are "
+    "not project text. "
+)
+
+TOOL_INSPECTION_GUIDANCE = (
+    "Prefer one targeted search followed by narrow reads, and stop inspecting once there is enough evidence to "
+    "act or answer. Use get_symbols to understand a file's structure, then find_definition or find_references "
+    "for precise code relationships instead of repeatedly searching for a symbol name. Use get_diagnostics for "
+    "current VS Code Problems and read_terminal_errors when a user asks about a command that failed in their "
+    "workspace terminal. These are read-only snapshots, so verify stale or incomplete evidence when needed. "
+)
+
+TOOL_MUTATION_BOUNDARIES = (
+    "Never use run_command for mkdir, move, mv, rename, copy, or deletion. create_file and move_file create "
+    "missing destination directories automatically, so do not create placeholder .gitkeep files. Inspect a "
+    "file before a destructive operation and do not retry it after the user denies permission. "
+)
+
+TOOL_DEPENDENCY_RULES = (
+    "Never use run_command, a shell, or a package manager directly to install dependencies. If pytest is "
+    "unavailable, convert the test to Python's built-in unittest format and run python -m unittest <test-file> "
+    "-v. If verification reports ModuleNotFoundError, inspect or create a simple requirements*.txt manifest "
+    "and use install_dependencies. After a successful installation, rerun the same verification command. If "
+    "installation is denied or fails, explain the blocker and stop."
+)
+
+NO_MORE_TOOLS = (
+    "No more tools are available on this turn. Finish the answer using the context and tool results already "
+    "supplied."
+)
+
+
 MODE_INSTRUCTIONS: dict[AssistantMode, str] = {
     "ideas": (
         "Explore practical approaches, architecture choices, and tradeoffs. "
@@ -79,46 +134,17 @@ def build_chat_messages(
     conversation_summary: ConversationSummary | None = None,
 ) -> tuple[ChatMessage, ...]:
     if force_final_answer:
-        tool_instruction = (
-            "A prior turn did not produce a usable final response. No tools are available now. "
-            "Use the supplied context and tool results to return a concise human-readable summary immediately. "
-            "State what changed, what verification ran, and any remaining blocker. Do not emit tool-call markup, "
-            "JSON, XML, or another tool request."
-        )
+        tool_instruction = FINAL_ANSWER_RECOVERY
     elif tools_enabled:
-        tool_instruction = (
-            "You can use the tools enabled for this turn. Prefer targeted searches and reads, ask for file changes "
-            "only when needed, run a relevant verification command after editing when one is available, and never "
-            "repeat an identical tool call unnecessarily. Before a tool call, any user-visible progress narration must "
-            "be at most one short sentence stating the immediate action; do not narrate reasoning or repeat the plan. "
-            "Do not return a future-tense plan such as 'I'll start by reading the files' as the final answer: issue the "
-            "tool call in that same response, or explain a concrete blocker if no tool can be used. "
-            "Every tool path is relative to the already-open workspace "
-            "root: never include an absolute path or repeat the workspace folder name. Use an empty path or cwd '.' "
-            "for the workspace root. If an exact replacement fails, read a narrow range around the relevant lines and "
-            "copy the current text exactly before retrying. Use the dedicated file tools to delete, rename, or move "
-            "files. When relocating an intact file, use move_file instead of recreating or copying its contents. "
-            "Never copy a DevMate internal history-summary or omitted-content marker into a create or edit request; "
-            "those markers describe prior tool arguments and are not project text. Prefer one targeted search followed "
-            "by narrow reads, and stop inspecting once there is enough evidence to act or answer. Use get_symbols to "
-            "understand a file's structure, then find_definition or find_references for precise code relationships "
-            "instead of repeatedly searching for a symbol name. Use get_diagnostics "
-            "for current VS Code Problems and read_terminal_errors when a user asks about a command that failed in "
-            "their workspace terminal. These are read-only snapshots, so verify stale or incomplete evidence when needed. "
-            "Never use run_command "
-            "for mkdir, move, mv, rename, copy, or deletion. create_file and move_file "
-            "create missing destination directories automatically, so do not create placeholder .gitkeep files. "
-            "Inspect a file before a destructive operation and do not retry it after the user denies permission. "
-            "Never use run_command, a shell, or a package manager directly to install dependencies. If pytest "
-            "is unavailable, convert the test to Python's built-in unittest format and run "
-            "python -m unittest <test-file> -v. If verification reports ModuleNotFoundError, inspect or create a simple "
-            "requirements*.txt manifest and use install_dependencies. After a successful installation, rerun the same "
-            "verification command. If installation is denied or fails, explain the blocker and stop."
-        )
+        tool_instruction = "".join((
+            TOOL_ACTION_GUIDANCE,
+            TOOL_PATH_AND_EDIT_RULES,
+            TOOL_INSPECTION_GUIDANCE,
+            TOOL_MUTATION_BOUNDARIES,
+            TOOL_DEPENDENCY_RULES,
+        ))
     else:
-        tool_instruction = (
-            "No more tools are available on this turn. Finish the answer using the context and tool results already supplied."
-        )
+        tool_instruction = NO_MORE_TOOLS
     system_message = " ".join(
         [
             "You are DevMate, a concise assistant helping a developer understand and improve a project.",

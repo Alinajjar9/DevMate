@@ -25,7 +25,7 @@ import {
   PROJECT_EXCLUDE_GLOB,
   shouldSkipProjectFile
 } from './projectIndex';
-import { normalizeRelativeWorkspacePath } from '../context/workspaceContext';
+import { toForwardSlashes } from '../context/workspaceContext';
 
 export type CurrentWorkspaceIndexFile = {
   filePath: string;
@@ -40,7 +40,7 @@ export class VsCodeWorkspaceIndexSource implements WorkspaceIndexSource {
     signal?: AbortSignal
   ): Promise<CurrentWorkspaceIndexFile | undefined> {
     const folder = vscode.workspace.workspaceFolders?.[0];
-    const normalizedPath = normalizeRelativeWorkspacePath(relativePath);
+    const normalizedPath = toForwardSlashes(relativePath);
     if (!folder
       || folder.uri.scheme !== 'file'
       || !isSafeRelativePath(normalizedPath)
@@ -97,7 +97,7 @@ export class VsCodeWorkspaceIndexSource implements WorkspaceIndexSource {
       )
     )) {
       assertNotCancelled(signal);
-      const relativePath = normalizeRelativeWorkspacePath(
+      const relativePath = toForwardSlashes(
         vscode.workspace.asRelativePath(uri, false)
       );
       if (!isSafeRelativePath(relativePath) || shouldSkipProjectFile(relativePath)) {

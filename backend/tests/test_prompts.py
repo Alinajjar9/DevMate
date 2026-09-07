@@ -1,3 +1,6 @@
+import hashlib
+import itertools
+import json
 import unittest
 from types import SimpleNamespace
 
@@ -5,6 +8,31 @@ from backend.app.chat.prompts import MODE_INSTRUCTIONS, build_chat_messages
 
 
 class PromptTests(unittest.TestCase):
+    def test_prompt_topic_refactor_preserves_all_system_prompt_variants(self) -> None:
+        # This digest records the pre-refactor wording, including spacing and recovery modes.
+        variants = [
+            build_chat_messages(
+                mode=mode,
+                scope_type=scope,
+                question="Question",
+                context_items=(),
+                tools_enabled=tools,
+                force_final_answer=final,
+                disable_thinking=thinking_disabled,
+                agent_edits_enabled=edits,
+            )[0].content
+            for mode, scope, tools, final, thinking_disabled, edits in itertools.product(
+                ("ideas", "code", "debug"),
+                ("project", "file", "selection"),
+                (False, True),
+                (False, True),
+                (False, True),
+                (False, True),
+            )
+        ]
+        digest = hashlib.sha256(json.dumps(variants, ensure_ascii=False).encode()).hexdigest()
+        self.assertEqual(digest, "52133f00bd5b77a72bbbabe62783110b17844580eba4efee2bb88b42079b5cf4")
+
     def test_each_mode_has_distinct_system_guidance(self) -> None:
         system_messages = {
             mode: build_chat_messages(

@@ -80,6 +80,8 @@ npm run compile
 - Do not comment obvious assignments or repeat what a well-named function already says.
 - Update or remove a comment when the behavior it describes changes.
 - Test controller workflows through their current dependencies. Keep VS Code mocks for view routing and native editor behavior instead of rebuilding old provider internals in tests.
+- Return explicit outcomes such as `applied`, `denied`, or `cancelled`; do not make control flow depend on the wording of a user-facing message.
+- Share repeated behavior when the rules are really the same. Keep security rechecks at each boundary, even when they look similar.
 
 ## Running DevMate from source
 
@@ -386,7 +388,7 @@ Before a demo, still do a short manual check: open the profile/settings forms, s
 
 ## Repository structure
 
-There are still 46 TypeScript modules. The files are grouped by feature; we did not add a wrapper or an `index.ts` just to create a folder.
+The source files are grouped by feature. Shared HTTP transport and response validation have their own modules; small helpers stay beside the behavior they support. There are no folder-wide `index.ts` wrappers.
 
 | Path | Responsibility |
 | --- | --- |
@@ -418,10 +420,12 @@ The Python folders group existing files, not extra abstraction layers. Their sma
 ### Where to start reading
 
 - **Follow a question:** `chat/chatViewProvider.ts` routes it to `chat/chatRequestController.ts`, which prepares context/history and calls `agent/agentRunController.ts`. The agent delegates local actions to `agent/toolExecutor.ts`.
+- **Follow a backend call:** `api/client.ts` selects the endpoint and checks request policy. `api/backendTransport.ts` handles HTTP, deadlines and stream framing; the protocol modules decode responses.
 - **Understand search:** `projectSearch/indexSynchronization.ts` updates the code index. `projectSearch/projectRetriever.ts` combines search results and checks current source before including it in a request.
 - **Understand memory:** `sessions/sessionController.ts` coordinates persistence through `sessions/sessionRepository.ts`. `sessions/chatCompaction.ts` decides when to request a summary; `context/contextPlanner.ts` decides what fits in a model request.
 - **Understand file safety:** `workspace/workspaceMutations.ts` owns approval-time revalidation and file application. Permission and diff presenters live beside it.
 - **Follow the backend:** start at `backend/app/main.py`. Chat requests enter `api/api_routes.py`, use `chat/chat_service.py`, and call `providers/chat_provider.py`. Project-search endpoints live in `indexing/`; chat-memory endpoints and compaction live in `memory/`.
+- **Understand the browser UI:** `media/webview.js` keeps state and DOM references at the top, groups event setup by feature, and routes extension events through named handlers. The CSS section headings follow the same visible areas.
 
 Paths in the reading guide are relative to `src/` unless they begin with `backend/`. Short file introductions describe responsibilities; inline comments explain non-obvious decisions rather than every assignment.
 

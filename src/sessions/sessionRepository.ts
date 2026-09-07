@@ -111,7 +111,7 @@ export const defaultSessionRepositoryApi: SessionRepositoryApi = {
   )
 };
 
-export class SqliteSessionRepository implements ConversationSessionRepository {
+export class BackendSessionRepository implements ConversationSessionRepository {
   private backendAccess?: SessionRepositoryAccess;
 
   constructor(private readonly api: SessionRepositoryApi = defaultSessionRepositoryApi) {}

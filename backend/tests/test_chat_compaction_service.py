@@ -17,7 +17,8 @@ from backend.app.memory.chat_memory_repository import (
     ChatTurnRecord,
 )
 from backend.app.knowledge_store import KnowledgeStore
-from backend.app.providers.chat_provider import ChatCompletionRequest, ProviderError
+from backend.app.providers.chat_provider import ChatCompletion, ChatCompletionRequest
+from backend.app.providers.provider_network import ProviderError
 
 
 class RecordingProvider:
@@ -26,11 +27,11 @@ class RecordingProvider:
         self.error: ProviderError | None = None
         self.requests: list[ChatCompletionRequest] = []
 
-    async def complete(self, request: ChatCompletionRequest) -> str:
+    async def complete(self, request: ChatCompletionRequest) -> ChatCompletion:
         self.requests.append(request)
         if self.error is not None:
             raise self.error
-        return self.answer
+        return self.answer if isinstance(self.answer, ChatCompletion) else ChatCompletion(content=self.answer)
 
 
 class ChatCompactionServiceTests(unittest.IsolatedAsyncioTestCase):

@@ -6,7 +6,6 @@ from uuid import uuid4
 
 from backend.app.indexing.embedding_index_service import (
     EmbeddingIndexError,
-    EmbeddingIndexProfile,
     EmbeddingIndexService,
 )
 from backend.app.providers.embedding_providers import EmbeddingBatch, EmbeddingRequest
@@ -15,9 +14,12 @@ from backend.app.indexing.knowledge_repository import (
     IndexedChunk,
     IndexedFile,
     KnowledgeRepository,
-    KnowledgeRepositoryNotFoundError,
 )
 from backend.app.knowledge_store import KnowledgeStore
+from backend.app.indexing.index_validation import (
+    KnowledgeRepositoryNotFoundError,
+)
+from backend.app.providers.embedding_providers import EmbeddingProfile
 
 
 class RecordingEmbeddingProvider:
@@ -360,8 +362,8 @@ class EmbeddingIndexServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
     @staticmethod
-    def _profile() -> EmbeddingIndexProfile:
-        return EmbeddingIndexProfile(
+    def _profile() -> EmbeddingProfile:
+        return EmbeddingProfile(
             profile_id="local-embedding",
             provider="ollama",
             model="nomic-embed-text",

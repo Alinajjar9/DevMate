@@ -15,7 +15,7 @@ from ..providers.embedding_providers import (
     MAX_EMBEDDING_TOTAL_INPUT_CHARACTERS,
     EmbeddingBatch,
     EmbeddingProvider,
-    EmbeddingProviderName,
+    EmbeddingProfile,
     EmbeddingRequest,
 )
 from .embedding_repository import (
@@ -28,17 +28,6 @@ from .embedding_repository import (
 
 class EmbeddingIndexError(RuntimeError):
     """Raised when an embedding provider breaks the indexing contract."""
-
-
-@dataclass(frozen=True, slots=True)
-class EmbeddingIndexProfile:
-    profile_id: str
-    provider: EmbeddingProviderName
-    model: str
-    base_url: str
-    api_key: str | None
-    remote_allowed: bool = False
-    vector_version: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,12 +52,12 @@ class EmbeddingIndexService:
     async def synchronize_workspace(
         self,
         workspace_key: str,
-        profile: EmbeddingIndexProfile,
+        profile: EmbeddingProfile,
         *,
         batch_size: int = MAX_EMBEDDING_BATCH_SIZE,
         max_batches: int = MAX_EMBEDDING_INDEX_BATCHES_PER_RUN,
     ) -> EmbeddingIndexResult:
-        if not isinstance(profile, EmbeddingIndexProfile):
+        if not isinstance(profile, EmbeddingProfile):
             raise EmbeddingIndexError("The embedding index profile is invalid.")
         if (
             not isinstance(batch_size, int)

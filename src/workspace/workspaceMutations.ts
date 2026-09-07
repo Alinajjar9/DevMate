@@ -5,7 +5,7 @@ import * as vscode from 'vscode';
 import {
   MAX_FILE_CHANGE_CHARACTERS
 } from './fileTools';
-import type { ValidatedFileChange } from './fileTools';
+import type { FileChangeApplicationOutcome, ValidatedFileChange } from './fileTools';
 import {
   containsBinaryData,
   MAX_PROJECT_FILE_BYTES
@@ -193,7 +193,7 @@ export class WorkspaceMutations {
     changes: ValidatedFileChange[],
     summary: string,
     signal: AbortSignal
-  ): Promise<string> {
+  ): Promise<FileChangeApplicationOutcome> {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) {
       throw new Error('Open a workspace folder before applying file changes.');
@@ -246,11 +246,11 @@ export class WorkspaceMutations {
       this.callbacks.reportStatus('Waiting for permission');
       const allowed = await this.callbacks.requestPermission(summary, permissionFiles);
       if (!allowed) {
-        return 'Proposed file changes were not applied.';
+        return { kind: 'denied', message: 'Proposed file changes were not applied.' };
       }
     }
     if (signal.aborted) {
-      return 'Proposed file changes were not applied.';
+      return { kind: 'cancelled', message: 'Proposed file changes were not applied.' };
     }
     if (!vscode.workspace.isTrusted) {
       throw new Error('Workspace Trust changed while permission was pending; the files were not changed.');
@@ -335,13 +335,17 @@ export class WorkspaceMutations {
         preserveFocus: false
       });
     } catch {
-      openNote = '\n\nThe changes were applied, but VS Code could not open the first file.';
+      openNote = 'The changes were applied, but VS Code could not open the first file.';
     }
 
-    return [
-      'Applied file changes:',
-      ...plannedChanges.map((change) => `- ${change.exists ? 'Updated' : 'Created'} ${change.path}`)
-    ].join('\n') + openNote;
+    return {
+      kind: 'applied',
+      changes: plannedChanges.map((change) => ({
+        kind: change.exists ? 'updated' : 'created',
+        path: change.path
+      })),
+      ...(openNote ? { notice: openNote } : {})
+    };
   }
 
   async assertNoWorkspaceSymlink(

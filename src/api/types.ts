@@ -6,7 +6,6 @@ import type { AgentToolCall, AgentToolName } from '../agent/agentToolProtocol';
 export type AssistantMode = 'ideas' | 'code' | 'debug';
 export type ScopeType = 'project' | 'file' | 'selection';
 export type ContextSource = 'file' | 'selection' | 'attachment';
-export type ApiStatus = 'ok' | 'error';
 export type EmbeddingProviderName = 'ollama' | 'openai-compatible';
 export type ReasoningEffort = 'auto' | 'low' | 'medium' | 'high' | 'xhigh';
 export const DEVMATE_BACKEND_SERVICE = 'devmate-backend';
@@ -105,14 +104,25 @@ export type ApiErrorKind =
   | 'timeout';
 export type BackendErrorCode = typeof DEVMATE_BACKEND_ERROR_CODES[number];
 
-export type ApiResult<T> = {
-  status: ApiStatus;
-  data?: T;
-  message?: string;
-  statusCode?: number;
-  errorKind?: ApiErrorKind;
-  errorCode?: BackendErrorCode;
-};
+// Success always carries decoded data; failure always explains what went wrong.
+// The optional never fields keep shared property reads possible without allowing mixed results.
+export type ApiResult<T> =
+  | {
+    status: 'ok';
+    data: T;
+    message?: never;
+    statusCode?: never;
+    errorKind?: never;
+    errorCode?: never;
+  }
+  | {
+    status: 'error';
+    data?: never;
+    message: string;
+    statusCode?: number;
+    errorKind?: ApiErrorKind;
+    errorCode?: BackendErrorCode;
+  };
 
 export type HealthResponse = {
   service: typeof DEVMATE_BACKEND_SERVICE;

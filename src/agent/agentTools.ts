@@ -12,7 +12,7 @@ import {
   parseMoveFileArguments,
   parseRenameFileArguments,
   agentHistoryOmissionMarker,
-  normalizeWorkspaceRelativePath
+  validateMutationPath
 } from '../workspace/fileTools';
 import type { ExactTextReplacement, RelocateFileToolArguments } from '../workspace/fileTools';
 import { omittedAgentToolResult } from '../context/contextPlanner';
@@ -215,7 +215,7 @@ export function parseInstallDependenciesArguments(
   if (typeof value.manifestPath !== 'string') {
     throw new Error('install_dependencies requires a requirements manifest path.');
   }
-  const manifestPath = normalizeWorkspaceRelativePath(value.manifestPath);
+  const manifestPath = validateMutationPath(value.manifestPath);
   const parts = manifestPath.split('/');
   const fileName = parts.at(-1) ?? '';
   if (!manifestNamePattern.test(fileName)) {
@@ -407,7 +407,7 @@ export function parseAgentToolCall(call: AgentToolCall): ParsedAgentToolCall {
       id: call.id,
       name: call.name,
       arguments: {
-        path: normalizeAgentToolPath(optionalString(call.arguments.path)),
+        path: parseToolPath(optionalString(call.arguments.path)),
         maxResults: boundedInteger(
           call.arguments.maxResults,
           100,
@@ -425,7 +425,7 @@ export function parseAgentToolCall(call: AgentToolCall): ParsedAgentToolCall {
       id: call.id,
       name: call.name,
       arguments: {
-        path: normalizeAgentToolPath(filePath, false),
+        path: parseToolPath(filePath, false),
         ...lineRange
       }
     };
@@ -441,7 +441,7 @@ export function parseAgentToolCall(call: AgentToolCall): ParsedAgentToolCall {
       name: call.name,
       arguments: {
         query,
-        path: normalizeAgentToolPath(optionalString(call.arguments.path)),
+        path: parseToolPath(optionalString(call.arguments.path)),
         maxResults: boundedInteger(
           call.arguments.maxResults,
           20,
@@ -457,7 +457,7 @@ export function parseAgentToolCall(call: AgentToolCall): ParsedAgentToolCall {
       id: call.id,
       name: call.name,
       arguments: {
-        path: normalizeAgentToolPath(optionalString(call.arguments.path)),
+        path: parseToolPath(optionalString(call.arguments.path)),
         maxResults: boundedInteger(
           call.arguments.maxResults,
           50,
@@ -473,7 +473,7 @@ export function parseAgentToolCall(call: AgentToolCall): ParsedAgentToolCall {
       id: call.id,
       name: call.name,
       arguments: {
-        path: normalizeAgentToolPath(
+        path: parseToolPath(
           requiredString(call.arguments.path, 'get_symbols requires a path.'),
           false
         ),
@@ -489,7 +489,7 @@ export function parseAgentToolCall(call: AgentToolCall): ParsedAgentToolCall {
 
   if (call.name === 'find_definition' || call.name === 'find_references') {
     const commonArguments = {
-      path: normalizeAgentToolPath(
+      path: parseToolPath(
         requiredString(call.arguments.path, `${call.name} requires a path.`),
         false
       ),
@@ -816,7 +816,8 @@ function boundedSummaryValue(value: unknown, maximum = 240): string {
     : '';
 }
 
-export function normalizeAgentToolPath(value: string, allowRoot = true): string {
+// Read tools may target the workspace root; mutation paths use stricter validation.
+export function parseToolPath(value: string, allowRoot = true): string {
   // Normalize separators, then reject traversal/absolute paths rather than resolving them outside the project.
   const trimmed = value.trim();
   if (!trimmed && allowRoot) {

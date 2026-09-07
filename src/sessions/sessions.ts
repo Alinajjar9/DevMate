@@ -79,7 +79,7 @@ export function parseAgentRunCheckpoint(
   value: unknown,
   now = Date.now()
 ): AgentRunCheckpoint | undefined {
-  if (!isRecordCP(value)
+  if (!isRecord(value)
     || value.version !== 1
     || !boundedString(value.workspaceId, 2_048)
     || !boundedString(value.sessionId, 120)
@@ -154,11 +154,11 @@ function parseToolHistory(value: unknown[]): AgentToolStep[] | undefined {
   const callIds = new Set<string>();
   let resultCharacters = 0;
   for (const item of value) {
-    if (!isRecordCP(item)
+    if (!isRecord(item)
       || !boundedString(item.callId, 120)
       || callIds.has(item.callId)
       || !toolNames.has(item.name as AgentToolName)
-      || !isRecordCP(item.arguments)
+      || !isRecord(item.arguments)
       || JSON.stringify(item.arguments).length > 4_000
       || typeof item.result !== 'string'
       || item.result.length > 10_000
@@ -185,7 +185,7 @@ function parseToolSignatures(value: unknown[]): AgentToolSignatureCheckpoint[] |
   const parsed: AgentToolSignatureCheckpoint[] = [];
   const signatures = new Set<string>();
   for (const item of value) {
-    if (!isRecordCP(item)
+    if (!isRecord(item)
       || typeof item.signature !== 'string'
       || !/^[a-f0-9]{64}$/.test(item.signature)
       || signatures.has(item.signature)
@@ -217,10 +217,6 @@ function validCounter(value: unknown, maximum: number): value is number {
 
 function validTimestamp(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
-}
-
-function isRecordCP(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 // Limit the history sent to the model, not the raw turns saved in the session.

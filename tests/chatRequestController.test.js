@@ -256,6 +256,77 @@ test('keeps a fresh pending user turn when the agent run fails', async () => {
   }]);
 });
 
+test('records applied file proposals from their typed outcome, not from notice wording', async () => {
+  const fixture = createFixture({ agentOutcome: proposalOutcome() });
+  fixture.dependencies.changes.apply = async () => ({
+    kind: 'applied', changes: [{ kind: 'updated', path: 'src/app.ts' }],
+    notice: 'The editor could not be opened.'
+  });
+  fixture.dependencies.changes.completedDiffId = () => 'change_123';
+
+  await fixture.controller.answer(message({ mode: 'code' }), signal());
+
+  const response = fixture.messages.find((item) => item.command === 'assistantResponse');
+  assert.equal(response.response, 'Updated the code.\n\nThe editor could not be opened.');
+  assert.deepEqual(response.fileChanges, [{ kind: 'updated', path: 'src/app.ts', diffId: 'change_123' }]);
+  assert.deepEqual(fixture.savedSessions.at(-1)[0].turns.at(-1).fileChanges, response.fileChanges);
+});
+
+test('a denied file proposal is not included in the applied-change summary', async () => {
+  const fixture = createFixture({ agentOutcome: proposalOutcome() });
+  // Even success-looking display text cannot turn a denied operation into an applied one.
+  fixture.dependencies.changes.apply = async () => ({
+    kind: 'denied', message: 'Applied file changes:\n- Updated src/app.ts'
+  });
+
+  await fixture.controller.answer(message({ mode: 'code' }), signal());
+
+  assert.deepEqual(fixture.messages.find((item) => item.command === 'assistantResponse').fileChanges, []);
+});
+
+test('keeps a completed file edit in the transcript when cancellation arrives during application', async () => {
+  const fixture = createFixture({ agentOutcome: proposalOutcome() });
+  const controller = new AbortController();
+  fixture.dependencies.events.finishCancellation = (requestSignal) => requestSignal.aborted;
+  fixture.dependencies.changes.apply = async () => {
+    controller.abort();
+    return { kind: 'applied', changes: [{ kind: 'updated', path: 'src/app.ts' }] };
+  };
+
+  await fixture.controller.answer(message({ mode: 'code' }), controller.signal);
+
+  assert.equal(fixture.sessions.activeSession().turns.at(-1).assistant, 'Updated the code.');
+  assert.equal(fixture.clearedCheckpoints, 1);
+});
+
+test('cancellation before application leaves the user turn pending', async () => {
+  const fixture = createFixture({ agentOutcome: proposalOutcome() });
+  const controller = new AbortController();
+  fixture.dependencies.events.finishCancellation = (requestSignal) => requestSignal.aborted;
+  fixture.dependencies.changes.apply = async () => {
+    controller.abort();
+    return { kind: 'cancelled', message: 'Proposed file changes were not applied.' };
+  };
+
+  await fixture.controller.answer(message({ mode: 'code' }), controller.signal);
+
+  assert.equal(fixture.sessions.activeSession().turns.at(-1).assistant, '');
+  assert.equal(fixture.clearedCheckpoints, 0);
+  assert.equal(fixture.messages.some((item) => item.command === 'assistantResponse'), false);
+});
+
+function proposalOutcome() {
+  return {
+    kind: 'completed',
+    response: {
+      answer: 'Updated the code.', usedFiles: [], toolCalls: [],
+      changes: [{ path: 'src/app.ts', content: 'export const value = 2;' }]
+    },
+    toolHistory: [], toolUsedFiles: [],
+    tokenUsage: { inputTokens: 10, outputTokens: 5, totalTokens: 15, exact: true }
+  };
+}
+
 // Exercise the request controller through its current dependencies, without a fake VS Code view.
 function createFixture(options = {}) {
   const activeProfile = Object.hasOwn(options, 'activeProfile')
@@ -375,7 +446,7 @@ function createFixture(options = {}) {
       beginRequest: () => {
         startedChanges += 1;
       },
-      apply: async () => '',
+      apply: async () => ({ kind: 'denied', message: 'Proposed file changes were not applied.' }),
       completedDiffId: () => undefined
     },
     events: {

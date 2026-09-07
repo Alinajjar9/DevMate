@@ -68,7 +68,7 @@ export type KnowledgeIndexSemanticSearch = (
   signal?: AbortSignal
 ) => Promise<ApiResult<KnowledgeIndexSemanticSearchResponse>>;
 
-export type SqliteProjectRetrieverOptions = {
+export type HybridProjectRetrieverOptions = {
   getAccess: () => KnowledgeIndexSearchAccess | undefined;
   getEmbeddingProfile?: () => PromiseLike<SelectedEmbeddingSearchProfile | undefined>;
   readCurrentFile: (
@@ -93,12 +93,12 @@ export class LexicalProjectRetriever implements ProjectRetriever {
   }
 }
 
-export class SqliteProjectRetriever implements ProjectRetriever {
+export class HybridProjectRetriever implements ProjectRetriever {
   private readonly fallback: ProjectRetriever;
   private readonly search: KnowledgeIndexSearch;
   private readonly semanticSearch: KnowledgeIndexSemanticSearch;
 
-  constructor(private readonly options: SqliteProjectRetrieverOptions) {
+  constructor(private readonly options: HybridProjectRetrieverOptions) {
     this.fallback = options.fallback ?? new LexicalProjectRetriever();
     this.search = options.search ?? ((access, request, signal) => searchKnowledgeIndex(
       access.backendUrl,

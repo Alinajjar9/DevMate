@@ -27,8 +27,8 @@ from backend.app.providers.chat_provider import (
     ChatStreamEvent,
     ChatTokenUsage,
     ChatToolCall,
-    ProviderError,
 )
+from backend.app.providers.provider_network import ProviderError
 from backend.app.chat.tool_catalog import AGENT_TOOL_DEFINITIONS
 
 
@@ -38,11 +38,11 @@ class RecordingProvider:
         self.error: ProviderError | None = None
         self.answer: str | ChatCompletion = "Mock provider answer"
 
-    async def complete(self, request: ChatCompletionRequest) -> str | ChatCompletion:
+    async def complete(self, request: ChatCompletionRequest) -> ChatCompletion:
         self.requests.append(request)
         if self.error:
             raise self.error
-        return self.answer
+        return self.answer if isinstance(self.answer, ChatCompletion) else ChatCompletion(content=self.answer)
 
 
 class RecordingKnowledgeStore:
@@ -664,6 +664,21 @@ class DevMateApiTests(unittest.TestCase):
                 "issues": [],
             },
         )
+
+    def test_completion_only_stream_validates_tool_markup_before_any_preview(self) -> None:
+        self.provider.answer = ChatCompletion(
+            content="<tool_call><function=read_file><parameter=path>styles.css</function></tool_call>"
+        )
+
+        with self.client.stream(
+            "POST",
+            "/ask/stream",
+            json=self._ask_payload(scope_type="project", items=[]),
+        ) as response:
+            events = [json.loads(line) for line in response.iter_lines() if line]
+
+        self.assertEqual([event["type"] for event in events], ["start", "usage", "error"])
+        self.assertEqual(events[-1]["errorCode"], "model_invalid_response")
 
     def test_ask_returns_manifest_dependency_install_tool_calls(self) -> None:
         self.provider.answer = ChatCompletion(

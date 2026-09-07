@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const Module = require('node:module');
+const { withVscodeMock } = require('./helpers/withVscodeMock');
 const path = require('node:path');
 const test = require('node:test');
 
@@ -61,24 +61,23 @@ const vscode = {
   }
 };
 
-const originalModuleLoad = Module._load;
-Module._load = function loadWithVscodeMock(request, parent, isMain) {
-  if (request === 'vscode') {
-    return vscode;
-  }
-  return originalModuleLoad.call(this, request, parent, isMain);
-};
-const { DevMateChatViewProvider } = require('../out/chat/chatViewProvider');
-const { AgentRunController } = require('../out/agent/agentRunController');
 const {
+  DevMateChatViewProvider,
+  AgentRunController,
   StartedCommandError,
   StartedDependencyInstallError,
-  ToolExecutor
-} = require('../out/agent/toolExecutor');
-const { WorkspaceContext } = require('../out/context/workspaceContext');
-const { WorkspaceMutations } = require('../out/workspace/workspaceMutations');
-const { LexicalProjectRetriever } = require('../out/projectSearch/projectRetriever');
-Module._load = originalModuleLoad;
+  ToolExecutor,
+  WorkspaceContext,
+  WorkspaceMutations,
+  LexicalProjectRetriever
+} = withVscodeMock(vscode, () => ({
+  ...require('../out/chat/chatViewProvider'),
+  ...require('../out/agent/agentRunController'),
+  ...require('../out/agent/toolExecutor'),
+  ...require('../out/context/workspaceContext'),
+  ...require('../out/workspace/workspaceMutations'),
+  ...require('../out/projectSearch/projectRetriever')
+}));
 
 const { parseAgentToolCall } = require('../out/agent/agentTools');
 const { LLM_PROFILES_STORAGE_KEY, secretKeyForProfile } = require('../out/settings/llmProfiles');

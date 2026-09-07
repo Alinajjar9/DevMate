@@ -8,15 +8,17 @@ from backend.app.providers.chat_provider import (
     ChatCompletion,
     ChatCompletionRequest,
     ChatMessage,
+    ChatStreamEvent,
     ChatToolCall,
     ChatToolDefinition,
     DEFAULT_PROVIDER_TIMEOUT_SECONDS,
     OpenAICompatibleProvider,
-    ProviderError,
     create_chat_completions_url,
     parse_provider_timeout_seconds,
-    resolve_provider_destination,
+    stream_chat_completion,
 )
+
+from backend.app.providers.provider_network import ProviderError, resolve_provider_destination
 
 
 class ProviderUrlTests(unittest.TestCase):
@@ -125,6 +127,43 @@ class ProviderUrlTests(unittest.TestCase):
 
 
 class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_completion_only_adapter_defers_the_preview_until_validation(self) -> None:
+        completion = ChatCompletion(content="A completed answer")
+        requests = []
+
+        class CompletionOnlyProvider:
+            async def complete(self, request: ChatCompletionRequest) -> ChatCompletion:
+                requests.append(request)
+                return completion
+
+        request = self._request()
+        events = [event async for event in stream_chat_completion(CompletionOnlyProvider(), request)]
+
+        self.assertEqual(requests, [request])
+        self.assertEqual(events, [ChatStreamEvent(
+            kind="complete",
+            completion=completion,
+            deferred_preview="A completed answer",
+        )])
+
+    async def test_stream_adapter_forwards_native_events_without_calling_complete(self) -> None:
+        expected = (
+            ChatStreamEvent(kind="content", text="Hello"),
+            ChatStreamEvent(kind="complete", completion=ChatCompletion(content="Hello")),
+        )
+
+        class StreamingProvider:
+            async def complete(self, request: ChatCompletionRequest) -> ChatCompletion:
+                raise AssertionError("A streaming provider must not use the completion fallback")
+
+            async def stream(self, request: ChatCompletionRequest):
+                for event in expected:
+                    yield event
+
+        events = [event async for event in stream_chat_completion(StreamingProvider(), self._request())]
+
+        self.assertEqual(events, list(expected))
+
     def setUp(self) -> None:
         self._resolver_patcher = patch(
             "backend.app.providers.chat_provider.resolve_provider_addresses",

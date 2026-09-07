@@ -21,7 +21,7 @@ const {
   isFileMutationAgentTool,
   isReadOnlyAgentTool,
   normalizeAgentToolCallForWorkspace,
-  normalizeAgentToolPath,
+  parseToolPath,
   parseAgentToolCall,
   summarizedAgentToolArguments,
   summarizeAgentToolHistory,
@@ -407,7 +407,7 @@ test('parses bounded read-only tool calls', () => {
 
 test('rejects absolute, traversal, and missing read paths', () => {
   for (const filePath of ['C:\\repo\\app.ts', '../app.ts', '/repo/app.ts', 'src/../app.ts']) {
-    assert.throws(() => normalizeAgentToolPath(filePath), /workspace-relative|unsafe/);
+    assert.throws(() => parseToolPath(filePath), /workspace-relative|unsafe/);
   }
   assert.throws(() => parseAgentToolCall({
     id: 'call-3',

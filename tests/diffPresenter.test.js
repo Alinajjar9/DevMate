@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
-const Module = require('node:module');
 const test = require('node:test');
+const { withVscodeMock } = require('./helpers/withVscodeMock');
 
 const openedDiffs = [];
 const vscode = {
@@ -17,18 +17,10 @@ const vscode = {
   }
 };
 
-const originalModuleLoad = Module._load;
-Module._load = function loadWithVscodeMock(request, parent, isMain) {
-  if (request === 'vscode') {
-    return vscode;
-  }
-  return originalModuleLoad.call(this, request, parent, isMain);
-};
-
 const {
   DIFF_DOCUMENT_SCHEME,
   DiffPresenter
-} = require('../out/workspace/diffPresenter');
+} = withVscodeMock(vscode, () => require('../out/workspace/diffPresenter'));
 
 test.beforeEach(() => {
   openedDiffs.length = 0;

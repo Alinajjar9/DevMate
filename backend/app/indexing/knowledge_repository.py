@@ -7,7 +7,7 @@ import re
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from .knowledge_contracts import (
     INDEX_STATES,
@@ -20,29 +20,24 @@ from .knowledge_contracts import (
     MAX_LEXICAL_QUERY_CHARACTERS,
     MAX_LEXICAL_QUERY_TERMS,
     MAX_LEXICAL_RESULTS,
-    MAX_RELATIVE_PATH_CHARACTERS,
-    MAX_SQLITE_INTEGER,
     MAX_WORKSPACE_KEY_CHARACTERS,
     MAX_WORKSPACE_ROOT_CHARACTERS,
     IndexState,
+)
+from .index_validation import (
+    KnowledgeRepositoryError,
+    KnowledgeRepositoryNotFoundError,
+    KnowledgeRepositoryValidationError,
+    bounded_text,
+    validate_relative_path,
+    positive_integer,
+    nonnegative_integer,
 )
 from ..knowledge_store import KnowledgeStore
 
 
 _INDEX_STATES: frozenset[str] = frozenset(INDEX_STATES)
 _SEARCH_TERM_PATTERN = re.compile(r"[^\W_]+(?:_[^\W_]+)*", re.UNICODE)
-
-
-class KnowledgeRepositoryError(RuntimeError):
-    """Raised when a knowledge-index repository operation cannot complete."""
-
-
-class KnowledgeRepositoryValidationError(KnowledgeRepositoryError):
-    """Raised when repository input violates the local index contract."""
-
-
-class KnowledgeRepositoryNotFoundError(KnowledgeRepositoryError):
-    """Raised when an operation targets an unknown workspace."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,13 +116,13 @@ class KnowledgeRepository:
         *,
         chunking_version: int,
     ) -> WorkspaceRecord:
-        validated_key = _bounded_text(
+        validated_key = bounded_text(
             workspace_key,
             "workspace key",
             MAX_WORKSPACE_KEY_CHARACTERS,
         )
         validated_root = _absolute_root_path(root_path)
-        validated_version = _positive_integer(chunking_version, "chunking version")
+        validated_version = positive_integer(chunking_version, "chunking version")
         try:
             with self._store.transaction() as connection:
                 connection.execute(
@@ -170,7 +165,7 @@ class KnowledgeRepository:
         )
 
     def file_fingerprints(self, workspace_key: str) -> tuple[FileFingerprint, ...]:
-        validated_key = _bounded_text(
+        validated_key = bounded_text(
             workspace_key,
             "workspace key",
             MAX_WORKSPACE_KEY_CHARACTERS,
@@ -202,13 +197,13 @@ class KnowledgeRepository:
         upserts: Sequence[IndexedFile] = (),
         deleted_paths: Sequence[str] = (),
     ) -> IndexWriteResult:
-        validated_key = _bounded_text(
+        validated_key = bounded_text(
             workspace_key,
             "workspace key",
             MAX_WORKSPACE_KEY_CHARACTERS,
         )
         validated_upserts = tuple(_validated_file(file) for file in upserts)
-        validated_deletions = tuple(_relative_path(value) for value in deleted_paths)
+        validated_deletions = tuple(validate_relative_path(value) for value in deleted_paths)
         if len(validated_upserts) + len(validated_deletions) > MAX_FILE_CHANGES_PER_BATCH:
             raise KnowledgeRepositoryValidationError("The file-change batch is too large.")
 
@@ -260,7 +255,7 @@ class KnowledgeRepository:
         )
 
     def delete_workspace(self, workspace_key: str) -> bool:
-        validated_key = _bounded_text(
+        validated_key = bounded_text(
             workspace_key,
             "workspace key",
             MAX_WORKSPACE_KEY_CHARACTERS,
@@ -283,16 +278,16 @@ class KnowledgeRepository:
         index_state: IndexState,
         last_full_scan_at: str | None = None,
     ) -> IndexMetadataRecord:
-        validated_key = _bounded_text(
+        validated_key = bounded_text(
             workspace_key,
             "workspace key",
             MAX_WORKSPACE_KEY_CHARACTERS,
         )
-        validated_version = _positive_integer(chunking_version, "chunking version")
+        validated_version = positive_integer(chunking_version, "chunking version")
         if index_state not in _INDEX_STATES:
             raise KnowledgeRepositoryValidationError("The index state is invalid.")
         validated_scan_time = (
-            _bounded_text(last_full_scan_at, "last full scan", 128)
+            bounded_text(last_full_scan_at, "last full scan", 128)
             if last_full_scan_at is not None
             else None
         )
@@ -337,7 +332,7 @@ class KnowledgeRepository:
         return metadata
 
     def index_metadata(self, workspace_key: str) -> IndexMetadataRecord | None:
-        validated_key = _bounded_text(
+        validated_key = bounded_text(
             workspace_key,
             "workspace key",
             MAX_WORKSPACE_KEY_CHARACTERS,
@@ -375,7 +370,7 @@ class KnowledgeRepository:
         *,
         limit: int,
     ) -> tuple[LexicalSearchResult, ...]:
-        validated_key = _bounded_text(
+        validated_key = bounded_text(
             workspace_key,
             "workspace key",
             MAX_WORKSPACE_KEY_CHARACTERS,
@@ -516,19 +511,19 @@ class KnowledgeRepository:
 def _validated_file(file: IndexedFile) -> IndexedFile:
     if not isinstance(file, IndexedFile):
         raise KnowledgeRepositoryValidationError("The indexed file is invalid.")
-    relative_path = _relative_path(file.relative_path)
-    language_id = _bounded_text(
+    validated_path = validate_relative_path(file.relative_path)
+    language_id = bounded_text(
         file.language_id,
         "language identifier",
         MAX_LANGUAGE_ID_CHARACTERS,
     )
-    content_hash = _bounded_text(
+    content_hash = bounded_text(
         file.content_hash,
         "file content hash",
         MAX_CONTENT_HASH_CHARACTERS,
     )
-    size_bytes = _nonnegative_integer(file.size_bytes, "file size")
-    modified_at = _nonnegative_integer(file.modified_at, "file modification time")
+    size_bytes = nonnegative_integer(file.size_bytes, "file size")
+    modified_at = nonnegative_integer(file.modified_at, "file modification time")
     if len(file.chunks) > MAX_CHUNKS_PER_FILE:
         raise KnowledgeRepositoryValidationError("The indexed file has too many chunks.")
 
@@ -544,7 +539,7 @@ def _validated_file(file: IndexedFile) -> IndexedFile:
         raise KnowledgeRepositoryValidationError("File chunks must use one chunking version.")
 
     return IndexedFile(
-        relative_path=relative_path,
+        relative_path=validated_path,
         language_id=language_id,
         content_hash=content_hash,
         size_bytes=size_bytes,
@@ -556,23 +551,23 @@ def _validated_file(file: IndexedFile) -> IndexedFile:
 def _validated_chunk(chunk: IndexedChunk) -> IndexedChunk:
     if not isinstance(chunk, IndexedChunk):
         raise KnowledgeRepositoryValidationError("The indexed chunk is invalid.")
-    stable_id = _bounded_text(
+    stable_id = bounded_text(
         chunk.stable_id,
         "chunk stable identifier",
         MAX_CHUNK_STABLE_ID_CHARACTERS,
     )
-    ordinal = _nonnegative_integer(chunk.ordinal, "chunk ordinal")
-    start_line = _positive_integer(chunk.start_line, "chunk start line")
-    end_line = _positive_integer(chunk.end_line, "chunk end line")
+    ordinal = nonnegative_integer(chunk.ordinal, "chunk ordinal")
+    start_line = positive_integer(chunk.start_line, "chunk start line")
+    end_line = positive_integer(chunk.end_line, "chunk end line")
     if end_line < start_line:
         raise KnowledgeRepositoryValidationError("The chunk line range is invalid.")
     content = _bounded_content(chunk.content)
-    content_hash = _bounded_text(
+    content_hash = bounded_text(
         chunk.content_hash,
         "chunk content hash",
         MAX_CONTENT_HASH_CHARACTERS,
     )
-    chunking_version = _positive_integer(chunk.chunking_version, "chunking version")
+    chunking_version = positive_integer(chunk.chunking_version, "chunking version")
     return IndexedChunk(
         stable_id=stable_id,
         ordinal=ordinal,
@@ -582,18 +577,6 @@ def _validated_chunk(chunk: IndexedChunk) -> IndexedChunk:
         content_hash=content_hash,
         chunking_version=chunking_version,
     )
-
-
-def _bounded_text(value: object, label: str, maximum: int) -> str:
-    if (
-        not isinstance(value, str)
-        or not value
-        or value != value.strip()
-        or len(value) > maximum
-        or any(ord(character) < 32 for character in value)
-    ):
-        raise KnowledgeRepositoryValidationError(f"The {label} is invalid.")
-    return value
 
 
 def _bounded_content(value: object) -> str:
@@ -608,44 +591,10 @@ def _bounded_content(value: object) -> str:
 
 
 def _absolute_root_path(value: object) -> str:
-    root_path = _bounded_text(value, "workspace root", MAX_WORKSPACE_ROOT_CHARACTERS)
+    root_path = bounded_text(value, "workspace root", MAX_WORKSPACE_ROOT_CHARACTERS)
     if not Path(root_path).is_absolute():
         raise KnowledgeRepositoryValidationError("The workspace root must be absolute.")
     return root_path
-
-
-def _relative_path(value: object) -> str:
-    relative_path = _bounded_text(value, "relative path", MAX_RELATIVE_PATH_CHARACTERS)
-    normalized = relative_path.replace("\\", "/")
-    parsed = PurePosixPath(normalized)
-    if (
-        parsed.is_absolute()
-        or normalized.startswith("//")
-        or re.match(r"^[A-Za-z]:", normalized)
-        or any(part in ("", ".", "..") for part in parsed.parts)
-    ):
-        raise KnowledgeRepositoryValidationError("The relative path is invalid.")
-    return parsed.as_posix()
-
-
-def _positive_integer(value: object, label: str) -> int:
-    if (
-        not isinstance(value, int)
-        or isinstance(value, bool)
-        or not 1 <= value <= MAX_SQLITE_INTEGER
-    ):
-        raise KnowledgeRepositoryValidationError(f"The {label} is invalid.")
-    return value
-
-
-def _nonnegative_integer(value: object, label: str) -> int:
-    if (
-        not isinstance(value, int)
-        or isinstance(value, bool)
-        or not 0 <= value <= MAX_SQLITE_INTEGER
-    ):
-        raise KnowledgeRepositoryValidationError(f"The {label} is invalid.")
-    return value
 
 
 def _fts_query(value: str) -> str | None:

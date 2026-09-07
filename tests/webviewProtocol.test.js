@@ -2,6 +2,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const ts = require('typescript');
+const { createWebviewHarness } = require('./helpers/webviewHarness');
 
 const { parseWebviewMessage } = require('../out/chat/webviewProtocol');
 
@@ -153,21 +155,17 @@ test('browser-side handlers cover every typed extension event', () => {
     path.join(repositoryRoot, 'src', 'chat', 'webviewProtocol.ts'),
     'utf8'
   );
-  const browserSource = fs.readFileSync(
-    path.join(repositoryRoot, 'media', 'webview.js'),
-    'utf8'
-  );
-  const outputUnion = protocolSource.match(
-    /export type ExtensionToWebviewMessage\s*=([\s\S]*?);\s*\r?\ntype PermissionDecision/
-  );
-
-  assert.ok(outputUnion, 'ExtensionToWebviewMessage must remain readable by the drift test.');
-  const typedCommands = [...outputUnion[1].matchAll(/command: '([^']+)'/g)]
-    .map((match) => match[1])
-    .sort();
-  const handledCommands = [...browserSource.matchAll(/message\.command === '([^']+)'/g)]
-    .map((match) => match[1])
-    .sort();
+  const syntax = ts.createSourceFile('webviewProtocol.ts', protocolSource, ts.ScriptTarget.Latest);
+  const outputUnion = syntax.statements.find((node) => ts.isTypeAliasDeclaration(node)
+    && node.name.text === 'ExtensionToWebviewMessage');
+  assert.ok(outputUnion && ts.isUnionTypeNode(outputUnion.type));
+  const typedCommands = outputUnion.type.types.map((eventType) => {
+    assert.ok(ts.isTypeLiteralNode(eventType), 'Each event must declare its command.');
+    const command = eventType.members.find((member) => member.name?.getText(syntax) === 'command');
+    assert.ok(command?.type && ts.isLiteralTypeNode(command.type));
+    return command.type.literal.text;
+  }).sort();
+  const handledCommands = createWebviewHarness().supportedCommands().sort();
 
   assert.deepEqual(handledCommands, typedCommands);
 });

@@ -1,5 +1,6 @@
 import shutil
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
@@ -32,7 +33,7 @@ class ChatMemoryRepositoryTests(unittest.TestCase):
         self.store.close()
         shutil.rmtree(self.temporary_directory)
 
-    def test_round_trips_raw_turns_and_completes_a_pending_turn(self) -> None:
+    def test_replacing_snapshots_completes_and_appends_turns_without_losing_history(self) -> None:
         snapshot = self._snapshot(
             "session-one",
             turns=(
@@ -47,17 +48,16 @@ class ChatMemoryRepositoryTests(unittest.TestCase):
         )
 
         saved = self.repository.save_session(snapshot)
-        completed = self.repository.complete_turn(
-            "session-one",
-            1,
-            assistant="All tests pass.",
-            updated_at_ms=300,
-        )
-        appended = self.repository.append_turn(
-            "session-one",
-            user="Explain the result",
-            updated_at_ms=400,
-        )
+        completed = replace(saved.turns[1], assistant="All tests pass.")
+        updated = self.repository.save_session(ChatSessionSnapshot(
+            session=replace(saved.session, updated_at_ms=300),
+            turns=(saved.turns[0], completed),
+        ))
+        appended = ChatTurnRecord(ordinal=2, user="Explain the result", assistant="")
+        self.repository.save_session(ChatSessionSnapshot(
+            session=replace(updated.session, updated_at_ms=400),
+            turns=(*updated.turns, appended),
+        ))
         loaded = self.repository.load_session("session-one")
 
         self.assertEqual(
@@ -213,17 +213,18 @@ class ChatMemoryRepositoryTests(unittest.TestCase):
                 last_compacted_turn=0,
                 updated_at_ms=300,
             )
+        before_invalid_save = self.repository.load_session("session-one")
         with self.assertRaisesRegex(ChatMemoryValidationError, "JSON"):
-            self.repository.append_turn(
+            self.repository.save_session(self._snapshot(
                 "session-one",
-                user="Question",
-                file_changes_json="{}",
-                updated_at_ms=300,
-            )
+                turns=(ChatTurnRecord(0, "Question", "", file_changes_json="{}"),),
+            ))
+        self.assertEqual(self.repository.load_session("session-one"), before_invalid_save)
         with self.assertRaisesRegex(ChatMemoryNotFoundError, "does not exist"):
-            self.repository.append_turn(
+            self.repository.save_summary(
                 "missing-session",
-                user="Question",
+                ChatSummaryContent(goal="Cannot summarize a missing session"),
+                last_compacted_turn=0,
                 updated_at_ms=300,
             )
 

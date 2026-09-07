@@ -10,10 +10,9 @@ import type { AgentRunController } from '../agent/agentRunController';
 import type { ChatCompactionController } from '../sessions/chatCompaction';
 import {
   collectFileChangeSummary,
-  parseAppliedFileChangeOutcome,
   validateFileChanges
 } from '../workspace/fileTools';
-import type { ValidatedFileChange } from '../workspace/fileTools';
+import type { FileChangeApplicationOutcome, ValidatedFileChange } from '../workspace/fileTools';
 import type { LlmProfile, ReasoningEffort } from '../settings/llmProfiles';
 import { reasoningEffortForProfile } from '../settings/llmProfiles';
 import type { SessionController } from '../sessions/sessionController';
@@ -59,7 +58,7 @@ type RequestChanges = {
     changes: ValidatedFileChange[],
     summary: string,
     signal: AbortSignal
-  ): Promise<string>;
+  ): Promise<FileChangeApplicationOutcome>;
   completedDiffId(filePath: string): string | undefined;
 };
 
@@ -90,6 +89,10 @@ export type ChatRequestDependencies = {
   events: RequestEvents;
   now(): number;
 };
+
+// Preserve the existing UI pacing between status cards; these are not backend timeouts.
+const SCOPE_PREVIEW_DELAY_MS = 250;
+const GENERATING_STATUS_DELAY_MS = 350;
 
 // This controller coordinates one chat request from validation to saved response.
 export class ChatRequestController {
@@ -183,12 +186,12 @@ export class ChatRequestController {
     }
 
     events.postMessage({ command: 'scopeUpdated', scope: collectedScope.info });
-    await this.delay(250);
+    await this.delay(SCOPE_PREVIEW_DELAY_MS);
     if (events.finishCancellation(signal)) {
       return;
     }
     events.postStatus('Generating answer');
-    await this.delay(350);
+    await this.delay(GENERATING_STATUS_DELAY_MS);
     if (events.finishCancellation(signal)) {
       return;
     }
@@ -294,7 +297,8 @@ export class ChatRequestController {
       return;
     }
 
-    let changeOutcome = '';
+    let changeOutcome: FileChangeApplicationOutcome | undefined;
+    let changeNotice = '';
     try {
       // Some providers return final file proposals instead of tools. They use the same safety path.
       const fileChanges = validateFileChanges(outcome.response.changes ?? []);
@@ -306,20 +310,20 @@ export class ChatRequestController {
         );
         if (
           signal.aborted
-          && !changeOutcome.startsWith('Applied file changes:')
+          && changeOutcome.kind !== 'applied'
           && events.finishCancellation(signal)
         ) {
           return;
         }
       }
     } catch (error) {
-      changeOutcome = error instanceof Error
+      changeNotice = error instanceof Error
         ? `Changes were not applied: ${error.message}`
         : 'Changes were not applied because the response was invalid.';
-      events.postStatus(changeOutcome, 'error');
+      events.postStatus(changeNotice, 'error');
     }
 
-    const appliedResponseChanges = parseAppliedFileChangeOutcome(changeOutcome);
+    const appliedResponseChanges = changeOutcome?.kind === 'applied' ? changeOutcome.changes : [];
     // Show changes that were actually applied, not every edit the model proposed.
     const fileChangeSummary = collectFileChangeSummary(
       outcome.toolHistory,
@@ -328,9 +332,11 @@ export class ChatRequestController {
       const diffId = changes.completedDiffId(change.path);
       return diffId ? { ...change, diffId } : change;
     });
-    const changeNotice = changeOutcome.startsWith('Applied file changes:')
-      ? changeOutcome.split('\n\n').slice(1).join('\n\n')
-      : changeOutcome;
+    if (changeOutcome) {
+      changeNotice = changeOutcome.kind === 'applied'
+        ? changeOutcome.notice ?? ''
+        : changeOutcome.message;
+    }
     const response = [
       formatAskResponse(
         outcome.response.answer,

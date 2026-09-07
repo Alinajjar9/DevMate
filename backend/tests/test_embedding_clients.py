@@ -10,7 +10,7 @@ from backend.app.providers.embedding_clients import (
     create_embeddings_url,
 )
 from backend.app.providers.embedding_providers import EmbeddingRequest
-from backend.app.providers.chat_provider import ProviderError
+from backend.app.providers.provider_network import ProviderError
 
 
 class EmbeddingUrlTests(unittest.TestCase):

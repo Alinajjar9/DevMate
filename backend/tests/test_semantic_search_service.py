@@ -14,9 +14,9 @@ from backend.app.indexing.knowledge_repository import IndexedChunk, IndexedFile,
 from backend.app.knowledge_store import KnowledgeStore
 from backend.app.indexing.semantic_search_service import (
     SemanticSearchError,
-    SemanticSearchProfile,
     SemanticSearchService,
 )
+from backend.app.providers.embedding_providers import EmbeddingProfile
 
 
 class QueryEmbeddingProvider:
@@ -63,7 +63,7 @@ class SemanticSearchServiceTests(unittest.IsolatedAsyncioTestCase):
             dimensions=2,
             vector_version=1,
         )
-        self.profile = SemanticSearchProfile(
+        self.profile = EmbeddingProfile(
             profile_id="local-embedding",
             provider="ollama",
             model="nomic-embed-text",

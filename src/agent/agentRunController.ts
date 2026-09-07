@@ -109,6 +109,43 @@ export type AgentRunTransport = {
   waitForRetryDelay(milliseconds: number, signal: AbortSignal): Promise<boolean>;
 };
 
+// This plain object belongs to one invocation. Controller instances never share a run's counters.
+type AgentRunState = {
+  toolHistory: AgentToolStep[];
+  toolUsedFiles: Set<string>;
+  toolSignatures: Map<string, { revision: number; executions: number }>;
+  fileMutationCalls: number;
+  mutationCharacters: number;
+  commandCalls: number;
+  dependencyInstallCalls: number;
+  workspaceRevision: number;
+  forceFinalAnswer: boolean;
+  disableThinking: boolean;
+  emptyResponseRecoveryAttempted: boolean;
+  completedTokenUsage: TokenUsage;
+  checkpointCreatedAt: number;
+};
+
+type AgentRunFailure = Extract<AgentRunOutcome, { kind: 'failed' }>;
+
+type PreparedAgentTurn = {
+  kind: 'ready';
+  request: AskRequest;
+  forceFinalThisTurn: boolean;
+  toolsEnabled: boolean;
+};
+
+type ProviderAttempt = {
+  result: ApiResult<AskResponse>;
+  retriesExhausted: boolean;
+};
+
+type ProviderTurnDecision =
+  | AgentRunFailure
+  | { kind: 'retry' }
+  | { kind: 'answer'; response: AskResponse }
+  | { kind: 'tools'; toolCalls: AgentToolCall[] };
+
 const defaultTransport: AgentRunTransport = {
   ask,
   askStream,
@@ -126,427 +163,454 @@ export class AgentRunController {
     input: AgentRunInput,
     signal: AbortSignal
   ): Promise<AgentRunOutcome> {
+    // Capture the input fields once; later UI changes must not switch this run to another request.
+    const runInput = { ...input };
+    const state = createAgentRunState(runInput.resumedCheckpoint);
+    this.reportToolUsage(state.toolHistory.length, runInput.toolCallLimit);
+    await this.persistCheckpoint(runInput, state);
+
+    // Each pass plans a request, handles the reply, then either finishes or records a tool batch.
+    while (true) {
+      if (signal.aborted) {
+        return { kind: 'cancelled' };
+      }
+      const turn = this.prepareTurn(runInput, state);
+      if (turn.kind === 'failed') {
+        return turn;
+      }
+      const providerAttempt = await this.askWithProviderRetries(
+        runInput.backendUrl,
+        turn.request,
+        runInput.backendToken,
+        runInput.providerApiKey,
+        (runInput.settings.timeoutSeconds + 30) * 1_000,
+        signal,
+        (currentUsage) => {
+          this.reportTokenUsage(addTokenUsage(state.completedTokenUsage, currentUsage));
+        }
+      );
+      if (signal.aborted) {
+        return { kind: 'cancelled' };
+      }
+
+      const decision = await this.handleProviderResult(runInput, state, turn, providerAttempt);
+      if (decision.kind === 'failed') {
+        return decision;
+      }
+      if (decision.kind === 'retry') {
+        continue;
+      }
+      if (decision.kind === 'answer') {
+        if (signal.aborted) {
+          return { kind: 'cancelled' };
+        }
+        return {
+          kind: 'completed',
+          response: decision.response,
+          toolHistory: state.toolHistory,
+          toolUsedFiles: [...state.toolUsedFiles],
+          tokenUsage: state.completedTokenUsage
+        };
+      }
+
+      // Cancellation can arrive while the response-handling phase is yielding.
+      // Do not start a tool after that new asynchronous boundary.
+      if (signal.aborted) {
+        return { kind: 'cancelled' };
+      }
+      const stopped = await this.executeToolBatch(runInput, state, decision.toolCalls, signal);
+      if (stopped) {
+        return stopped;
+      }
+    }
+  }
+
+  private async persistCheckpoint(input: AgentRunInput, state: AgentRunState): Promise<void> {
+    // Store enough state to continue, but bound the tool output and duplicate-call records.
+    await this.dependencies.saveCheckpoint({
+      version: 1,
+      workspaceId: input.workspaceId,
+      sessionId: input.sessionId,
+      question: input.question,
+      mode: input.mode,
+      scopeKind: input.scopeKind,
+      toolHistory: compactAgentToolHistory(state.toolHistory),
+      toolUsedFiles: [...state.toolUsedFiles].slice(-100),
+      toolSignatures: [...state.toolSignatures].slice(-100).map(([signature, value]) => ({
+        signature,
+        revision: value.revision,
+        executions: value.executions
+      })),
+      fileMutationCalls: state.fileMutationCalls,
+      mutationCharacters: state.mutationCharacters,
+      commandCalls: state.commandCalls,
+      dependencyInstallCalls: state.dependencyInstallCalls,
+      workspaceRevision: state.workspaceRevision,
+      forceFinalAnswer: state.forceFinalAnswer,
+      disableThinking: state.disableThinking,
+      emptyResponseRecoveryAttempted: state.emptyResponseRecoveryAttempted,
+      inputTokens: state.completedTokenUsage.inputTokens,
+      outputTokens: state.completedTokenUsage.outputTokens,
+      totalTokens: state.completedTokenUsage.totalTokens,
+      tokenUsageExact: state.completedTokenUsage.exact,
+      createdAt: state.checkpointCreatedAt,
+      updatedAt: Date.now()
+    });
+  }
+
+  private prepareTurn(
+    input: AgentRunInput,
+    state: AgentRunState
+  ): PreparedAgentTurn | AgentRunFailure {
     const {
       question,
       mode,
-      scopeKind,
       scope,
       conversationHistory,
       conversationSummary,
       modelContextWindowTokens,
       maxInputContextTokens,
       settings,
-      backendUrl,
-      backendToken,
-      providerApiKey,
-      toolCallLimit,
-      workspaceId,
-      sessionId,
-      resumedCheckpoint
+      toolCallLimit
     } = input;
-
-    // Restore spent limits too: resuming must not give a run a fresh mutation or command budget.
-    const toolHistory: AgentToolStep[] = resumedCheckpoint
-      ? [...resumedCheckpoint.toolHistory]
-      : [];
-    const toolUsedFiles = new Set<string>(resumedCheckpoint?.toolUsedFiles ?? []);
-    const toolSignatures = new Map<string, { revision: number; executions: number }>(
-      resumedCheckpoint?.toolSignatures.map((item) => [
-        item.signature,
-        { revision: item.revision, executions: item.executions }
-      ]) ?? []
-    );
-    let fileMutationCalls = resumedCheckpoint?.fileMutationCalls ?? 0;
-    let mutationCharacters = resumedCheckpoint?.mutationCharacters ?? 0;
-    let commandCalls = resumedCheckpoint?.commandCalls ?? 0;
-    let dependencyInstallCalls = resumedCheckpoint?.dependencyInstallCalls ?? 0;
-    // A resumed workspace may have changed. Allow a fresh inspection rather than reuse stale evidence.
-    let workspaceRevision = resumedCheckpoint
-      ? Math.min(200, resumedCheckpoint.workspaceRevision + 1)
-      : 0;
-    let forceFinalAnswer = resumedCheckpoint?.forceFinalAnswer ?? false;
-    let disableThinking = resumedCheckpoint?.disableThinking ?? false;
-    let emptyResponseRecoveryAttempted = resumedCheckpoint?.emptyResponseRecoveryAttempted ?? false;
-    let completedTokenUsage: TokenUsage = resumedCheckpoint
-      ? {
-        inputTokens: resumedCheckpoint.inputTokens,
-        outputTokens: resumedCheckpoint.outputTokens,
-        totalTokens: resumedCheckpoint.totalTokens,
-        exact: resumedCheckpoint.tokenUsageExact
-      }
-      : { inputTokens: 0, outputTokens: 0, totalTokens: 0, exact: true };
-    const checkpointCreatedAt = resumedCheckpoint?.createdAt ?? Date.now();
-    // Store enough state to continue, but bound the tool output and duplicate-call records.
-    const persistCheckpoint = async () => {
-      await this.dependencies.saveCheckpoint({
-        version: 1,
-        workspaceId,
-        sessionId,
-        question,
+    // A final pass disables tools so a model cannot keep working beyond the run's limits.
+    const forceFinalThisTurn = state.forceFinalAnswer
+      || state.toolHistory.length >= toolCallLimit;
+    const enabledTools = forceFinalThisTurn
+      ? []
+      : this.enabledAgentTools(
         mode,
-        scopeKind,
-        toolHistory: compactAgentToolHistory(toolHistory),
-        toolUsedFiles: [...toolUsedFiles].slice(-100),
-        toolSignatures: [...toolSignatures].slice(-100).map(([signature, value]) => ({
-          signature,
-          revision: value.revision,
-          executions: value.executions
-        })),
-        fileMutationCalls,
-        mutationCharacters,
-        commandCalls,
-        dependencyInstallCalls,
-        workspaceRevision,
-        forceFinalAnswer,
-        disableThinking,
-        emptyResponseRecoveryAttempted,
-        inputTokens: completedTokenUsage.inputTokens,
-        outputTokens: completedTokenUsage.outputTokens,
-        totalTokens: completedTokenUsage.totalTokens,
-        tokenUsageExact: completedTokenUsage.exact,
-        createdAt: checkpointCreatedAt,
-        updatedAt: Date.now()
-      });
-    };
-    let finalData: AskResponse | undefined;
-    this.reportToolUsage(toolHistory.length, toolCallLimit);
-    await persistCheckpoint();
-
-    // Each pass either finishes the answer or feeds one bounded batch of tool results back to the model.
-    while (!finalData) {
-      if (signal.aborted) {
-        return { kind: 'cancelled' };
-      }
-      // A final pass disables tools so a model cannot keep working beyond the run's limits.
-      const forceFinalThisTurn = forceFinalAnswer
-        || toolHistory.length >= toolCallLimit;
-      const enabledTools = forceFinalThisTurn
-        ? []
-        : this.enabledAgentTools(
-          mode,
-          fileMutationCalls,
-          commandCalls,
-          dependencyInstallCalls
-        );
-      const toolsEnabled = enabledTools.length > 0;
-      const contextPlan = planAskRequestContext({
-        question,
-        scope,
-        conversationHistory,
-        compactedSummary: conversationSummary,
-        toolHistory: compactAgentToolHistory(toolHistory),
-        modelContextWindowTokens,
-        maxInputContextTokens,
-        reservedOutputTokens: settings.maxTokens
-      });
-      // Never silently truncate the question or explicit code just to make the request fit.
-      if (contextPlan.overflowTokens > 0) {
-        return {
-          kind: 'failed',
-          message: 'The required instructions, question, and explicit context exceed the configured input budget. Increase the model context or maximum input setting, reduce maximum output tokens, or remove large attachments.'
-        };
-      }
-      const request: AskRequest = {
-        question,
-        mode,
-        scope: contextPlan.scope,
-        settings,
-        enabledTools,
-        agentEditsEnabled: mode === 'code' || mode === 'debug',
-        forceFinalAnswer: forceFinalThisTurn,
-        disableThinking: disableThinking || forceFinalThisTurn,
-        toolHistory: contextPlan.toolHistory,
-        conversationHistory: contextPlan.conversationHistory,
-        conversationSummary: contextPlan.compactedSummary
-      };
-      this.reportStatus(forceFinalThisTurn
-        ? 'Requesting concise final answer'
-        : toolsEnabled && toolHistory.length > 0
-          ? 'Continuing with project context'
-          : 'Generating answer');
-
-      const providerAttempt = await this.askWithProviderRetries(
-        backendUrl,
-        request,
-        backendToken,
-        providerApiKey,
-        (settings.timeoutSeconds + 30) * 1_000,
-        signal,
-        (currentUsage) => {
-          this.reportTokenUsage(addTokenUsage(completedTokenUsage, currentUsage));
-        }
+        state.fileMutationCalls,
+        state.commandCalls,
+        state.dependencyInstallCalls
       );
-      const result = providerAttempt.result;
-      if (signal.aborted) {
-        return { kind: 'cancelled' };
-      }
-      if (result.status === 'error' || !result.data) {
-        const errorMessage = result.message ?? 'Ask request failed.';
-        if (
-          forceFinalThisTurn
-          && toolHistory.length > 0
-          && result.errorKind !== 'network'
-          && result.errorKind !== 'timeout'
-          && result.errorKind !== 'cancelled'
-        ) {
-          this.reportStatus('Finalizing from completed project-tool work');
-          finalData = {
-            answer: summarizeAgentToolHistory(toolHistory, errorMessage),
-            usedFiles: [...toolUsedFiles],
-            changes: [],
-            toolCalls: []
-          };
-          break;
-        }
-        // Recovery is bounded: first reduce reasoning, then ask for a final answer without tools.
-        const emptyRecovery = emptyResponseRecoveryAction(
-          errorMessage,
-          emptyResponseRecoveryAttempted,
-          forceFinalThisTurn
-        );
-        if (emptyRecovery === 'retry-without-thinking') {
-          emptyResponseRecoveryAttempted = true;
-          disableThinking = true;
-          this.reportStatus('Model returned no final answer — retrying with reasoning disabled');
-          await persistCheckpoint();
-          continue;
-        }
-        if (emptyRecovery === 'force-final') {
-          forceFinalAnswer = true;
-          disableThinking = true;
-          this.reportStatus('Model still returned no final answer — requesting final summary without tools');
-          await persistCheckpoint();
-          continue;
-        }
-        const backendDropped = result.errorKind === 'network';
-        if (backendDropped) {
-          this.reportStatus('Backend connection dropped — recovering local backend');
-          await this.dependencies.recoverBackend();
-        }
-        return {
-          kind: 'failed',
-          message: errorMessage,
-          retryable: providerAttempt.retriesExhausted || backendDropped
-        };
-      }
+    const toolsEnabled = enabledTools.length > 0;
+    const contextPlan = planAskRequestContext({
+      question,
+      scope,
+      conversationHistory,
+      compactedSummary: conversationSummary,
+      toolHistory: compactAgentToolHistory(state.toolHistory),
+      modelContextWindowTokens,
+      maxInputContextTokens,
+      reservedOutputTokens: settings.maxTokens
+    });
+    // Never silently truncate the question or explicit code just to make the request fit.
+    if (contextPlan.overflowTokens > 0) {
+      return {
+        kind: 'failed',
+        message: 'The required instructions, question, and explicit context exceed the configured input budget. Increase the model context or maximum input setting, reduce maximum output tokens, or remove large attachments.'
+      };
+    }
+    const request: AskRequest = {
+      question,
+      mode,
+      scope: contextPlan.scope,
+      settings,
+      enabledTools,
+      agentEditsEnabled: mode === 'code' || mode === 'debug',
+      forceFinalAnswer: forceFinalThisTurn,
+      disableThinking: state.disableThinking || forceFinalThisTurn,
+      toolHistory: contextPlan.toolHistory,
+      conversationHistory: contextPlan.conversationHistory,
+      conversationSummary: contextPlan.compactedSummary
+    };
+    this.reportStatus(forceFinalThisTurn
+      ? 'Requesting concise final answer'
+      : toolsEnabled && state.toolHistory.length > 0
+        ? 'Continuing with project context'
+        : 'Generating answer');
 
-      // Add completed calls once; streamed updates are only previews of the current call's usage.
-      if (result.data.tokenUsage) {
-        completedTokenUsage = addTokenUsage(completedTokenUsage, result.data.tokenUsage);
-        this.reportTokenUsage(completedTokenUsage);
-      }
+    return { kind: 'ready', request, forceFinalThisTurn, toolsEnabled };
+  }
 
-      const toolCalls = result.data.toolCalls ?? [];
+  private async handleProviderResult(
+    input: AgentRunInput,
+    state: AgentRunState,
+    turn: PreparedAgentTurn,
+    providerAttempt: ProviderAttempt
+  ): Promise<ProviderTurnDecision> {
+    const { mode } = input;
+    const { forceFinalThisTurn, toolsEnabled } = turn;
+    const result = providerAttempt.result;
+    if (result.status === 'error' || !result.data) {
+      const errorMessage = result.message ?? 'Ask request failed.';
       if (
-        toolCalls.length === 0
-        && mode !== 'ideas'
-        && isDeferredAgentPlanAnswer(result.data.answer)
+        forceFinalThisTurn
+        && state.toolHistory.length > 0
+        && result.errorKind !== 'network'
+        && result.errorKind !== 'timeout'
+        && result.errorKind !== 'cancelled'
       ) {
-        const deferredMessage = 'The model described future work without performing it.';
-        if (forceFinalThisTurn && toolHistory.length > 0) {
-          this.reportStatus('Finalizing from completed project-tool work');
-          finalData = {
-            answer: summarizeAgentToolHistory(toolHistory, deferredMessage),
-            usedFiles: [...toolUsedFiles],
+        this.reportStatus('Finalizing from completed project-tool work');
+        return {
+          kind: 'answer',
+          response: {
+            answer: summarizeAgentToolHistory(state.toolHistory, errorMessage),
+            usedFiles: [...state.toolUsedFiles],
             changes: [],
             toolCalls: []
-          };
-          break;
-        }
-        if (!forceFinalThisTurn && !emptyResponseRecoveryAttempted) {
-          emptyResponseRecoveryAttempted = true;
-          disableThinking = true;
-          this.reportStatus('Model stopped before acting — retrying with project tools');
-          await persistCheckpoint();
-          continue;
-        }
-        if (!forceFinalThisTurn && toolHistory.length > 0) {
-          forceFinalAnswer = true;
-          this.reportStatus('Model stopped before summarizing — requesting final answer without tools');
-          await persistCheckpoint();
-          continue;
-        }
-        return {
-          kind: 'failed',
-          message: 'The selected model described what it would do but did not call a project tool. Try another model or verify that this endpoint supports tool calling.'
+          }
         };
       }
-      if (toolCalls.length === 0) {
-        finalData = result.data;
+      // Recovery is bounded: first reduce reasoning, then ask for a final answer without tools.
+      const emptyRecovery = emptyResponseRecoveryAction(
+        errorMessage,
+        state.emptyResponseRecoveryAttempted,
+        forceFinalThisTurn
+      );
+      if (emptyRecovery === 'retry-without-thinking') {
+        state.emptyResponseRecoveryAttempted = true;
+        state.disableThinking = true;
+        this.reportStatus('Model returned no final answer — retrying with reasoning disabled');
+        await this.persistCheckpoint(input, state);
+        return { kind: 'retry' };
+      }
+      if (emptyRecovery === 'force-final') {
+        state.forceFinalAnswer = true;
+        state.disableThinking = true;
+        this.reportStatus('Model still returned no final answer — requesting final summary without tools');
+        await this.persistCheckpoint(input, state);
+        return { kind: 'retry' };
+      }
+      const backendDropped = result.errorKind === 'network';
+      if (backendDropped) {
+        this.reportStatus('Backend connection dropped — recovering local backend');
+        await this.dependencies.recoverBackend();
+      }
+      return {
+        kind: 'failed',
+        message: errorMessage,
+        retryable: providerAttempt.retriesExhausted || backendDropped
+      };
+    }
+
+    // Add completed calls once; streamed updates are only previews of the current call's usage.
+    if (result.data.tokenUsage) {
+      state.completedTokenUsage = addTokenUsage(state.completedTokenUsage, result.data.tokenUsage);
+      this.reportTokenUsage(state.completedTokenUsage);
+    }
+
+    const toolCalls = result.data.toolCalls ?? [];
+    if (
+      toolCalls.length === 0
+      && mode !== 'ideas'
+      && isDeferredAgentPlanAnswer(result.data.answer)
+    ) {
+      const deferredMessage = 'The model described future work without performing it.';
+      if (forceFinalThisTurn && state.toolHistory.length > 0) {
+        this.reportStatus('Finalizing from completed project-tool work');
+        return {
+          kind: 'answer',
+          response: {
+            answer: summarizeAgentToolHistory(state.toolHistory, deferredMessage),
+            usedFiles: [...state.toolUsedFiles],
+            changes: [],
+            toolCalls: []
+          }
+        };
+      }
+      if (!forceFinalThisTurn && !state.emptyResponseRecoveryAttempted) {
+        state.emptyResponseRecoveryAttempted = true;
+        state.disableThinking = true;
+        this.reportStatus('Model stopped before acting — retrying with project tools');
+        await this.persistCheckpoint(input, state);
+        return { kind: 'retry' };
+      }
+      if (!forceFinalThisTurn && state.toolHistory.length > 0) {
+        state.forceFinalAnswer = true;
+        this.reportStatus('Model stopped before summarizing — requesting final answer without tools');
+        await this.persistCheckpoint(input, state);
+        return { kind: 'retry' };
+      }
+      return {
+        kind: 'failed',
+        message: 'The selected model described what it would do but did not call a project tool. Try another model or verify that this endpoint supports tool calling.'
+      };
+    }
+    if (toolCalls.length === 0) {
+      return { kind: 'answer', response: result.data };
+    }
+    if (!toolsEnabled) {
+      return {
+        kind: 'failed',
+        message: 'The model exceeded the project-tool limit.'
+      };
+    }
+
+    return { kind: 'tools', toolCalls };
+  }
+
+  private async executeToolBatch(
+    input: AgentRunInput,
+    state: AgentRunState,
+    toolCalls: AgentToolCall[],
+    signal: AbortSignal
+  ): Promise<AgentRunFailure | { kind: 'cancelled' } | undefined> {
+    let executedCalls = 0;
+    for (const rawToolCall of toolCalls) {
+      if (state.toolHistory.length >= input.toolCallLimit) {
         break;
       }
-      if (!toolsEnabled) {
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      const toolCall = workspaceFolder
+        ? normalizeAgentToolCallForWorkspace(rawToolCall, {
+          name: workspaceFolder.name,
+          fsPath: workspaceFolder.uri.scheme === 'file' ? workspaceFolder.uri.fsPath : undefined
+        })
+        : rawToolCall;
+      if (state.toolHistory.some((step) => step.callId === toolCall.id)) {
         return {
           kind: 'failed',
-          message: 'The model exceeded the project-tool limit.'
+          message: 'The model reused an invalid tool-call id.'
         };
       }
 
-      let executedCalls = 0;
-      for (const rawToolCall of toolCalls) {
-        if (toolHistory.length >= toolCallLimit) {
-          break;
-        }
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        const toolCall = workspaceFolder
-          ? normalizeAgentToolCallForWorkspace(rawToolCall, {
-            name: workspaceFolder.name,
-            fsPath: workspaceFolder.uri.scheme === 'file' ? workspaceFolder.uri.fsPath : undefined
-          })
-          : rawToolCall;
-        if (toolHistory.some((step) => step.callId === toolCall.id)) {
-          return {
-            kind: 'failed',
-            message: 'The model reused an invalid tool-call id.'
-          };
-        }
-
-        let signature: string | undefined;
-        try {
-          signature = agentToolCallSignature(toolCall);
-        } catch {
-          // The executor reports the validated tool error back to the model.
-        }
-        let execution: AgentToolExecution;
-        const isFileMutation = isFileMutationAgentTool(toolCall.name);
-        const isCommand = toolCall.name === 'run_command';
-        const isDependencyInstall = toolCall.name === 'install_dependencies';
-        const isReadOnly = isReadOnlyAgentTool(toolCall.name);
-        const priorSignature = signature ? toolSignatures.get(signature) : undefined;
-        // A read may become useful after a file/environment change; repeated mutations stay blocked.
-        const repeatedAtCurrentRevision = priorSignature?.revision === workspaceRevision;
-        if (
-          isReadOnly
-          && consecutiveAgentInspectionCalls(toolHistory) >= MAX_AGENT_CONSECUTIVE_INSPECTIONS
-        ) {
-          execution = this.rejectedToolExecution(
-            toolCall,
-            `DevMate paused the request after ${MAX_AGENT_CONSECUTIVE_INSPECTIONS} consecutive inspection calls without a file change or verification command. Use the gathered evidence and finish concisely.`
-          );
-          forceFinalAnswer = true;
-        } else if (isFileMutation && fileMutationCalls >= MAX_AGENT_FILE_MUTATIONS) {
-          execution = this.rejectedToolExecution(
-            toolCall,
-            'DevMate reached the file-mutation limit for this request.'
-          );
-          forceFinalAnswer = true;
-        } else if (isCommand && commandCalls >= MAX_AGENT_COMMAND_CALLS) {
-          execution = this.rejectedToolExecution(
-            toolCall,
-            'DevMate reached the verification-command limit for this request.'
-          );
-          forceFinalAnswer = true;
-        } else if (
-          isDependencyInstall
-          && dependencyInstallCalls >= MAX_AGENT_DEPENDENCY_INSTALLS
-        ) {
-          execution = this.rejectedToolExecution(
-            toolCall,
-            'DevMate reached the dependency-installation limit for this request.'
-          );
-          forceFinalAnswer = true;
-        } else if (
-          signature
-          && priorSignature
-          && (
-            isFileMutation
-            || isDependencyInstall
-            || (repeatedAtCurrentRevision && (!isReadOnly || priorSignature.executions >= 2))
-          )
-        ) {
-          const repeatedResult = 'This identical tool call was already completed. Use its earlier result.';
-          this.reportToolActivity(
-            toolCall.id,
-            'Skipped repeated tool call',
-            toolCall.name,
-            'error',
-            repeatedResult
-          );
-          execution = {
-            step: {
-              callId: toolCall.id,
-              name: toolCall.name,
-              arguments: (() => {
-                try {
-                  return summarizedAgentToolArguments(parseAgentToolCall(toolCall));
-                } catch {
-                  return boundedAgentToolHistoryArguments(toolCall.name, toolCall.arguments);
-                }
-              })(),
-              result: repeatedResult,
-              isError: true
-            },
-            usedFiles: [],
-            mutationCharacters: 0
-          };
-          forceFinalAnswer = true;
-        } else {
-          execution = await this.toolExecutor.execute(toolCall, {
-            remainingMutationCharacters: MAX_TOTAL_CHANGE_CHARACTERS - mutationCharacters,
-            signal
-          });
-          mutationCharacters += execution.mutationCharacters;
-          // Validation failures do not spend a mutation slot; only actual writes do.
-          if (isFileMutation && execution.mutationApplied) {
-            fileMutationCalls += 1;
-            workspaceRevision += 1;
-          }
-          if (isCommand && execution.commandAttempted) {
-            commandCalls += 1;
-          }
-          if (isDependencyInstall && execution.installAttempted) {
-            dependencyInstallCalls += 1;
-          }
-          if (execution.environmentChanged) {
-            workspaceRevision += 1;
-          }
-          if (
-            isDependencyInstall
-            && execution.step.isError
-            && /permission to install dependencies was denied/i.test(execution.step.result)
-          ) {
-            forceFinalAnswer = true;
-          }
-          if (
-            signature
-            && (!execution.step.isError || execution.commandAttempted || execution.installAttempted)
-          ) {
-            const previous = toolSignatures.get(signature);
-            toolSignatures.set(signature, {
-              revision: workspaceRevision,
-              executions: previous?.revision === workspaceRevision
-                ? previous.executions + 1
-                : 1
-            });
-          }
-        }
-        if (signal.aborted) {
-          return { kind: 'cancelled' };
-        }
-        toolHistory.push(execution.step);
-        this.reportToolUsage(toolHistory.length, toolCallLimit);
-        execution.usedFiles.forEach((file) => toolUsedFiles.add(file));
-        await persistCheckpoint();
-        executedCalls += 1;
+      const execution = await this.executeGuardedToolCall(toolCall, state, signal);
+      if (signal.aborted) {
+        return { kind: 'cancelled' };
       }
+      state.toolHistory.push(execution.step);
+      this.reportToolUsage(state.toolHistory.length, input.toolCallLimit);
+      execution.usedFiles.forEach((file) => state.toolUsedFiles.add(file));
+      await this.persistCheckpoint(input, state);
+      executedCalls += 1;
+    }
 
-      if (executedCalls === 0) {
-        return {
-          kind: 'failed',
-          message: 'The model could not complete a valid project tool call.'
-        };
+    if (executedCalls === 0) {
+      return {
+        kind: 'failed',
+        message: 'The model could not complete a valid project tool call.'
+      };
+    }
+    return undefined;
+  }
+
+  private async executeGuardedToolCall(
+    toolCall: AgentToolCall,
+    state: AgentRunState,
+    signal: AbortSignal
+  ): Promise<AgentToolExecution> {
+    let signature: string | undefined;
+    try {
+      signature = agentToolCallSignature(toolCall);
+    } catch {
+      // The executor reports the validated tool error back to the model.
+    }
+    let execution: AgentToolExecution;
+    const isFileMutation = isFileMutationAgentTool(toolCall.name);
+    const isCommand = toolCall.name === 'run_command';
+    const isDependencyInstall = toolCall.name === 'install_dependencies';
+    const isReadOnly = isReadOnlyAgentTool(toolCall.name);
+    const priorSignature = signature ? state.toolSignatures.get(signature) : undefined;
+    // A read may become useful after a file/environment change; repeated mutations stay blocked.
+    const repeatedAtCurrentRevision = priorSignature?.revision === state.workspaceRevision;
+    if (
+      isReadOnly
+      && consecutiveAgentInspectionCalls(state.toolHistory) >= MAX_AGENT_CONSECUTIVE_INSPECTIONS
+    ) {
+      execution = this.rejectedToolExecution(
+        toolCall,
+        `DevMate paused the request after ${MAX_AGENT_CONSECUTIVE_INSPECTIONS} consecutive inspection calls without a file change or verification command. Use the gathered evidence and finish concisely.`
+      );
+      state.forceFinalAnswer = true;
+    } else if (isFileMutation && state.fileMutationCalls >= MAX_AGENT_FILE_MUTATIONS) {
+      execution = this.rejectedToolExecution(
+        toolCall,
+        'DevMate reached the file-mutation limit for this request.'
+      );
+      state.forceFinalAnswer = true;
+    } else if (isCommand && state.commandCalls >= MAX_AGENT_COMMAND_CALLS) {
+      execution = this.rejectedToolExecution(
+        toolCall,
+        'DevMate reached the verification-command limit for this request.'
+      );
+      state.forceFinalAnswer = true;
+    } else if (
+      isDependencyInstall
+      && state.dependencyInstallCalls >= MAX_AGENT_DEPENDENCY_INSTALLS
+    ) {
+      execution = this.rejectedToolExecution(
+        toolCall,
+        'DevMate reached the dependency-installation limit for this request.'
+      );
+      state.forceFinalAnswer = true;
+    } else if (
+      signature
+      && priorSignature
+      && (
+        isFileMutation
+        || isDependencyInstall
+        || (repeatedAtCurrentRevision && (!isReadOnly || priorSignature.executions >= 2))
+      )
+    ) {
+      const repeatedResult = 'This identical tool call was already completed. Use its earlier result.';
+      this.reportToolActivity(
+        toolCall.id,
+        'Skipped repeated tool call',
+        toolCall.name,
+        'error',
+        repeatedResult
+      );
+      execution = {
+        step: {
+          callId: toolCall.id,
+          name: toolCall.name,
+          arguments: (() => {
+            try {
+              return summarizedAgentToolArguments(parseAgentToolCall(toolCall));
+            } catch {
+              return boundedAgentToolHistoryArguments(toolCall.name, toolCall.arguments);
+            }
+          })(),
+          result: repeatedResult,
+          isError: true
+        },
+        usedFiles: [],
+        mutationCharacters: 0
+      };
+      state.forceFinalAnswer = true;
+    } else {
+      execution = await this.toolExecutor.execute(toolCall, {
+        remainingMutationCharacters: MAX_TOTAL_CHANGE_CHARACTERS - state.mutationCharacters,
+        signal
+      });
+      state.mutationCharacters += execution.mutationCharacters;
+      // Validation failures do not spend a mutation slot; only actual writes do.
+      if (isFileMutation && execution.mutationApplied) {
+        state.fileMutationCalls += 1;
+        state.workspaceRevision += 1;
+      }
+      if (isCommand && execution.commandAttempted) {
+        state.commandCalls += 1;
+      }
+      if (isDependencyInstall && execution.installAttempted) {
+        state.dependencyInstallCalls += 1;
+      }
+      if (execution.environmentChanged) {
+        state.workspaceRevision += 1;
+      }
+      if (
+        isDependencyInstall
+        && execution.step.isError
+        && execution.permissionDenied
+      ) {
+        state.forceFinalAnswer = true;
+      }
+      if (
+        signature
+        && (!execution.step.isError || execution.commandAttempted || execution.installAttempted)
+      ) {
+        const previous = state.toolSignatures.get(signature);
+        state.toolSignatures.set(signature, {
+          revision: state.workspaceRevision,
+          executions: previous?.revision === state.workspaceRevision
+            ? previous.executions + 1
+            : 1
+        });
       }
     }
-    if (signal.aborted) {
-      return { kind: 'cancelled' };
-    }
-    return {
-      kind: 'completed',
-      response: finalData,
-      toolHistory,
-      toolUsedFiles: [...toolUsedFiles],
-      tokenUsage: completedTokenUsage
-    };
+    return execution;
   }
 
   private reportStatus(text: string): void {
@@ -637,7 +701,7 @@ export class AgentRunController {
     timeoutMilliseconds: number,
     signal: AbortSignal,
     onTokenUsage?: (usage: TokenUsage) => void
-  ): Promise<{ result: ApiResult<AskResponse>; retriesExhausted: boolean }> {
+  ): Promise<ProviderAttempt> {
     let retryNumber = 0;
     while (true) {
       this.dependencies.emit({ type: 'stream-reset' });
@@ -755,6 +819,38 @@ export class AgentRunController {
       }
     }
   }
+}
+
+function createAgentRunState(checkpoint?: AgentRunCheckpoint): AgentRunState {
+  // Restore spent limits too: resuming must not give a run a fresh mutation or command budget.
+  return {
+    toolHistory: checkpoint ? [...checkpoint.toolHistory] : [],
+    toolUsedFiles: new Set(checkpoint?.toolUsedFiles ?? []),
+    toolSignatures: new Map(
+      checkpoint?.toolSignatures.map((item) => [
+        item.signature,
+        { revision: item.revision, executions: item.executions }
+      ]) ?? []
+    ),
+    fileMutationCalls: checkpoint?.fileMutationCalls ?? 0,
+    mutationCharacters: checkpoint?.mutationCharacters ?? 0,
+    commandCalls: checkpoint?.commandCalls ?? 0,
+    dependencyInstallCalls: checkpoint?.dependencyInstallCalls ?? 0,
+    // A resumed workspace may have changed. Allow fresh inspection instead of reusing stale evidence.
+    workspaceRevision: checkpoint ? Math.min(200, checkpoint.workspaceRevision + 1) : 0,
+    forceFinalAnswer: checkpoint?.forceFinalAnswer ?? false,
+    disableThinking: checkpoint?.disableThinking ?? false,
+    emptyResponseRecoveryAttempted: checkpoint?.emptyResponseRecoveryAttempted ?? false,
+    completedTokenUsage: checkpoint
+      ? {
+        inputTokens: checkpoint.inputTokens,
+        outputTokens: checkpoint.outputTokens,
+        totalTokens: checkpoint.totalTokens,
+        exact: checkpoint.tokenUsageExact
+      }
+      : { inputTokens: 0, outputTokens: 0, totalTokens: 0, exact: true },
+    checkpointCreatedAt: checkpoint?.createdAt ?? Date.now()
+  };
 }
 
 function estimatedTokenCount(characterCount: number): number {

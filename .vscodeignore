@@ -9,6 +9,10 @@
 .vscode/**
 .vscode-test/**
 release/**
+# Reports, scratch files and the development diary are not extension resources.
+output/**
+tmp/**
+CHANGELOG.md
 # Test databases are local artifacts, not extension resources.
 .devmate-test-*/**
 src/**

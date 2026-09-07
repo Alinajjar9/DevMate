@@ -3,7 +3,7 @@ const test = require('node:test');
 
 const {
   collectFileChangeSummary,
-  parseAppliedFileChangeOutcome,
+  formatFileChangeApplicationOutcome,
   parseFileChangeSummary
 } = require('../out/workspace/fileTools');
 
@@ -27,16 +27,21 @@ test('collects successful file mutations into a compact net summary', () => {
   ]);
 });
 
-test('parses applied provider changes without recording denied proposals', () => {
-  assert.deepEqual(parseAppliedFileChangeOutcome([
+test('formats applied changes without using display text as operation state', () => {
+  assert.equal(formatFileChangeApplicationOutcome({ kind: 'applied', changes: [
+    { kind: 'created', path: 'index.html' },
+    { kind: 'updated', path: 'src/app.ts' }
+  ] }), [
     'Applied file changes:',
     '- Created index.html',
     '- Updated src/app.ts'
-  ].join('\n')), [
-    { kind: 'created', path: 'index.html' },
-    { kind: 'updated', path: 'src/app.ts' }
-  ]);
-  assert.deepEqual(parseAppliedFileChangeOutcome('Proposed file changes were not applied.'), []);
+  ].join('\n'));
+  assert.equal(formatFileChangeApplicationOutcome({
+    kind: 'applied', changes: [{ kind: 'updated', path: 'src/app.ts' }], notice: 'Could not open the editor.'
+  }), 'Applied file changes:\n- Updated src/app.ts\n\nCould not open the editor.');
+  for (const kind of ['denied', 'cancelled']) {
+    assert.equal(formatFileChangeApplicationOutcome({ kind, message: 'Not applied.' }), 'Not applied.');
+  }
 });
 
 test('keeps only bounded safe persisted summary items', () => {

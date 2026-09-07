@@ -8,7 +8,7 @@ import type { LocalBackendManager, ManagedBackendStatus } from '../api/backendMa
 import { EmbeddingProfileController } from '../settings/embeddingProfileController';
 import { getChatWebviewHtml } from './webview';
 import {
-  SqliteSessionRepository
+  BackendSessionRepository
 } from '../sessions/sessionRepository';
 import type {
   ConversationSessionRepository
@@ -20,7 +20,7 @@ import { PermissionController } from '../workspace/permissionController';
 import { LexicalProjectRetriever } from '../projectSearch/projectRetriever';
 import type { ProjectRetriever } from '../projectSearch/projectRetriever';
 import {
-  normalizeRelativeWorkspacePath,
+  toForwardSlashes,
   WorkspaceContext
 } from '../context/workspaceContext';
 import type { CollectedScope, ScopeKind } from '../context/workspaceContext';
@@ -78,7 +78,7 @@ export class DevMateChatViewProvider implements
     projectRetriever: ProjectRetriever = new LexicalProjectRetriever(),
     onEmbeddingProfileChanged: () => void = () => undefined,
     sessionRepository: ConversationSessionRepository =
-      new SqliteSessionRepository(),
+      new BackendSessionRepository(),
     chatCompactionController: Pick<ChatCompactionController, 'compactIfNeeded'> =
       new ChatCompactionController()
   ) {
@@ -574,7 +574,7 @@ export class DevMateChatViewProvider implements
     try {
       await this.assertNoWorkspaceSymlink(
         folder,
-        normalizeRelativeWorkspacePath(relativePath),
+        toForwardSlashes(relativePath),
         false
       );
       const document = await vscode.workspace.openTextDocument(vscode.Uri.file(absolutePath));

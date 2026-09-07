@@ -30,7 +30,7 @@ The extension owns project file access, edits, native diffs, and terminals. The 
 | `src/chat/chatRequestController.ts` | Request preflight, context/compaction coordination, finalization and session updates |
 | `src/chat/webviewProtocol.ts` | Typed UI messages and runtime decoding of incoming commands |
 | `src/chat/webview.ts` | HTML shell, content security policy, packaged asset URLs |
-| `src/agent/agentRunController.ts` | Provider/tool loop, retry and recovery policy, limits, checkpoints, token events |
+| `src/agent/agentRunController.ts` | Per-run state and named request, response/recovery, tool execution and checkpoint phases |
 | `src/agent/toolExecutor.ts` | Validated tool dispatch, reads, navigation, mutations, terminals, dependency installation |
 | `src/agent/agentTools.ts` | Tool parsing, limits, duplicate signatures, retry decisions, bounded tool history |
 | `src/agent/agentToolProtocol.ts` | Shared tool names, groups, and tool-call types |
@@ -43,6 +43,9 @@ The extension owns project file access, edits, native diffs, and terminals. The 
 | `src/workspace/` | File/command policies, permission UI, diffs, and mutation safety |
 | `src/settings/` | Chat/embedding profiles, SecretStorage adapters, settings validation and UI |
 | `src/api/` | Shared contracts, strict response decoders, HTTP client, backend manager, provider URL policy |
+| `src/api/client.ts` | Endpoint calls and authenticated local-backend request policy |
+| `src/api/backendTransport.ts` | HTTP deadlines, cancellation, bounded responses and NDJSON stream framing |
+| `src/api/backendResponseProtocol.ts` | Strict chat, health, error and token-usage decoding; index/memory decoding stays in the adjacent protocol modules |
 | `media/webview.js`, `media/webview.css` | Browser state/rendering and sidebar styles |
 
 ## Python source map
@@ -60,10 +63,12 @@ The extension owns project file access, edits, native diffs, and terminals. The 
 | `backend/app/chat/tool_catalog.py` | Model-facing tool definitions |
 | `backend/app/chat/code_changes.py` | Validation of final structured file changes |
 | `backend/app/chat/text_tool_calls.py` | Strict compatibility parsing for textual tool calls |
-| `backend/app/providers/chat_provider.py` | Chat provider protocol and HTTP implementation, payloads, streaming, URL/DNS checks |
+| `backend/app/providers/chat_provider.py` | Explicit completion/streaming protocols, completion-only adapter, chat payloads and HTTP implementation |
+| `backend/app/providers/provider_network.py` | Shared chat/embedding URL, DNS and IP safety, pinned connections and provider errors |
 | `backend/app/providers/embedding_clients.py` | Ollama/OpenAI-compatible embedding HTTP clients |
-| `backend/app/providers/embedding_providers.py` | Embedding request/result protocol and vector limits |
+| `backend/app/providers/embedding_providers.py` | Shared embedding profile, request/result protocol and vector limits |
 | `backend/app/indexing/` | Index contracts/routes, source/vector repositories, embedding indexing and semantic search |
+| `backend/app/indexing/index_validation.py` | Shared repository input validation and errors; each repository still validates its own calls |
 | `backend/app/memory/` | Chat storage contracts/routes, session repository and summary generation |
 | `backend/run_backend.py` | Standalone runtime entry point |
 
@@ -106,7 +111,7 @@ The source-index path is:
 4. `projectChunking.ts` prefers suitable symbol boundaries and falls back to overlapping line chunks.
 5. `embeddingIndexScheduler.ts` requests bounded embedding work only with an available profile and backend capability.
 
-Automatic Project-scope retrieval uses `SqliteProjectRetriever` in `src/projectSearch/projectRetriever.ts`:
+Automatic Project-scope retrieval uses `HybridProjectRetriever` in `src/projectSearch/projectRetriever.ts`:
 
 - SQLite FTS5/BM25 supplies lexical matches.
 - The embedding service embeds the question only when compatible stored vectors are available. `semantic_search_service.py` scans normalized vectors in pages and retains the best exact cosine matches.
@@ -116,7 +121,7 @@ Automatic Project-scope retrieval uses `SqliteProjectRetriever` in `src/projectS
 
 There is no separate vector database server or approximate-nearest-neighbor index. Vector compatibility includes profile/model/dimensions/version information and source hashes. Remote embedding transfer requires explicit opt-in.
 
-Important distinction: the `search_code` tool in `src/agent/toolExecutor.ts` is a bounded case-insensitive substring scan. It does not call `SqliteProjectRetriever`.
+Important distinction: the `search_code` tool in `src/agent/toolExecutor.ts` is a bounded case-insensitive substring scan. It does not call `HybridProjectRetriever`.
 
 ## Context and memory
 
@@ -160,6 +165,10 @@ Checkpoints are stored separately in VS Code workspace state through `AgentCheck
 
 `src/workspace/fileTools.ts` applies sequential exact replacements. Each old-text match must be unique. `src/workspace/commandTools.ts` validates supported verification commands and builds exact permission signatures. Dependency installation uses a separate restricted path in `ToolExecutor`; it is not general command permission.
 
+File application returns a typed `applied`, `denied`, or `cancelled` outcome. Applied paths and optional editor notices stay separate, so changing display text cannot change which edits appear in the final summary. Verification and dependency installation share one terminal-completion lifecycle, while keeping their own approval and command rules.
+
+Path helper names also state their purpose: `toForwardSlashes` only formats separators, `parseToolPath` validates model tool paths, and `validateMutationPath` applies the stricter write-path policy. Formatting a path is not a security check.
+
 Remote provider URLs must use HTTPS and resolve only to public addresses. Exact loopback services may use HTTP. The provider client rejects unsafe DNS answers and pins requests to a checked address while retaining the original host for HTTP routing and TLS. Strict decoders reject malformed backend success/error data and out-of-order stream events.
 
 These checks reduce risk; they do not turn a local coding extension into a security sandbox. Use a disposable demo workspace and review file/command approvals.
@@ -193,3 +202,5 @@ The complete schema and limits are in `package.json`. Chat profile context windo
 - **Shared API field:** check `src/api/types.ts`, the relevant TypeScript decoder, `backend/app/api/api_models.py`, and Python contract constants.
 
 Automated tests use controlled fixtures and provider doubles. They do not prove every remote model works or replace a visual test in the actual VS Code window. See [known issues and manual checks](known_bugs.md).
+
+`tests/agentRunController.test.js` exercises the public run workflow and its limits, recovery and cancellation. `tests/toolExecutor.test.js` checks terminal execution and permission outcomes. The browser tests execute the real webview script with a small DOM/message harness instead of extracting function text. That harness does not model layout. The scoped `withVscodeMock` helper restores Node's module loader even when an import throws.

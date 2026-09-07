@@ -3,7 +3,7 @@ const test = require('node:test');
 
 const {
   CHAT_MEMORY_CAPABILITY,
-  SqliteSessionRepository,
+  BackendSessionRepository,
   chatMemorySnapshotsToConversationStore,
   conversationSessionToChatMemorySnapshot
 } = require('../out/sessions/sessionRepository');
@@ -24,7 +24,7 @@ test('loads the current workspace list and reconstructs strict ordered sessions'
   }]);
   const second = sessionSnapshot('session-two', 200, []);
   const api = repositoryApi([first, second]);
-  const repository = new SqliteSessionRepository(api);
+  const repository = new BackendSessionRepository(api);
   repository.setBackendAccess(ACCESS);
 
   const result = await repository.loadWorkspace(WORKSPACE.id);
@@ -51,7 +51,7 @@ test('loads the current workspace list and reconstructs strict ordered sessions'
 test('saves only supplied sessions and deletes directly through SQLite', async () => {
   const store = createConversationSessionStore('session-one', 100, WORKSPACE);
   const api = repositoryApi([]);
-  const repository = new SqliteSessionRepository(api);
+  const repository = new BackendSessionRepository(api);
   repository.setBackendAccess(ACCESS);
 
   const saved = await repository.saveSessions(store.sessions);
@@ -68,7 +68,7 @@ test('saves only supplied sessions and deletes directly through SQLite', async (
 
 test('does not call storage without a capable authenticated backend', async () => {
   const api = repositoryApi([]);
-  const repository = new SqliteSessionRepository(api);
+  const repository = new BackendSessionRepository(api);
 
   const unavailable = await repository.loadWorkspace(WORKSPACE.id);
   repository.setBackendAccess({ ...ACCESS, capabilities: ['chat'] });
@@ -87,7 +87,7 @@ test('rejects loaded sessions from a different workspace', async () => {
   snapshot.session.workspaceIdentity = 'file:///C:/other';
   const api = repositoryApi([snapshot]);
   api.listWorkspaceIdentity = WORKSPACE.id;
-  const repository = new SqliteSessionRepository(api);
+  const repository = new BackendSessionRepository(api);
   repository.setBackendAccess(ACCESS);
 
   const result = await repository.loadWorkspace(WORKSPACE.id);
@@ -99,7 +99,7 @@ test('rejects loaded sessions from a different workspace', async () => {
 test('keeps repository failures explicit and retryable', async () => {
   const api = repositoryApi([]);
   api.saveFailure = 'SQLite is busy.';
-  const repository = new SqliteSessionRepository(api);
+  const repository = new BackendSessionRepository(api);
   repository.setBackendAccess(ACCESS);
   const sessions = createConversationSessionStore('session-one', 100, WORKSPACE).sessions;
 

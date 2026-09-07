@@ -380,7 +380,7 @@ export class WorkspaceContext {
       : folder.uri.toString();
     const existingIndex = await this.loadProjectIndex(workspacePath);
     const existingFiles = new Map(
-      existingIndex.files.map((file) => [normalizeRelativeWorkspacePath(file.relativePath), file])
+      existingIndex.files.map((file) => [toForwardSlashes(file.relativePath), file])
     );
     const uris = (await vscode.workspace.findFiles(
       new vscode.RelativePattern(folder, '**/*'),
@@ -396,7 +396,7 @@ export class WorkspaceContext {
     const batchSize = 20;
     for (let offset = 0; offset < uris.length; offset += batchSize) {
       const batchFiles = await Promise.all(uris.slice(offset, offset + batchSize).map(async (uri) => {
-        const relativePath = normalizeRelativeWorkspacePath(
+        const relativePath = toForwardSlashes(
           vscode.workspace.asRelativePath(uri, false)
         );
         try {
@@ -427,7 +427,7 @@ export class WorkspaceContext {
 
     const indexedPaths = new Set(indexedFiles.map((file) => file.relativePath));
     const removedFiles = existingIndex.files.filter(
-      (file) => !indexedPaths.has(normalizeRelativeWorkspacePath(file.relativePath))
+      (file) => !indexedPaths.has(toForwardSlashes(file.relativePath))
     ).length;
     const index: ProjectIndex = {
       ...createEmptyProjectIndex(workspacePath),
@@ -529,7 +529,8 @@ export class WorkspaceContext {
   }
 }
 
-export function normalizeRelativeWorkspacePath(value: string): string {
+// Formatting only. Callers still need the read or mutation path policy before file access.
+export function toForwardSlashes(value: string): string {
   return value.replace(/\\/g, '/');
 }
 

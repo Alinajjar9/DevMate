@@ -18,8 +18,8 @@ import {
   KnowledgeIndexSynchronizer,
   defaultKnowledgeIndexApi
 } from './projectSearch/indexSynchronization';
-import { SqliteProjectRetriever } from './projectSearch/projectRetriever';
-import { SqliteSessionRepository } from './sessions/sessionRepository';
+import { HybridProjectRetriever } from './projectSearch/projectRetriever';
+import { BackendSessionRepository } from './sessions/sessionRepository';
 import { VsCodeWorkspaceIndexSource } from './projectSearch/workspaceIndexSource';
 import {
   VsCodeWorkspaceIndexChangeSource,
@@ -35,7 +35,7 @@ export function activate(context: vscode.ExtensionContext): void {
   ).fsPath;
   let chatViewProvider: DevMateChatViewProvider | undefined;
   let backendCapabilities: readonly string[] = [];
-  const sessionRepository = new SqliteSessionRepository();
+  const sessionRepository = new BackendSessionRepository();
   const workspaceIndexSource = new VsCodeWorkspaceIndexSource();
   const knowledgeIndexSynchronizer = new KnowledgeIndexSynchronizer(
     workspaceIndexSource,
@@ -120,7 +120,7 @@ export function activate(context: vscode.ExtensionContext): void {
     },
     onOutput: (value) => backendOutput.append(value)
   });
-  const projectRetriever = new SqliteProjectRetriever({
+  const projectRetriever = new HybridProjectRetriever({
     getAccess: () => {
       const backendToken = backendManager.requestToken;
       return backendToken

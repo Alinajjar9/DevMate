@@ -25,6 +25,15 @@ export type FileChangeSummaryItem = {
   previousPath?: string;
   diffId?: string;
 };
+
+// Keep the outcome separate from its English notice so wording cannot change control flow.
+export type FileChangeApplicationOutcome =
+  | {
+      kind: 'applied';
+      changes: Array<{ kind: 'created' | 'updated'; path: string }>;
+      notice?: string;
+    }
+  | { kind: 'denied' | 'cancelled'; message: string };
 export type ExactTextReplacement = {
   oldText: string;
   newText: string;
@@ -80,25 +89,15 @@ export function collectFileChangeSummary(
   return [...changes.values()].slice(0, MAX_FILE_CHANGE_SUMMARY_ITEMS);
 }
 
-export function parseAppliedFileChangeOutcome(value: string): FileChangeSummaryItem[] {
-  if (!value.startsWith('Applied file changes:')) {
-    return [];
+export function formatFileChangeApplicationOutcome(outcome: FileChangeApplicationOutcome): string {
+  if (outcome.kind !== 'applied') {
+    return outcome.message;
   }
-  const parsed: FileChangeSummaryItem[] = [];
-  for (const line of value.split(/\r?\n/).slice(1)) {
-    const match = /^- (Created|Updated) (.+)$/.exec(line.trim());
-    if (!match) {
-      continue;
-    }
-    const path = safePath(match[2]);
-    if (path) {
-      parsed.push({
-        kind: match[1] === 'Created' ? 'created' : 'updated',
-        path
-      });
-    }
-  }
-  return parsed.slice(0, MAX_FILE_CHANGE_SUMMARY_ITEMS);
+  const summary = [
+    'Applied file changes:',
+    ...outcome.changes.map((change) => `- ${change.kind === 'created' ? 'Created' : 'Updated'} ${change.path}`)
+  ].join('\n');
+  return outcome.notice ? `${summary}\n\n${outcome.notice}` : summary;
 }
 
 export function parseFileChangeSummary(value: unknown): FileChangeSummaryItem[] {
@@ -107,7 +106,7 @@ export function parseFileChangeSummary(value: unknown): FileChangeSummaryItem[] 
   }
   const parsed: FileChangeSummaryItem[] = [];
   for (const candidate of value.slice(0, MAX_FILE_CHANGE_SUMMARY_ITEMS)) {
-    if (!isRecordS(candidate) || !isKind(candidate.kind)) {
+    if (!isRecord(candidate) || !isKind(candidate.kind)) {
       continue;
     }
     const path = safePath(candidate.path);
@@ -185,7 +184,7 @@ function safePath(value: unknown): string | undefined {
     return undefined;
   }
   try {
-    return normalizeWorkspaceRelativePath(value);
+    return validateMutationPath(value);
   } catch {
     return undefined;
   }
@@ -203,9 +202,6 @@ function isKind(value: unknown): value is FileChangeSummaryKind {
     || value === 'moved';
 }
 
-function isRecordS(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 const windowsReservedNames = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 const windowsInvalidCharacters = /[<>:"|?*]/;
 // Reject both marker formats: neither is real source code that is safe to write to a file.
@@ -237,11 +233,11 @@ export function validateFileChanges(value: unknown): ValidatedFileChange[] {
   const seenPaths = new Set<string>();
   let totalCharacters = 0;
   for (const candidate of value) {
-    if (!isRecordC(candidate) || typeof candidate.path !== 'string' || typeof candidate.content !== 'string') {
+    if (!isNonNullObject(candidate) || typeof candidate.path !== 'string' || typeof candidate.content !== 'string') {
       throw new Error('The backend returned an invalid file change.');
     }
 
-    const path = normalizeWorkspaceRelativePath(candidate.path);
+    const path = validateMutationPath(candidate.path);
     const comparablePath = path.toLocaleLowerCase();
     if (seenPaths.has(comparablePath)) {
       throw new Error(`DevMate proposed ${path} more than once.`);
@@ -274,7 +270,8 @@ export function validateFileChanges(value: unknown): ValidatedFileChange[] {
   return changes;
 }
 
-export function normalizeWorkspaceRelativePath(value: string): string {
+// Mutation paths must be safe to write, not just formatted with forward slashes.
+export function validateMutationPath(value: string): string {
   const path = value.trim();
   if (
     !path
@@ -301,7 +298,8 @@ export function normalizeWorkspaceRelativePath(value: string): string {
   return parts.join('/');
 }
 
-function isRecordC(value: unknown): value is Record<string, unknown> {
+// This older input check intentionally accepts arrays; field validation still follows.
+function isNonNullObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
@@ -361,7 +359,7 @@ export function parseEditFileArguments(value: Record<string, unknown>): {
   }
 
   return {
-    path: normalizeWorkspaceRelativePath(value.path),
+    path: validateMutationPath(value.path),
     replacements
   };
 }
@@ -484,7 +482,7 @@ function parseRelocateFileArguments(
 }
 
 function eligibleLifecyclePath(value: string): string {
-  const path = normalizeWorkspaceRelativePath(value);
+  const path = validateMutationPath(value);
   if (shouldSkipProjectFile(path)) {
     throw new Error(`DevMate will not change the protected or unsupported path ${path}.`);
   }

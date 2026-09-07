@@ -16,7 +16,7 @@ from .chat_memory_repository import (
     ChatSummaryContent,
     ChatSummaryRecord,
 )
-from ..providers.chat_provider import ChatCompletion, ChatCompletionRequest, ChatMessage, ChatProvider
+from ..providers.chat_provider import ChatCompletionRequest, ChatMessage, ChatProvider
 
 
 MAX_CHAT_COMPACTION_INPUT_CHARACTERS = 160_000
@@ -158,12 +158,7 @@ class ChatCompactionService:
             force_final_answer=True,
             disable_thinking=True,
         )
-        completion_value = await provider.complete(completion_request)
-        completion = (
-            completion_value
-            if isinstance(completion_value, ChatCompletion)
-            else ChatCompletion(content=completion_value)
-        )
+        completion = await provider.complete(completion_request)
         if completion.tool_calls or not completion.content:
             raise ChatCompactionModelError(
                 "The model did not return a structured chat summary."
