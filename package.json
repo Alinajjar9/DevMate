@@ -6,6 +6,9 @@
   "publisher": "local",
   "author": "Ali Najjar",
   "private": true,
+  "vsce": {
+    "readmePath": "VSIX_README.md"
+  },
   "engines": {
     "vscode": "^1.96.2",
     "node": ">=20.0.0",
@@ -152,7 +155,7 @@
     "compile": "npm run clean && tsc -p ./ --listEmittedFiles",
     "check": "tsc -p ./ --noEmit",
     "test": "npm run verify",
-    "test:extension": "npm run compile && node --test",
+    "test:extension": "npm run compile && node scripts/run-extension-tests.js",
     "test:backend": "node scripts/run-backend-tests.js",
     "test:contracts": "node scripts/check-contracts.js",
     "verify:out": "node scripts/verify-out.js",

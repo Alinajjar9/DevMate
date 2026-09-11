@@ -1,3 +1,5 @@
+"""Support models that return tool calls as text instead of native function-call fields."""
+
 import json
 import re
 import uuid
@@ -44,6 +46,7 @@ def parse_text_tool_calls(text: str) -> tuple[ChatToolCall, ...] | None:
 
     calls: list[ChatToolCall] = []
     position = 0
+    # Match from the current position: a quoted example inside ordinary prose must not become a call.
     while position < len(text):
         match = _TOOL_CALL_PATTERN.match(text, position)
         if match is None:
@@ -71,6 +74,7 @@ def parse_text_tool_calls(text: str) -> tuple[ChatToolCall, ...] | None:
             )
             parameter_position = parameter_match.end()
 
+        # Textual calls have no provider ID, but later tool results still need a unique matching ID.
         calls.append(
             ChatToolCall(
                 id=f"compat-{uuid.uuid4().hex}",
@@ -86,6 +90,7 @@ def parse_text_tool_calls(text: str) -> tuple[ChatToolCall, ...] | None:
 
 
 def _decode_parameter(name: str, raw_value: str) -> object:
+    """Read JSON values when possible, but preserve indentation in plain file content."""
     value = raw_value
     if value.startswith("\r\n"):
         value = value[2:]

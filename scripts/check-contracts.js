@@ -43,6 +43,7 @@ const projectIndex = read('src/projectIndex.ts');
 const sessions = read('src/sessions.ts');
 const backendMain = read('backend/app/main.py');
 const backendPrompts = read('backend/app/prompts.py');
+const backendToolCatalog = read('backend/app/tool_catalog.py');
 
 const literalContracts = [
   {
@@ -63,7 +64,7 @@ const literalContracts = [
   {
     label: 'AgentToolName',
     typeScript: quotedValues(capture(agentTools, /export const AGENT_TOOL_NAMES\s*=\s*\[([\s\S]*?)\]\s*as const;/, 'TypeScript agent tools')),
-    python: quotedValues(capture(backendMain, /AgentToolName\s*=\s*Literal\[([\s\S]*?)\]/, 'Python agent tools'))
+    python: quotedValues(capture(backendToolCatalog, /AgentToolName\s*=\s*Literal\[([\s\S]*?)\]/, 'Python agent tools'))
   }
 ];
 

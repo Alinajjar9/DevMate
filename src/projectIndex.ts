@@ -1,3 +1,5 @@
+/** Pure lexical retrieval helpers. The index stores text chunks in JSON and needs no embeddings or database. */
+
 import * as path from 'path';
 import type { AskContextItem, ContextSource } from './api/types';
 
@@ -7,7 +9,15 @@ export const MAX_PROJECT_INDEX_FILES = 500;
 export const MAX_PROJECT_INDEX_FILE_CHARACTERS = 40_000;
 export const MAX_PROJECT_CHUNK_CHARACTERS = 3_200;
 export const PROJECT_CHUNK_OVERLAP_CHARACTERS = 320;
-//from projectContext.ts
+
+// BM25 reduces the effect of repeated words and accounts for different chunk lengths.
+const BM25_SATURATION = 1.2;
+const BM25_LENGTH_WEIGHT = 0.75;
+const MAX_QUERY_TERMS = 24;
+const EXACT_FILENAME_BONUS = 8;
+const PARTIAL_FILENAME_BONUS = 4;
+const PATH_MATCH_BONUS = 2;
+
 export const MAX_CONTEXT_CHARACTERS = 20_000;
 export const MAX_PROJECT_CANDIDATES = 200;
 export const MAX_PROJECT_FILE_BYTES = 200_000;
@@ -30,7 +40,6 @@ export type ProjectContextLimits = {
   maxFiles?: number;
   maxCharacters?: number;
 };
-//end
 export type ProjectIndexChunk = {
   id: string;
   startLine: number;
@@ -82,7 +91,6 @@ const retrievalStopWords = new Set([
   'should', 'that', 'the', 'this', 'to', 'what', 'when', 'where', 'which', 'with',
   'would', 'you'
 ]);
-//from projectContext.ts
 const ignoredDirectoryNames = new Set([
   '.git',
   'node_modules',
@@ -167,6 +175,7 @@ const languageByExtension: Record<string, string> = {
   '.yml': 'yaml'
 };
 
+/** Rank whole-file candidates by path and word matches, then fit them into the context budget. */
 export function selectProjectContext(
   candidates: ProjectFileCandidate[],
   question: string,
@@ -214,6 +223,7 @@ export function selectProjectContext(
   return items;
 }
 
+/** Apply shared exclusions for generated files, dependencies, likely secrets and unsupported file types. */
 export function shouldSkipProjectFile(relativePath: string): boolean {
   const normalizedPath = relativePath.replace(/\\/g, '/').toLowerCase();
   const parts = normalizedPath.split('/');
@@ -242,7 +252,7 @@ export function containsBinaryData(bytes: Uint8Array): boolean {
 export function languageIdForPath(filePath: string): string {
   return languageByExtension[path.extname(filePath).toLowerCase()] ?? 'plaintext';
 }
-// merge from context.ts
+/** Trim one context item while recording its original size so the UI can explain any truncation. */
 export function createBoundedContextItem(
   source: ContextSource,
   filePath: string,
@@ -263,7 +273,6 @@ export function createBoundedContextItem(
     truncated: boundedContent.length < content.length
   };
 }
-// merge ends
 function tokenizeQuestion(question: string): string[] {
   const words = question.toLocaleLowerCase().match(/[\p{L}\p{N}_-]+/gu) ?? [];
   return [...new Set(words.filter((word) => word.length >= 2 && !stopWords.has(word)))].slice(0, 16);
@@ -305,7 +314,6 @@ function countOccurrences(content: string, token: string): number {
   }
   return count;
 }
-//end of merge from context.ts
 export function createEmptyProjectIndex(workspacePath: string): ProjectIndex {
   return {
     version: PROJECT_INDEX_VERSION,
@@ -332,6 +340,7 @@ export function createIndexedProjectFile(
   };
 }
 
+/** Split text near line boundaries and record line numbers, with a small overlap to preserve surrounding code. */
 export function splitProjectContent(
   content: string,
   relativePath: string
@@ -383,18 +392,22 @@ export function splitProjectContent(
   return chunks;
 }
 
+/**
+ * Rank chunks with BM25 word matches plus filename/path bonuses, then select at most one excerpt per file.
+ * Explicitly attached files are excluded so they do not consume the context budget twice.
+ */
 export function retrieveProjectChunks(
   index: ProjectIndex,
   question: string,
   limits: ProjectChunkRetrievalLimits = {}
 ): RetrievedProjectChunk[] {
-  const queryTokens = [...new Set(tokenizeForRetrieval(question))].slice(0, 24);
+  const queryTokens = [...new Set(tokenizeForRetrieval(question))].slice(0, MAX_QUERY_TERMS);
   if (queryTokens.length === 0) {
     return [];
   }
 
-  const maxChunks = Math.max(0, Math.min(limits.maxChunks ?? 5, 5));
-  const maxCharacters = Math.max(0, limits.maxCharacters ?? 40_000);
+  const maxChunks = Math.max(0, Math.min(limits.maxChunks ?? MAX_PROJECT_FILES, MAX_PROJECT_FILES));
+  const maxCharacters = Math.max(0, limits.maxCharacters ?? MAX_PROJECT_CONTEXT_CHARACTERS);
   const excludedPaths = new Set(
     [...(limits.excludedFilePaths ?? [])].map(normalizeFilePath)
   );
@@ -445,15 +458,16 @@ export function retrieveProjectChunks(
         );
         const lengthRatio = document.tokens.length / averageLength;
         score += inverseFrequency * (
-          (frequency * 2.2) / (frequency + 1.2 * (0.25 + 0.75 * lengthRatio))
+          (frequency * (BM25_SATURATION + 1))
+          / (frequency + BM25_SATURATION * (1 - BM25_LENGTH_WEIGHT + BM25_LENGTH_WEIGHT * lengthRatio))
         );
       }
       if (fileName === token) {
-        score += 8;
+        score += EXACT_FILENAME_BONUS;
       } else if (fileName.includes(token)) {
-        score += 4;
+        score += PARTIAL_FILENAME_BONUS;
       } else if (normalizedRelativePath.includes(token)) {
-        score += 2;
+        score += PATH_MATCH_BONUS;
       }
     }
 
@@ -483,6 +497,7 @@ export function retrieveProjectChunks(
     if (selected.length >= maxChunks || remainingCharacters <= 0) {
       break;
     }
+    // Prefer coverage across files over several high-scoring excerpts from the same file.
     if (selectedFiles.has(chunk.normalizedFilePath)) {
       continue;
     }
@@ -500,6 +515,7 @@ export function retrieveProjectChunks(
   return selected;
 }
 
+/** Accept only the expected index version and workspace; return undefined so invalid caches can be rebuilt. */
 export function parseStoredProjectIndex(
   value: unknown,
   workspacePath: string

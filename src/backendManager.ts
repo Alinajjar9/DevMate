@@ -1,3 +1,5 @@
+/** Launch and monitor the local backend, plus locate project Python environments for verification commands. */
+
 import { spawn } from 'child_process';
 import type { ChildProcessWithoutNullStreams } from 'child_process';
 import * as path from 'path';
@@ -51,7 +53,7 @@ export type LocalBackendManagerOptions = {
   onOutput: (value: string) => void;
 };
 
-//merge from pythonEnvironment.ts
+// Project Python helpers used when a verification command needs a virtual environment.
 export function isPythonVerificationCommand(command: ValidatedCommand): boolean {
   const executable = command.executable.replace(/\\/g, '/').split('/').at(-1)?.toLocaleLowerCase();
   return executable === 'python'
@@ -97,8 +99,7 @@ export function extractMissingPythonModule(output: string): string | undefined {
   const match = output.match(/ModuleNotFoundError:\s*No module named\s*['"]([A-Za-z0-9_.-]+)['"]/i);
   return match?.[1];
 }
-//merge ends
-
+/** Recognize URLs that automatic process management can serve: plain HTTP on loopback with an explicit port. */
 export function parseLocalBackendTarget(value: string): LocalBackendTarget | undefined {
   try {
     const url = new URL(value);
@@ -304,6 +305,7 @@ export class LocalBackendManager {
     }
   }
 
+  /** Share an in-flight start/restart operation so simultaneous chat and health events cannot launch duplicate processes. */
   private runExclusive(forceRestart: boolean): Promise<boolean> {
     if (this.disposed) {
       return Promise.resolve(false);
@@ -317,6 +319,7 @@ export class LocalBackendManager {
     return this.operation;
   }
 
+  /** Reuse a healthy backend, or try the bundled executable followed by available Python launchers when management is enabled. */
   private async ensureBackend(forceRestart: boolean): Promise<boolean> {
     const backendUrl = this.options.getBackendUrl();
     const target = parseLocalBackendTarget(backendUrl);
@@ -438,6 +441,7 @@ export class LocalBackendManager {
     return false;
   }
 
+  /** Start one candidate, forward its logs, and wait for health checks before declaring the backend ready. */
   private async launchWith(
     launcher: BackendLauncher,
     target: LocalBackendTarget
@@ -551,6 +555,7 @@ export class LocalBackendManager {
     this.scheduleRestart();
   }
 
+  /** Delay recovery and cap repeated failures so a broken installation does not restart forever. */
   private scheduleRestart(): void {
     if (this.disposed || this.restartTimer || !this.options.isManagementEnabled()) {
       return;

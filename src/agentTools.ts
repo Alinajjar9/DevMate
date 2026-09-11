@@ -1,7 +1,13 @@
+/** Shared tool names, argument validation, per-run limits and compact history used by the runner and executor. */
+
+import { createHash } from 'crypto';
 import * as path from 'path';
 import type { ApiResult } from './api/types';
-import { createHash } from 'crypto';
-import { parseRunCommandArguments, MAX_COMMAND_TIMEOUT_SECONDS, MIN_COMMAND_TIMEOUT_SECONDS } from './commandTools';
+import {
+  MAX_COMMAND_TIMEOUT_SECONDS,
+  MIN_COMMAND_TIMEOUT_SECONDS,
+  parseRunCommandArguments
+} from './commandTools';
 import {
   parseCreateFileArguments,
   parseDeleteFileArguments,
@@ -32,7 +38,7 @@ export const MAX_AGENT_TOOL_HISTORY_CHARACTERS = 80_000;
 export const MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS = 3_500;
 export const MAX_AGENT_CONSECUTIVE_INSPECTIONS = 16;
 export const PROVIDER_RETRY_DELAYS_MS = [2_000, 5_000, 10_000] as const;
-//from agentToolSettings.ts
+// Configurable read limits; independent hard limits above bound the whole run.
 export const DEFAULT_READ_FILE_MAX_LINES = 400;
 export const MIN_READ_FILE_MAX_LINES = 100;
 export const MAX_READ_FILE_MAX_LINES = 1_000;
@@ -66,6 +72,7 @@ export type AgentToolSettings = {
   codeNavigationMaxResults: number;
 };
 
+/** Clamp user-configured read limits so missing or out-of-range settings cannot remove the tool bounds. */
 export function normalizeAgentToolSettings(value: Partial<AgentToolSettings>): AgentToolSettings {
   return {
     readFileMaxLines: boundedIntegerSettings(
@@ -118,7 +125,7 @@ function boundedIntegerSettings(
     : fallback;
 }
 
-// merge from retryPolicy.ts
+// Provider recovery stops on malformed responses and exhausted retries.
 const retryableStatusCodes = new Set([429, 502, 503, 504]);
 
 export type EmptyResponseRecoveryAction =
@@ -172,7 +179,7 @@ export function providerRetryDelay(retryNumber: number): number | undefined {
   return PROVIDER_RETRY_DELAYS_MS[retryNumber - 1];
 }
 
-// merge from dependencyTools.ts
+// Dependency recovery accepts a small requirements-file subset, not pip commands.
 const blockedManifestDirectories = new Set([
   '.git', '.venv', 'venv', 'env', 'node_modules', 'vendor', 'dist', 'build', 'target'
 ]);
@@ -216,6 +223,7 @@ export function parseInstallDependenciesArguments(
   };
 }
 
+/** Accept the supported package/version lines only, rejecting pip options, URLs and nested requirements files. */
 export function validatePythonRequirementsManifest(content: string): string[] {
   if (Buffer.byteLength(content, 'utf8') > MAX_DEPENDENCY_MANIFEST_BYTES) {
     throw new Error('The dependency manifest exceeds the 64 KB safety limit.');
@@ -242,7 +250,6 @@ export function validatePythonRequirementsManifest(content: string): string[] {
   }
   return requirements;
 }
-//merge ends
 export function boundedAgentToolCallLimit(value: unknown): number {
   if (typeof value !== 'number' || !Number.isInteger(value)) {
     return DEFAULT_AGENT_TOOL_CALL_LIMIT;
@@ -269,6 +276,7 @@ export function isDeferredAgentPlanAnswer(value: unknown): boolean {
   ).test(normalized);
 }
 
+/** Replace older large results with omission markers while preserving tool-call order and recent evidence. */
 export function compactAgentToolHistory<
   T extends { name: string; result: string }
 >(steps: T[]): T[] {
@@ -286,6 +294,7 @@ export function compactAgentToolHistory<
   return compacted;
 }
 
+// Tool vocabulary and typed arguments shared with the executor and backend contracts.
 export const AGENT_TOOL_NAMES = [
   'list_files',
   'read_file',
@@ -426,6 +435,7 @@ export type ParsedAgentToolCall =
   | { id: string; name: 'install_dependencies'; arguments: InstallDependenciesToolArguments }
   | { id: string; name: 'run_command'; arguments: RunCommandToolArguments };
 
+/** Turn untrusted model arguments into a typed tool call, extracting supported fields and validating paths and values. */
 export function parseAgentToolCall(call: AgentToolCall): ParsedAgentToolCall {
   if (!call.id.trim()) {
     throw new Error('The model returned a tool call without an id.');
@@ -560,7 +570,6 @@ export function parseAgentToolCall(call: AgentToolCall): ParsedAgentToolCall {
     };
   }
 
-
   if (call.name === 'create_file') {
     return {
       id: call.id,
@@ -620,6 +629,7 @@ export function parseAgentToolCall(call: AgentToolCall): ParsedAgentToolCall {
   throw new Error('The model requested an unsupported tool.');
 }
 
+// Normalize model-supplied workspace prefixes before validating relative paths.
 export function normalizeAgentToolCallForWorkspace(
   call: AgentToolCall,
   workspace: AgentWorkspacePathInfo
@@ -667,6 +677,7 @@ export function normalizeAgentToolCallForWorkspace(
   return { ...call, arguments: normalizedArguments };
 }
 
+// History keeps enough identity to detect repeated work without replaying large content.
 export function agentToolCallSignature(call: AgentToolCall): string {
   const parsed = parseAgentToolCall(call);
   if (parsed.name === 'create_file') {
@@ -678,6 +689,7 @@ export function agentToolCallSignature(call: AgentToolCall): string {
   return `${parsed.name}:${JSON.stringify(parsed.arguments)}`;
 }
 
+/** Replace large edit contents with size/hash markers after execution; keep enough detail to describe the action. */
 export function summarizedAgentToolArguments(
   call: ParsedAgentToolCall
 ): Record<string, unknown> {
@@ -761,6 +773,7 @@ export function consecutiveAgentInspectionCalls(
   return inspections;
 }
 
+/** Build a factual fallback answer from recorded tool outcomes when the model cannot provide a final summary. */
 export function summarizeAgentToolHistory(
   steps: Array<{
     name: string;

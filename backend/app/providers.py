@@ -1,7 +1,9 @@
-from dataclasses import dataclass
+"""Handle OpenAI-compatible HTTP requests and normalize complete or streamed replies."""
+
 import json
 import os
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Literal, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
@@ -115,6 +117,10 @@ def _provider_request_parts(
     *,
     stream: bool,
 ) -> tuple[str, dict[str, str], dict[str, object]]:
+    """Translate DevMate settings into the payload expected by the selected endpoint."""
+    if request.provider == "openai" and not request.api_key:
+        raise ProviderError("The selected model profile is missing an API key.", 400)
+
     endpoint = create_chat_completions_url(request.base_url, request.provider)
     headers = {
         "Accept": "text/event-stream" if stream else "application/json",
@@ -142,6 +148,7 @@ def _provider_request_parts(
             for tool in request.tools
         ]
         payload["tool_choice"] = "auto"
+    # Compatible endpoints share the message format but differ in their reasoning controls.
     if request.model.casefold().startswith("nvidia/nemotron-3-"):
         thinking_enabled = (
             not request.force_final_answer
@@ -154,9 +161,7 @@ def _provider_request_parts(
         if thinking_enabled:
             if request.reasoning_effort == "medium":
                 payload["chat_template_kwargs"]["medium_effort"] = True
-            elif request.reasoning_effort == "high":
-                pass
-            else:
+            elif request.reasoning_effort != "high":
                 payload["reasoning_budget"] = _nemotron_reasoning_budget(
                     request.max_tokens,
                     request.reasoning_effort,
@@ -166,6 +171,7 @@ def _provider_request_parts(
         and _supports_openai_reasoning_effort(request)
     ):
         payload["reasoning_effort"] = request.reasoning_effort
+    # Local and third-party endpoints still use the older token-limit field.
     if _is_official_openai_endpoint(request):
         payload["max_completion_tokens"] = request.max_tokens
     else:
@@ -174,6 +180,7 @@ def _provider_request_parts(
 
 
 class OpenAICompatibleProvider:
+    """Keep provider-specific HTTP handling outside the API routes and prompt builder."""
     def __init__(
         self,
         *,
@@ -184,15 +191,14 @@ class OpenAICompatibleProvider:
         self._timeout_seconds = timeout_seconds
 
     async def complete(self, request: ChatCompletionRequest) -> ChatCompletion:
-        if request.provider == "openai" and not request.api_key:
-            raise ProviderError("The selected model profile is missing an API key.", 400)
-
+        """Read a full response and turn network or provider failures into consistent errors."""
         endpoint, headers, payload = _provider_request_parts(request, stream=False)
 
         try:
             async with httpx.AsyncClient(
                 transport=self._transport,
                 timeout=request.timeout_seconds or self._timeout_seconds,
+                # Reject redirects instead of silently changing the configured provider endpoint.
                 follow_redirects=False,
             ) as client:
                 response = await client.post(endpoint, headers=headers, json=payload)
@@ -232,21 +238,13 @@ class OpenAICompatibleProvider:
         return completion
 
     async def stream(self, request: ChatCompletionRequest) -> AsyncIterator[ChatStreamEvent]:
-        if request.provider == "openai" and not request.api_key:
-            raise ProviderError("The selected model profile is missing an API key.", 400)
-
+        """Keep the HTTP connection open while forwarding normalized model events."""
         endpoint, headers, payload = _provider_request_parts(request, stream=True)
-        # Keep the final completion while forwarding small content events to the extension.
-        content_parts: list[str] = []
-        reasoning_parts: list[str] = []
-        streamed_tool_calls: dict[int, dict[str, str]] = {}
-        streamed_usage: ChatTokenUsage | None = None
-        finish_reason: str | None = None
-        tool_announced = False
         try:
             async with httpx.AsyncClient(
                 transport=self._transport,
                 timeout=request.timeout_seconds or self._timeout_seconds,
+                # Reject redirects instead of silently changing the configured provider endpoint.
                 follow_redirects=False,
             ) as client:
                 async with client.stream("POST", endpoint, headers=headers, json=payload) as response:
@@ -259,68 +257,8 @@ class OpenAICompatibleProvider:
                         await response.aread()
                         raise _provider_http_error(response)
 
-                    content_type = response.headers.get("content-type", "").casefold()
-                    if "text/event-stream" not in content_type:
-                        raw_response = await response.aread()
-                        try:
-                            response_payload = json.loads(raw_response)
-                        except (TypeError, ValueError) as error:
-                            raise ProviderError(
-                                "The model provider returned a non-streaming invalid response.",
-                                502,
-                            ) from error
-                        completion = _read_completion(response_payload)
-                        if not completion:
-                            raise ProviderError(
-                                "The model provider returned an empty or invalid answer.",
-                                502,
-                            )
-                        if completion.content:
-                            yield ChatStreamEvent(kind="content", text=completion.content)
-                        yield ChatStreamEvent(kind="complete", completion=completion)
-                        return
-
-                    async for line in response.aiter_lines():
-                        normalized = line.strip()
-                        if not normalized or normalized.startswith(":"):
-                            continue
-                        if not normalized.startswith("data:"):
-                            continue
-                        data = normalized[5:].strip()
-                        if data == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(data)
-                        except ValueError as error:
-                            raise ProviderError(
-                                "The model provider returned an invalid streaming event.",
-                                502,
-                            ) from error
-                        chunk_usage = _read_token_usage(chunk)
-                        if chunk_usage:
-                            streamed_usage = chunk_usage
-                        choice = _first_stream_choice(chunk)
-                        if choice is None:
-                            continue
-                        raw_finish_reason = choice.get("finish_reason")
-                        if isinstance(raw_finish_reason, str) and raw_finish_reason.strip():
-                            finish_reason = raw_finish_reason.strip()[:120]
-                        delta = choice.get("delta")
-                        if not isinstance(delta, dict):
-                            continue
-                        content = delta.get("content")
-                        if isinstance(content, str) and content:
-                            content_parts.append(content)
-                            yield ChatStreamEvent(kind="content", text=content)
-                        reasoning = delta.get("reasoning_content")
-                        if isinstance(reasoning, str) and reasoning:
-                            reasoning_parts.append(reasoning)
-                            yield ChatStreamEvent(kind="reasoning")
-                        raw_tool_calls = delta.get("tool_calls")
-                        _append_stream_tool_calls(streamed_tool_calls, raw_tool_calls)
-                        if isinstance(raw_tool_calls, list) and raw_tool_calls and not tool_announced:
-                            tool_announced = True
-                            yield ChatStreamEvent(kind="tool")
+                    async for event in _read_stream_events(response):
+                        yield event
         except httpx.TimeoutException as error:
             raise ProviderError(
                 "The model provider timed out before returning an answer.",
@@ -332,16 +270,95 @@ class OpenAICompatibleProvider:
                 502,
             ) from error
 
-        completion = _stream_completion(
-            content_parts,
-            reasoning_parts,
-            streamed_tool_calls,
-            finish_reason,
-            streamed_usage,
-        )
-        if not completion:
-            raise ProviderError("The model provider returned an empty or invalid answer.", 502)
+
+async def _read_stream_events(response: httpx.Response) -> AsyncIterator[ChatStreamEvent]:
+    """Forward visible text and progress while also assembling one complete response."""
+    content_type = response.headers.get("content-type", "").casefold()
+    if "text/event-stream" not in content_type:
+        completion = _read_stream_fallback(await response.aread())
+        if completion.content:
+            yield ChatStreamEvent(kind="content", text=completion.content)
         yield ChatStreamEvent(kind="complete", completion=completion)
+        return
+
+    # Accumulate the final response while forwarding content and progress events.
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    streamed_tool_calls: dict[int, dict[str, str]] = {}
+    streamed_usage: ChatTokenUsage | None = None
+    finish_reason: str | None = None
+    tool_announced = False
+    async for chunk in _iter_stream_chunks(response):
+        chunk_usage = _read_token_usage(chunk)
+        if chunk_usage:
+            streamed_usage = chunk_usage
+        choice = _first_stream_choice(chunk)
+        if choice is None:
+            continue
+        raw_finish_reason = choice.get("finish_reason")
+        if isinstance(raw_finish_reason, str) and raw_finish_reason.strip():
+            finish_reason = raw_finish_reason.strip()[:120]
+        delta = choice.get("delta")
+        if not isinstance(delta, dict):
+            continue
+        content = delta.get("content")
+        if isinstance(content, str) and content:
+            content_parts.append(content)
+            yield ChatStreamEvent(kind="content", text=content)
+        # Report that reasoning is happening without forwarding its text to the chat.
+        reasoning = delta.get("reasoning_content")
+        if isinstance(reasoning, str) and reasoning:
+            reasoning_parts.append(reasoning)
+            yield ChatStreamEvent(kind="reasoning")
+        raw_tool_calls = delta.get("tool_calls")
+        _append_stream_tool_calls(streamed_tool_calls, raw_tool_calls)
+        if isinstance(raw_tool_calls, list) and raw_tool_calls and not tool_announced:
+            tool_announced = True
+            yield ChatStreamEvent(kind="tool")
+
+    completion = _stream_completion(
+        content_parts,
+        reasoning_parts,
+        streamed_tool_calls,
+        finish_reason,
+        streamed_usage,
+    )
+    if not completion:
+        raise ProviderError("The model provider returned an empty or invalid answer.", 502)
+    yield ChatStreamEvent(kind="complete", completion=completion)
+
+
+def _read_stream_fallback(raw_response: bytes) -> ChatCompletion:
+    """Accept providers that answer a streaming request with ordinary JSON."""
+    try:
+        payload = json.loads(raw_response)
+    except (TypeError, ValueError) as error:
+        raise ProviderError(
+            "The model provider returned a non-streaming invalid response.",
+            502,
+        ) from error
+    completion = _read_completion(payload)
+    if not completion:
+        raise ProviderError("The model provider returned an empty or invalid answer.", 502)
+    return completion
+
+
+async def _iter_stream_chunks(response: httpx.Response) -> AsyncIterator[object]:
+    """Decode SSE data lines, ignoring keep-alives and stopping at the provider marker."""
+    async for line in response.aiter_lines():
+        normalized = line.strip()
+        if not normalized.startswith("data:"):
+            continue
+        data = normalized[5:].strip()
+        if data == "[DONE]":
+            return
+        try:
+            yield json.loads(data)
+        except ValueError as error:
+            raise ProviderError(
+                "The model provider returned an invalid streaming event.",
+                502,
+            ) from error
 
 
 def _first_stream_choice(value: object) -> dict[str, object] | None:
@@ -357,6 +374,7 @@ def _append_stream_tool_calls(
     target: dict[int, dict[str, str]],
     value: object,
 ) -> None:
+    """Join fragments by call index; argument JSON is incomplete until streaming finishes."""
     if not isinstance(value, list) or len(value) > 3:
         return
     for fallback_index, raw_call in enumerate(value):
@@ -389,6 +407,7 @@ def _stream_completion(
     finish_reason: str | None,
     usage: ChatTokenUsage | None,
 ) -> ChatCompletion | None:
+    """Validate the assembled tool calls and keep only a short reasoning diagnostic."""
     tool_calls: list[ChatToolCall] = []
     for index in sorted(streamed_tool_calls):
         value = streamed_tool_calls[index]
@@ -437,6 +456,7 @@ def _nemotron_reasoning_budget(
     max_tokens: int,
     effort: ReasoningEffort = "auto",
 ) -> int:
+    """Reserve part of the response budget for an answer instead of spending it all on reasoning."""
     divisor = 4 if effort == "low" else 2
     return max(64, min(max_tokens - 64, max_tokens // divisor))
 
@@ -453,6 +473,7 @@ def _is_official_openai_endpoint(request: ChatCompletionRequest) -> bool:
 
 
 def _supports_openai_reasoning_effort(request: ChatCompletionRequest) -> bool:
+    """Only send supported reasoning settings to models at the official OpenAI endpoint."""
     if not _is_official_openai_endpoint(request):
         return False
     model = request.model.casefold()
@@ -476,6 +497,7 @@ def create_chat_completions_url(
     configured_base_url: str | None,
     provider: ProviderName,
 ) -> str:
+    """Accept a provider base URL or full endpoint and reject credentials embedded in the URL."""
     base_url = configured_base_url or (
         DEFAULT_OPENAI_BASE_URL if provider == "openai" else DEFAULT_OLLAMA_BASE_URL
     )
@@ -554,6 +576,7 @@ def _bounded_detail(value: str) -> str | None:
 
 
 def _read_completion(payload: object) -> ChatCompletion | None:
+    """Read the first completion choice and reject malformed tool-call envelopes."""
     if not isinstance(payload, dict):
         return None
     choices = payload.get("choices")
@@ -623,6 +646,7 @@ def _read_completion(payload: object) -> ChatCompletion | None:
 
 
 def _read_token_usage(payload: object) -> ChatTokenUsage | None:
+    """Accept common usage field names and repair missing or inconsistent totals."""
     if not isinstance(payload, dict) or not isinstance(payload.get("usage"), dict):
         return None
     usage = payload["usage"]

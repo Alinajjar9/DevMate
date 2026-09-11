@@ -5,15 +5,11 @@ from typing import get_args
 from fastapi.testclient import TestClient
 
 from backend.app.main import (
-    AGENT_TOOL_DEFINITIONS,
-    AgentToolName,
     MAX_AGENT_TOOL_STEPS,
     MAX_ATTACHED_FILES,
     MAX_CONTEXT_CHARACTERS,
     MAX_PROJECT_CONTEXT_FILES,
     MAX_PROJECT_FILE_CHARACTERS,
-    MUTATING_AGENT_TOOLS,
-    READ_ONLY_AGENT_TOOLS,
     app,
     get_chat_provider,
 )
@@ -24,6 +20,13 @@ from backend.app.providers import (
     ChatTokenUsage,
     ChatToolCall,
     ProviderError,
+)
+
+from backend.app.tool_catalog import (
+    AGENT_TOOL_DEFINITIONS,
+    MUTATING_AGENT_TOOLS,
+    READ_ONLY_AGENT_TOOLS,
+    AgentToolName,
 )
 
 

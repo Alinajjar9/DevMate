@@ -1,3 +1,5 @@
+"""Start the local backend from source or from the packaged executable."""
+
 from __future__ import annotations
 
 import argparse
@@ -15,6 +17,7 @@ def _port(value: str) -> int:
 
 
 def main() -> None:
+    """Bind only to a loopback address so the managed backend is local to this computer."""
     parser = argparse.ArgumentParser(description="Run the local DevMate backend.")
     parser.add_argument("--host", choices=("127.0.0.1", "::1"), default="127.0.0.1")
     parser.add_argument("--port", type=_port, default=8_000)

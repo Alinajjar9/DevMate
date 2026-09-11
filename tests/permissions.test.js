@@ -7,7 +7,6 @@ const {
   parseFilePermissionPolicy,
   parseRememberedCommands,
   permissionBehaviorForAction,
-  permissionPolicyLabel,
   rememberCommand,
   revokeRememberedCommand
 } = require('../out/permissions');
@@ -58,8 +57,8 @@ test('looks up and grants independent create and update permissions', () => {
 
   assert.equal(permissionBehaviorForAction(updated, 'create'), 'allow');
   assert.equal(permissionBehaviorForAction(updated, 'update'), 'ask');
-  assert.equal(permissionPolicyLabel(updated), 'Creates allowed');
-  assert.equal(permissionPolicyLabel(allowActions(updated, ['update'])), 'Changes allowed');
+  assert.equal(permissionBehaviorForAction(allowActions(updated, ['update']), 'update'), 'allow');
+  assert.equal(permissionBehaviorForAction(initial, 'create'), 'ask');
   assert.equal(permissionBehaviorForAction(updated, 'delete'), 'ask');
   assert.equal(permissionBehaviorForAction(updated, 'rename'), 'ask');
   assert.equal(permissionBehaviorForAction(updated, 'move'), 'ask');

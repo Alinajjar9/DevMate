@@ -1,3 +1,5 @@
+/** Validation and immutable updates for saved chats and unfinished runs; VS Code storage is handled by the chat view. */
+
 import type { ConversationTurn, AgentToolStep, AssistantMode } from './api/types';
 import { parseFileChangeSummary } from './fileTools';
 import type { FileChangeSummaryItem } from './fileTools';
@@ -16,7 +18,6 @@ export const MAX_CONVERSATION_TURN_CHARACTERS = 6_000;
 export const MAX_CONVERSATION_HISTORY_CHARACTERS = 20_000;
 export const AGENT_CHECKPOINT_STORAGE_KEY = 'devMate.agentCheckpoint.v1';
 export const MAX_AGENT_CHECKPOINT_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
-//from agentCheckpoint.ts
 export type AgentToolSignatureCheckpoint = {
   signature: string;
   revision: number;
@@ -73,14 +74,14 @@ export type ConversationSessionStore = {
   activeSessionId: string;
   sessions: ConversationSession[];
 };
-//merge from agentCheckpoint.ts
 const toolNames = new Set<AgentToolName>(AGENT_TOOL_NAMES);
 
+// Reject incompatible, oversized, or expired runs before offering Continue.
 export function parseAgentRunCheckpoint(
   value: unknown,
   now = Date.now()
 ): AgentRunCheckpoint | undefined {
-  if (!isRecordCP(value)
+  if (!isRecord(value)
     || value.version !== 1
     || !boundedString(value.workspaceId, 2_048)
     || !boundedString(value.sessionId, 120)
@@ -155,11 +156,11 @@ function parseToolHistory(value: unknown[]): AgentToolStep[] | undefined {
   const callIds = new Set<string>();
   let resultCharacters = 0;
   for (const item of value) {
-    if (!isRecordCP(item)
+    if (!isRecord(item)
       || !boundedString(item.callId, 120)
       || callIds.has(item.callId)
       || !toolNames.has(item.name as AgentToolName)
-      || !isRecordCP(item.arguments)
+      || !isRecord(item.arguments)
       || JSON.stringify(item.arguments).length > 4_000
       || typeof item.result !== 'string'
       || item.result.length > 10_000
@@ -186,7 +187,7 @@ function parseToolSignatures(value: unknown[]): AgentToolSignatureCheckpoint[] |
   const parsed: AgentToolSignatureCheckpoint[] = [];
   const signatures = new Set<string>();
   for (const item of value) {
-    if (!isRecordCP(item)
+    if (!isRecord(item)
       || typeof item.signature !== 'string'
       || !/^[a-f0-9]{64}$/.test(item.signature)
       || signatures.has(item.signature)
@@ -220,26 +221,7 @@ function validTimestamp(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
-function isRecordCP(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-// merge from conversation.ts
-export function appendConversationTurn(
-  history: ConversationTurn[],
-  user: string,
-  assistant: string
-): ConversationTurn[] {
-  const turn = {
-    user: user.trim().slice(0, MAX_CONVERSATION_TURN_CHARACTERS),
-    assistant: assistant.trim().slice(0, MAX_CONVERSATION_TURN_CHARACTERS)
-  };
-  if (!turn.user || !turn.assistant) {
-    return boundConversationHistory(history);
-  }
-  return boundConversationHistory([...history, turn]);
-}
-
+// Replay only recent complete turns; the stored chat can retain a longer history.
 export function boundConversationHistory(history: ConversationTurn[]): ConversationTurn[] {
   const bounded: ConversationTurn[] = [];
   let characters = 0;
@@ -263,7 +245,7 @@ export function boundConversationHistory(history: ConversationTurn[]): Conversat
   }
   return bounded.reverse();
 }
-// merge ends
+
 export function createEmptyConversationSessionStore(): ConversationSessionStore {
   return { version: 2, activeSessionId: '', sessions: [] };
 }
@@ -281,6 +263,7 @@ export function createConversationSessionStore(
   };
 }
 
+/** Validate the saved store and bound its contents before making it available to the chat UI. */
 export function parseConversationSessionStore(value: unknown): ConversationSessionStore | undefined {
   if (!isRecord(value) || value.version !== 2 || !Array.isArray(value.sessions)) {
     return undefined;
@@ -288,6 +271,7 @@ export function parseConversationSessionStore(value: unknown): ConversationSessi
   return parseSessions(value.sessions, value.activeSessionId);
 }
 
+/** Attach the current workspace identity to older workspace-local chats when importing them into the global store. */
 export function migrateLegacyConversationSessionStore(
   value: unknown,
   workspace: ConversationWorkspace
@@ -305,6 +289,7 @@ export function migrateLegacyConversationSessionStore(
   return parseSessions(migrated, value.activeSessionId);
 }
 
+/** Combine stores by session ID, preferring imported entries, then keep the newest sessions within storage limits. */
 export function mergeConversationSessionStores(
   primary: ConversationSessionStore,
   imported: ConversationSessionStore
@@ -379,6 +364,7 @@ export function deleteConversationSession(
   };
 }
 
+/** Complete the matching pending question when possible; otherwise append a new question/answer pair. */
 export function appendConversationSessionTurn(
   store: ConversationSessionStore,
   user: string,
@@ -443,6 +429,7 @@ export function activeConversationSession(
   return store.sessions.find((session) => session.id === store.activeSessionId);
 }
 
+/** Build the smaller model history from saved chat text; file-change UI metadata is not part of the prompt. */
 export function activeSessionModelHistory(store: ConversationSessionStore): ConversationTurn[] {
   return boundConversationHistory(
     (activeConversationSession(store)?.turns ?? []).map((turn) => ({
@@ -535,6 +522,7 @@ function emptySession(
   };
 }
 
+/** Keep recent sessions within both the session count and total text budget to avoid unbounded global storage. */
 function boundStoreSessions(sessions: ConversationSession[]): ConversationSession[] {
   let remaining = MAX_SESSION_STORE_CHARACTERS;
   return sessions.slice(0, MAX_CONVERSATION_SESSIONS).map((session) => {

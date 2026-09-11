@@ -14,7 +14,7 @@ const candidates = process.env.PYTHON
       process.platform === 'win32' ? 'python' : 'python3'
     ];
 
-const arguments = [
+const testArguments = [
   '-m',
   'unittest',
   'discover',
@@ -27,7 +27,7 @@ const arguments = [
 
 for (const candidate of candidates) {
   console.log(`Running backend tests with ${candidate}`);
-  const result = spawnSync(candidate, arguments, {
+  const result = spawnSync(candidate, testArguments, {
     cwd: repositoryRoot,
     stdio: 'inherit'
   });

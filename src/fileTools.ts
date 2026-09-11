@@ -1,18 +1,18 @@
+/** Pure validation and text-edit helpers used before the executor touches workspace files. */
+
 import { shouldSkipProjectFile } from './projectIndex';
 
 export const MAX_EDIT_REPLACEMENTS = 20;
 export const MAX_FILE_CHANGES = 10;
 export const MAX_FILE_CHANGE_CHARACTERS = 200_000;
 export const MAX_TOTAL_CHANGE_CHARACTERS = 500_000;
-//from changeSummary.ts
 export const MAX_FILE_CHANGE_SUMMARY_ITEMS = 20;
-//from fileChanges.ts
+
 export type ValidatedFileChange = {
   path: string;
   content: string;
 };
-//end
-//from changeSummary.ts
+
 export type FileChangeSummaryKind =
   | 'created'
   | 'updated'
@@ -26,7 +26,7 @@ export type FileChangeSummaryItem = {
   previousPath?: string;
   diffId?: string;
 };
-//end
+
 export type ExactTextReplacement = {
   oldText: string;
   newText: string;
@@ -36,13 +36,14 @@ export type RelocateFileToolArguments = {
   path: string;
   newPath: string;
 };
-//from changeSummary.ts
+
 type FileChangeToolStep = {
   name: string;
   arguments: Record<string, unknown>;
   isError: boolean;
 };
 
+// Collapse successful operations into the final per-file changes shown in the chat.
 export function collectFileChangeSummary(
   steps: FileChangeToolStep[],
   additionalChanges: FileChangeSummaryItem[] = []
@@ -110,7 +111,7 @@ export function parseFileChangeSummary(value: unknown): FileChangeSummaryItem[] 
   }
   const parsed: FileChangeSummaryItem[] = [];
   for (const candidate of value.slice(0, MAX_FILE_CHANGE_SUMMARY_ITEMS)) {
-    if (!isRecordS(candidate) || !isKind(candidate.kind)) {
+    if (!isRecord(candidate) || !isFileChangeKind(candidate.kind)) {
       continue;
     }
     const path = safePath(candidate.path);
@@ -136,29 +137,29 @@ function safeDiffId(value: unknown): string | undefined {
 }
 
 function applyCreated(changes: Map<string, FileChangeSummaryItem>, path: string): void {
-  changes.set(key(path), { kind: 'created', path });
+  changes.set(fileChangePathKey(path), { kind: 'created', path });
 }
 
 function applyUpdated(changes: Map<string, FileChangeSummaryItem>, path: string): void {
-  const existing = changes.get(key(path));
+  const existing = changes.get(fileChangePathKey(path));
   if (existing?.kind === 'created' || existing?.kind === 'renamed' || existing?.kind === 'moved') {
     return;
   }
-  changes.set(key(path), { kind: 'updated', path });
+  changes.set(fileChangePathKey(path), { kind: 'updated', path });
 }
 
 function applyDeleted(changes: Map<string, FileChangeSummaryItem>, path: string): void {
-  const existing = changes.get(key(path));
+  const existing = changes.get(fileChangePathKey(path));
   if (existing?.kind === 'created') {
-    changes.delete(key(path));
+    changes.delete(fileChangePathKey(path));
     return;
   }
   if ((existing?.kind === 'renamed' || existing?.kind === 'moved') && existing.previousPath) {
-    changes.delete(key(path));
-    changes.set(key(existing.previousPath), { kind: 'deleted', path: existing.previousPath });
+    changes.delete(fileChangePathKey(path));
+    changes.set(fileChangePathKey(existing.previousPath), { kind: 'deleted', path: existing.previousPath });
     return;
   }
-  changes.set(key(path), { kind: 'deleted', path });
+  changes.set(fileChangePathKey(path), { kind: 'deleted', path });
 }
 
 function applyRelocated(
@@ -167,20 +168,20 @@ function applyRelocated(
   newPath: string,
   kind: 'renamed' | 'moved'
 ): void {
-  const existing = changes.get(key(path));
-  changes.delete(key(path));
+  const existing = changes.get(fileChangePathKey(path));
+  changes.delete(fileChangePathKey(path));
   if (existing?.kind === 'created') {
-    changes.set(key(newPath), { kind: 'created', path: newPath });
+    changes.set(fileChangePathKey(newPath), { kind: 'created', path: newPath });
     return;
   }
   const previousPath = existing?.previousPath ?? path;
-  if (key(previousPath) === key(newPath)) {
+  if (fileChangePathKey(previousPath) === fileChangePathKey(newPath)) {
     if (existing?.kind === 'updated') {
-      changes.set(key(newPath), { kind: 'updated', path: newPath });
+      changes.set(fileChangePathKey(newPath), { kind: 'updated', path: newPath });
     }
     return;
   }
-  changes.set(key(newPath), { kind, path: newPath, previousPath });
+  changes.set(fileChangePathKey(newPath), { kind, path: newPath, previousPath });
 }
 
 function safePath(value: unknown): string | undefined {
@@ -194,11 +195,11 @@ function safePath(value: unknown): string | undefined {
   }
 }
 
-function key(value: string): string {
+function fileChangePathKey(value: string): string {
   return process.platform === 'win32' ? value.toLocaleLowerCase() : value;
 }
 
-function isKind(value: unknown): value is FileChangeSummaryKind {
+function isFileChangeKind(value: unknown): value is FileChangeSummaryKind {
   return value === 'created'
     || value === 'updated'
     || value === 'deleted'
@@ -206,12 +207,6 @@ function isKind(value: unknown): value is FileChangeSummaryKind {
     || value === 'moved';
 }
 
-function isRecordS(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-//end of merge from changeSummary.ts
-
-//from fileChanges.ts
 const windowsReservedNames = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 const windowsInvalidCharacters = /[<>:"|?*]/;
 const legacyHistoryMarker = /^\[(?:omitted after execution: )?\d+ characters, sha256 [0-9a-f]{16}\]$/i;
@@ -230,6 +225,7 @@ export function isAgentHistoryOmissionMarker(value: string): boolean {
   return legacyHistoryMarker.test(value.trim()) || internalHistoryMarker.test(value.trim());
 }
 
+/** Validate full-file proposals and their combined size. Filesystem checks and permission belong to the executor. */
 export function validateFileChanges(value: unknown): ValidatedFileChange[] {
   if (!Array.isArray(value)) {
     throw new Error('The backend returned an invalid file-change list.');
@@ -242,7 +238,7 @@ export function validateFileChanges(value: unknown): ValidatedFileChange[] {
   const seenPaths = new Set<string>();
   let totalCharacters = 0;
   for (const candidate of value) {
-    if (!isRecordC(candidate) || typeof candidate.path !== 'string' || typeof candidate.content !== 'string') {
+    if (!isObject(candidate) || typeof candidate.path !== 'string' || typeof candidate.content !== 'string') {
       throw new Error('The backend returned an invalid file change.');
     }
 
@@ -257,6 +253,7 @@ export function validateFileChanges(value: unknown): ValidatedFileChange[] {
     if (candidate.content.includes('\0')) {
       throw new Error(`DevMate will not write binary content to ${path}.`);
     }
+    // Compacted tool history contains placeholders for old content; those placeholders must never become source files.
     if (isAgentHistoryOmissionMarker(candidate.content)) {
       throw new Error(
         `DevMate rejected an internal tool-history marker as the contents of ${path}. `
@@ -279,6 +276,7 @@ export function validateFileChanges(value: unknown): ValidatedFileChange[] {
   return changes;
 }
 
+/** Reject absolute paths, parent traversal and ambiguous Windows names before normalizing separators. */
 export function normalizeWorkspaceRelativePath(value: string): string {
   const path = value.trim();
   if (
@@ -306,7 +304,8 @@ export function normalizeWorkspaceRelativePath(value: string): string {
   return parts.join('/');
 }
 
-function isRecordC(value: unknown): value is Record<string, unknown> {
+// Keep the legacy complete-file response check separate from strict argument records.
+function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
@@ -390,6 +389,10 @@ export function parseMoveFileArguments(value: Record<string, unknown>): Relocate
   return parseRelocateFileArguments(value, 'move_file');
 }
 
+/**
+ * Apply replacements in order, requiring one match each and preserving the file's line endings.
+ * Ambiguous, missing or unchanged replacements throw so the model must read the current code again.
+ */
 export function applyExactReplacements(
   content: string,
   replacements: ExactTextReplacement[]
@@ -422,6 +425,7 @@ export function applyExactReplacements(
   return updated;
 }
 
+/** Allow LF/CRLF differences, but avoid fuzzy matching that could silently edit the wrong code. */
 function findReplacementMatch(
   content: string,
   oldText: string

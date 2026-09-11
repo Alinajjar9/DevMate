@@ -1,3 +1,5 @@
+"""Validate full-file change proposals returned when agent editing tools are disabled."""
+
 import json
 import re
 from dataclasses import dataclass
@@ -19,6 +21,7 @@ class CodeChangeParseError(ValueError):
 
 
 def parse_code_change_response(value: str) -> tuple[str, list[CodeFileChange]]:
+    """Read a summary and bounded file proposals; actual workspace writes happen in the extension."""
     serialized = _strip_optional_code_fence(value.strip())
     try:
         payload = json.loads(serialized)
@@ -52,6 +55,7 @@ def parse_code_change_response(value: str) -> tuple[str, list[CodeFileChange]]:
             raise CodeChangeParseError("A proposed file change is missing its path or content.")
 
         normalized_path = _normalize_relative_path(path)
+        # Treat casing differences as the same file to avoid conflicting proposals on Windows.
         comparable_path = normalized_path.casefold()
         if comparable_path in seen_paths:
             raise CodeChangeParseError("The model proposed the same file more than once.")
@@ -70,6 +74,7 @@ def parse_code_change_response(value: str) -> tuple[str, list[CodeFileChange]]:
 
 
 def _normalize_relative_path(value: str) -> str:
+    """Reject absolute paths and traversal segments before the extension checks the real target."""
     path = value.strip()
     if (
         not path

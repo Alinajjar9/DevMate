@@ -1,10 +1,12 @@
 import { randomBytes } from 'crypto';
 import * as vscode from 'vscode';
 
+// Keep the static shell here; browser behavior and theme styles live in media/.
 export function getChatWebviewHtml(
   webview: vscode.Webview,
   extensionUri: vscode.Uri
 ): string {
+  // The content security policy permits only this generated page's script, rather than arbitrary inline scripts.
   const nonce = createNonce();
   const stylesheetUri = webview.asWebviewUri(
     vscode.Uri.joinPath(extensionUri, 'media', 'webview.css')
@@ -419,6 +421,6 @@ export function getChatWebviewHtml(
 }
 
 function createNonce(): string {
+  // Each render authorizes only its own packaged script through the CSP nonce.
   return randomBytes(24).toString('base64');
 }
-

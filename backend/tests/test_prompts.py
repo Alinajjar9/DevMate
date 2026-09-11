@@ -2,6 +2,7 @@ import unittest
 from types import SimpleNamespace
 
 from backend.app.prompts import MODE_INSTRUCTIONS, build_chat_messages
+from backend.app.providers import ChatMessage, ChatToolCall
 
 
 class PromptTests(unittest.TestCase):
@@ -94,6 +95,82 @@ class PromptTests(unittest.TestCase):
             "system", "user", "assistant", "user"
         ])
         self.assertIn("Okay, do it", messages[3].content)
+
+
+    def test_tool_history_preserves_call_arguments_results_and_error_order(self) -> None:
+        messages = build_chat_messages(
+            mode="code",
+            scope_type="project",
+            question="  Fix this  ",
+            context_items=[],
+            conversation_turns=[SimpleNamespace(user="Earlier", assistant="Understood")],
+            tool_steps=[
+                SimpleNamespace(
+                    callId="read-1",
+                    name="read_file",
+                    arguments={"path": "src/app.py", "startLine": 2},
+                    result="return answer",
+                    isError=False,
+                ),
+                SimpleNamespace(
+                    callId="edit-1",
+                    name="edit_file",
+                    arguments={"path": "src/app.py", "replacements": []},
+                    result="No matching text",
+                    isError=True,
+                ),
+            ],
+        )
+
+        self.assertEqual(messages[1:], (
+            ChatMessage(role="user", content="Earlier"),
+            ChatMessage(role="assistant", content="Understood"),
+            ChatMessage(
+                role="user",
+                content=(
+                    "Mode: code\nScope: project\n\nQuestion:\nFix this\n\n"
+                    "Project context:\nNo source files were selected for this request."
+                ),
+            ),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=(ChatToolCall(
+                    id="read-1",
+                    name="read_file",
+                    arguments='{"path":"src/app.py","startLine":2}',
+                ),),
+            ),
+            ChatMessage(role="tool", content="return answer", tool_call_id="read-1"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=(ChatToolCall(
+                    id="edit-1",
+                    name="edit_file",
+                    arguments='{"path":"src/app.py","replacements":[]}',
+                ),),
+            ),
+            ChatMessage(role="tool", content="Tool error: No matching text", tool_call_id="edit-1"),
+        ))
+
+    def test_forced_final_answer_takes_precedence_over_tool_and_recovery_guidance(self) -> None:
+        for tools_enabled in (False, True):
+            for disable_thinking in (False, True):
+                with self.subTest(tools_enabled=tools_enabled, disable_thinking=disable_thinking):
+                    system_message = build_chat_messages(
+                        mode="debug",
+                        scope_type="project",
+                        question="Finish",
+                        context_items=[],
+                        tools_enabled=tools_enabled,
+                        disable_thinking=disable_thinking,
+                        force_final_answer=True,
+                    )[0].content
+
+                    self.assertIn("No tools are available now", system_message)
+                    self.assertNotIn("You can use the tools enabled", system_message)
+                    self.assertNotIn("Thinking is disabled for recovery", system_message)
 
 
 if __name__ == "__main__":

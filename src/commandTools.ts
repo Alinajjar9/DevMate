@@ -1,3 +1,5 @@
+/** Parse the limited verification-command format and prepare terminal output for the chat and model. */
+
 import { createHash } from 'crypto';
 
 export const DEFAULT_COMMAND_TIMEOUT_SECONDS = 300;
@@ -15,7 +17,6 @@ export type ValidatedCommand = {
   cwd: string;
   timeoutSeconds: number;
 };
-// from errorContext.ts
 export type CapturedTerminalError = {
   command: string;
   cwd: string;
@@ -33,6 +34,10 @@ const blockedWorkingDirectories = new Set([
   '.cache', '__pycache__', '.next', 'target', 'vendor'
 ]);
 
+/**
+ * Remove terminal controls and redact common credential patterns before keeping captured failures.
+ * This is a best-effort filter; it cannot recognize every possible secret format.
+ */
 export function sanitizeCapturedTerminalText(value: string): string {
   const sanitized = sanitizeCommandOutput(value)
     .replace(
@@ -55,7 +60,7 @@ export function sanitizeCapturedTerminalText(value: string): string {
       /\b(?:sk|nvapi)-[a-z0-9_-]{12,}\b/gi,
       '[REDACTED]'
     );
-  return tailError(sanitized, MAX_CAPTURED_TERMINAL_OUTPUT_CHARACTERS);
+  return tail(sanitized, MAX_CAPTURED_TERMINAL_OUTPUT_CHARACTERS);
 }
 
 export function formatCapturedTerminalErrors(
@@ -84,14 +89,7 @@ export function formatCapturedTerminalErrors(
   return `Recent failed workspace terminal commands (${selected.length}, newest first):\n\n${sections.join('\n\n')}`;
 }
 
-function tailError(value: string, maximum: number): string {
-  if (value.length <= maximum) {
-    return value;
-  }
-  const marker = '[Earlier output omitted]\n';
-  return `${marker}${value.slice(-(maximum - marker.length))}`;
-}
-
+/** Accept structured arguments or a simple command string, then enforce the verification-command registry. */
 export function parseRunCommandArguments(value: Record<string, unknown>): ValidatedCommand {
   let executableValue = value.executable;
   let argumentsValue = value.args ?? value.arguments;
@@ -122,6 +120,7 @@ export function parseRunCommandArguments(value: Record<string, unknown>): Valida
   return { executable, args, cwd, timeoutSeconds };
 }
 
+/** Identify approval by executable, arguments and working directory, so approval does not extend to another command. */
 export function commandSignature(command: ValidatedCommand): string {
   const executable = process.platform === 'win32'
     ? command.executable.toLocaleLowerCase()
@@ -155,6 +154,7 @@ export function boundedModelCommandOutput(value: string): string {
   return tail(sanitizeCommandOutput(value), MAX_MODEL_COMMAND_OUTPUT_CHARACTERS);
 }
 
+/** Restrict model requests to known check/build/test forms. These checks do not sandbox project scripts. */
 function validateVerificationCommand(executable: string, args: string[]): void {
   const name = commandName(executable);
   const fileToolGuidance = filesystemCommandGuidance(name);
@@ -319,6 +319,7 @@ function parseArguments(value: unknown): string[] {
   });
 }
 
+/** Split the small supported command syntax without invoking a shell or expanding shell expressions. */
 function parseSimpleCommandText(value: string): string[] {
   if (!value.trim() || value.length > 2_000 || /[\0\r\n]/.test(value)) {
     throw new Error('The command text is empty or exceeds the safe size limit.');

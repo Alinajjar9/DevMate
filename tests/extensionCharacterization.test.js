@@ -1,274 +1,106 @@
 const assert = require('node:assert/strict');
-const Module = require('node:module');
-const path = require('node:path');
 const test = require('node:test');
+const { createVscodeHarness, withoutDelays } = require('./helpers/vscode');
+const harness = createVscodeHarness();
+const { vscode, folder, context, setFile } = harness;
+const { DevMateChatViewProvider } = harness.load('chatViewProvider');
+const { WorkspaceContext } = harness.load('workspaceContext');
+const { ToolExecutor } = harness.load('toolExecutor');
+const { createConversationSessionStore, appendConversationSessionTurn } = require('../out/sessions');
+const workspace = { id: folder.uri.toString().toLowerCase(), name: folder.name };
+const backend = { start: async () => true, status: { detail: 'online', state: 'running' } };
+const events = { postMessage() {}, postStatus() {} };
 
-const configuration = new Map([
-  ['backendUrl', 'http://127.0.0.1:8000'],
-  ['maxTokens', 2048],
-  ['temperature', 0.35],
-  ['toolCallLimit', 16],
-  ['requestTimeoutSeconds', 1900]
-]);
-
-function createUri(fsPath, relativePath) {
-  const normalized = fsPath.replace(/\\/g, '/');
-  return {
-    scheme: 'file',
-    fsPath,
-    path: normalized,
-    relativePath,
-    toString() {
-      return `file:///${normalized.replace(/^\/+/, '')}`;
-    }
-  };
+function makeExecutor(extensionContext = context(), overrides = {}) {
+  return new ToolExecutor(extensionContext, new WorkspaceContext(extensionContext, events), {
+    ...events,
+    postSettingsState() {},
+    postPermissionPolicyState() {},
+    getActiveSignal: () => undefined,
+    getAgentToolSettings: () => ({
+      readFileMaxLines: 400,
+      listFilesMaxResults: 200,
+      searchCodeMaxResults: 50,
+      diagnosticsMaxResults: 100,
+      terminalErrorsMaxResults: 5,
+      codeNavigationMaxResults: 100
+    }),
+    ...overrides
+  });
 }
 
-const workspaceFolder = {
-  name: 'Project A',
-  uri: createUri('C:\\repo')
-};
-
-const vscode = {
-  Uri: {
-    file: (filePath) => createUri(filePath),
-    joinPath: (base, ...segments) => createUri(
-      path.join(base.fsPath, ...segments),
-      segments.join('/')
-    ),
-    parse: (value) => ({ scheme: value.split(':', 1)[0], toString: () => value })
-  },
-  FileSystemError: class FileSystemError extends Error {},
-  workspace: {
-    workspaceFolders: [workspaceFolder],
-    isTrusted: true,
-    asRelativePath: (uri) => uri.relativePath ?? path.relative(workspaceFolder.uri.fsPath, uri.fsPath),
-    getConfiguration: () => ({
-      get: (key, fallback) => configuration.has(key) ? configuration.get(key) : fallback
-    })
-  },
-  window: {
-    activeTextEditor: undefined,
-    onDidStartTerminalShellExecution: () => ({ dispose() {} }),
-    onDidEndTerminalShellExecution: () => ({ dispose() {} })
-  }
-};
-
-const originalModuleLoad = Module._load;
-Module._load = function loadWithVscodeMock(request, parent, isMain) {
-  if (request === 'vscode') {
-    return vscode;
-  }
-  return originalModuleLoad.call(this, request, parent, isMain);
-};
-const { DevMateChatViewProvider } = require('../out/extension');
-Module._load = originalModuleLoad;
-
-const {
-  appendConversationSessionTurn,
-  createConversationSessionStore
-} = require('../out/sessions');
-const { parseAgentToolCall } = require('../out/agentTools');
-
-const workspace = {
-  id: workspaceFolder.uri.toString().toLocaleLowerCase('en-US'),
-  name: workspaceFolder.name
-};
-
-function providerWithoutConstructor() {
-  return Object.create(DevMateChatViewProvider.prototype);
-}
-
-function extensionContext({ globalStore, legacyStore, checkpoint } = {}) {
-  const globalValues = new Map();
-  const workspaceValues = new Map();
-  if (globalStore !== undefined) {
-    globalValues.set('devMate.conversationSessions.v2', globalStore);
-  }
-  if (legacyStore !== undefined) {
-    workspaceValues.set('devMate.conversationSessions.v1', legacyStore);
-  }
-  if (checkpoint !== undefined) {
-    workspaceValues.set('devMate.agentCheckpoint.v1', checkpoint);
-  }
-  return {
-    extensionUri: createUri('C:\\extension'),
-    globalValues,
-    workspaceValues,
-    globalState: {
-      get: (key) => globalValues.get(key),
-      update: async (key, value) => {
-        if (value === undefined) {
-          globalValues.delete(key);
-        } else {
-          globalValues.set(key, value);
-        }
-      }
-    },
-    workspaceState: {
-      get: (key) => workspaceValues.get(key),
-      update: async (key, value) => {
-        if (value === undefined) {
-          workspaceValues.delete(key);
-        } else {
-          workspaceValues.set(key, value);
-        }
-      }
-    },
-    secrets: { get: async () => undefined }
-  };
-}
-
-async function flushPromises() {
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
-}
-
-async function withoutDelays(callback) {
-  const originalSetTimeout = global.setTimeout;
-  global.setTimeout = (handler, _delay, ...argumentsList) => (
-    originalSetTimeout(handler, 0, ...argumentsList)
-  );
-  try {
-    return await callback();
-  } finally {
-    global.setTimeout = originalSetTimeout;
-  }
-}
-
-test('loads global sessions, migrates legacy workspace sessions, and saves the merged store', async () => {
-  const existing = createConversationSessionStore(
-    'existing-session',
-    1,
-    { id: 'file:///other-project', name: 'Other project' }
-  );
+test('provider loads global sessions and migrates the legacy workspace session', async () => {
+  const existing = createConversationSessionStore('existing', 1, { id: 'file:///other', name: 'Other' });
   const legacy = {
     version: 1,
-    activeSessionId: 'legacy-session',
-    sessions: [{
-      id: 'legacy-session',
-      title: 'Legacy work',
-      createdAt: 2,
-      updatedAt: 3,
-      turns: [{ user: 'Old question', assistant: 'Old answer' }]
-    }]
+    activeSessionId: 'legacy',
+    sessions: [
+      {
+        id: 'legacy',
+        title: 'Legacy work',
+        createdAt: 2,
+        updatedAt: 3,
+        turns: [{ user: 'Old question', assistant: 'Old answer' }]
+      }
+    ]
   };
-  const context = extensionContext({ globalStore: existing, legacyStore: legacy });
-  const provider = new DevMateChatViewProvider(
-    context,
-    {},
-    { show() {} }
-  );
-
+  const storage = context({
+    global: { 'devMate.conversationSessions.v2': existing },
+    workspace: { 'devMate.conversationSessions.v1': legacy }
+  });
+  const provider = new DevMateChatViewProvider(storage, backend, { show() {} });
   try {
-    await flushPromises();
-    const saved = context.globalValues.get('devMate.conversationSessions.v2');
-    assert.equal(saved.version, 2);
+    await new Promise(setImmediate);
+    const saved = storage.globalValues.get('devMate.conversationSessions.v2');
     assert.equal(saved.sessions.length, 2);
-    assert.equal(saved.activeSessionId, 'legacy-session');
-    assert.equal(saved.sessions.find((session) => session.id === 'legacy-session').workspaceId, workspace.id);
-    assert.equal(context.workspaceValues.has('devMate.conversationSessions.v1'), false);
+    assert.equal(saved.activeSessionId, 'legacy');
+    assert.equal(saved.sessions.find(session => session.id === 'legacy').workspaceId, workspace.id);
+    assert.equal(storage.workspaceValues.has('devMate.conversationSessions.v1'), false);
   } finally {
     provider.dispose();
   }
 });
 
-test('collects active-file and selection context with explicit attachments first-class', async () => {
-  const provider = providerWithoutConstructor();
-  const selection = { marker: 'selection' };
-  const documentUri = createUri('C:\\repo\\src\\app.ts', 'src/app.ts');
-  let selectedText = 'return answer;';
+test('workspace context reads actual attachments, editor content and lexical disk index', async () => {
+  harness.files.clear();
+  setFile('README.md', '# Project');
+  const app = setFile('src/app.ts', 'export function authenticateUser() { return true; }');
+  const selection = {};
+  let selectedText = 'return true;';
   vscode.window.activeTextEditor = {
     selection,
     document: {
-      uri: documentUri,
-      fileName: documentUri.fsPath,
+      uri: app,
+      fileName: app.fsPath,
       languageId: 'typescript',
-      getText: (range) => range === selection ? selectedText : 'export const answer = 42;'
+      getText: range => range === selection ? selectedText : 'unsaved editor source'
     }
   };
-  provider.collectAttachmentItems = async () => [{
-    source: 'attachment',
-    filePath: 'C:\\repo\\README.md',
-    languageId: 'markdown',
-    content: '# Project',
-    includedCharacters: 9,
-    totalCharacters: 9,
-    truncated: false
-  }];
-
+  const collector = new WorkspaceContext(context(), events);
   try {
-    const fileScope = await provider.collectScope('activeFile', 'Explain this file');
-    assert.equal(fileScope.apiScope.type, 'file');
-    assert.equal(fileScope.apiScope.workspacePath, workspaceFolder.uri.fsPath);
-    assert.deepEqual(fileScope.apiScope.items.map((item) => item.source), ['file', 'attachment']);
-    assert.equal(fileScope.apiScope.items[0].content, 'export const answer = 42;');
-    assert.match(fileScope.info.detail, /src\\app\.ts|src\/app\.ts/);
-
-    const selectionScope = await provider.collectScope('selection', 'Explain this selection');
-    assert.equal(selectionScope.apiScope.type, 'selection');
-    assert.equal(selectionScope.apiScope.items[0].content, 'return answer;');
-
-    selectedText = '   ';
-    assert.equal(await provider.collectScope('selection', 'Explain this selection'), undefined);
+    await collector.pickWorkspaceFiles();
+    const fileScope = await collector.collectScope('activeFile', 'Explain');
+    assert.deepEqual(fileScope.apiScope.items.map(item => item.source), ['file', 'attachment']);
+    assert.equal(fileScope.apiScope.items[0].content, 'unsaved editor source');
+    assert.equal(fileScope.apiScope.items[1].content, '# Project');
+    const selectionScope = await collector.collectScope('selection', 'Explain');
+    assert.equal(selectionScope.apiScope.items[0].content, 'return true;');
+    selectedText = '  ';
+    assert.equal(await collector.collectScope('selection', 'Explain'), undefined);
+    const projectScope = await collector.collectScope('project', 'authenticate user');
+    assert.equal(projectScope.apiScope.items[0].source, 'attachment');
+    assert.match(projectScope.apiScope.items[1].content, /Local index excerpt.*\nexport function authenticate/s);
+    assert.ok(harness.writes.some(name => name.endsWith('project-index-v1.json')));
   } finally {
     vscode.window.activeTextEditor = undefined;
   }
 });
 
-test('routes asks exclusively and reconstructs resumed requests from the checkpoint', async () => {
-  const provider = providerWithoutConstructor();
-  const calls = [];
-  const statuses = [];
-  provider.activeRequest = undefined;
-  provider.disposeCommandTerminals = () => undefined;
-  provider.answerQuestion = async (...argumentsList) => calls.push(argumentsList);
-  provider.postStatus = (...argumentsList) => statuses.push(argumentsList);
-
-  const askMessage = {
-    command: 'ask',
-    mode: 'ideas',
-    question: 'How does this work?',
-    scope: { kind: 'project', label: 'Project A', detail: '' }
-  };
-  await provider.handleMessage(askMessage);
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0][0], askMessage);
-  assert.equal(calls[0][1] instanceof AbortSignal, true);
-  assert.equal(provider.activeRequest, undefined);
-
-  provider.activeRequest = new AbortController();
-  await provider.handleMessage(askMessage);
-  assert.equal(calls.length, 1);
-  assert.match(statuses.at(-1)[0], /already working/);
-
-  const checkpoint = {
-    question: 'Continue the fix',
-    mode: 'debug',
-    scopeKind: 'activeFile'
-  };
-  provider.activeRequest = undefined;
-  provider.currentAgentCheckpoint = () => checkpoint;
-  await provider.handleMessage({ command: 'continueAgentRun' });
-  assert.equal(calls.length, 2);
-  assert.deepEqual(calls[1][0], {
-    command: 'ask',
-    mode: 'debug',
-    question: 'Continue the fix',
-    scope: { kind: 'activeFile', label: 'File', detail: '' }
-  });
-  assert.equal(calls[1][2], checkpoint);
-  assert.equal(provider.activeRequest, undefined);
-});
-
-test('constructs a resumed agent request from stored history, limits, and checkpoint state', async () => {
-  let sessionStore = createConversationSessionStore('session', 1, workspace);
-  sessionStore = appendConversationSessionTurn(
-    sessionStore,
-    'Earlier question',
-    'Earlier answer',
-    2
-  );
+test('provider routes one active request and finalizes a resumed run through real services', async () => {
+  harness.files.clear();
+  let sessions = createConversationSessionStore('session', 1, workspace);
+  sessions = appendConversationSessionTurn(sessions, 'Earlier question', 'Earlier answer', 2);
+  const now = Date.now();
   const checkpoint = {
     version: 1,
     workspaceId: workspace.id,
@@ -276,14 +108,16 @@ test('constructs a resumed agent request from stored history, limits, and checkp
     question: 'Continue the fix',
     mode: 'debug',
     scopeKind: 'project',
-    toolHistory: [{
-      callId: 'read-1',
-      name: 'read_file',
-      arguments: { path: 'src/app.ts' },
-      result: 'Current source',
-      isError: false
-    }],
-    toolUsedFiles: ['C:\\repo\\src\\app.ts'],
+    toolHistory: [
+      {
+        callId: 'read-1',
+        name: 'read_file',
+        arguments: { path: 'src/app.ts' },
+        result: 'Current source',
+        isError: false
+      }
+    ],
+    toolUsedFiles: ['src/app.ts'],
     toolSignatures: [],
     fileMutationCalls: 1,
     mutationCharacters: 40,
@@ -297,233 +131,233 @@ test('constructs a resumed agent request from stored history, limits, and checkp
     outputTokens: 5,
     totalTokens: 15,
     tokenUsageExact: true,
-    createdAt: 100,
-    updatedAt: 200
+    createdAt: now,
+    updatedAt: now
   };
-  const provider = providerWithoutConstructor();
-  const savedCheckpoints = [];
-  const messages = [];
-  const enabledArguments = [];
-  let capturedRequest;
-  let capturedProviderKey;
-  let capturedTimeout;
-  let clearedCheckpoints = 0;
-
-  provider.sessionStore = sessionStore;
-  provider.activeRequestDiffs = new Map([['existing', 'diff']]);
-  provider.backendManager = {
-    start: async () => true,
-    status: { detail: 'online' }
-  };
-  provider.extensionContext = { secrets: { get: async () => undefined } };
-  provider.getConversationWorkspace = () => workspace;
-  provider.persistSessionStore = async () => true;
-  provider.postSessionState = () => undefined;
-  provider.getActiveLlmProfile = () => ({
-    id: 'local-model',
-    name: 'Local model',
-    provider: 'ollama',
-    model: 'qwen3-coder',
-    baseUrl: 'http://127.0.0.1:11434/v1'
-  });
-  provider.postStatus = () => undefined;
-  provider.collectScope = async () => ({
-    info: { kind: 'project', label: 'Project A', detail: 'Project: Project A' },
-    apiScope: {
-      type: 'project',
-      workspacePath: workspaceFolder.uri.fsPath,
-      items: []
-    }
-  });
-  provider.finishCancelledRequest = () => false;
-  provider.postMessage = (message) => messages.push(message);
-  provider.getReasoningEffortPreferences = () => ({ 'local-model': 'high' });
-  provider.enabledAgentTools = (...argumentsList) => {
-    enabledArguments.push(argumentsList);
-    return ['read_file', 'run_command'];
-  };
-  provider.saveAgentCheckpoint = async (value) => savedCheckpoints.push(value);
-  provider.clearAgentCheckpoint = async () => { clearedCheckpoints += 1; };
-  provider.postRequestFailure = (message) => assert.fail(message);
-  provider.askWithProviderRetries = async (
-    _backendUrl,
-    request,
-    providerKey,
-    timeout,
-    _signal,
-    onUsage
-  ) => {
-    capturedRequest = request;
-    capturedProviderKey = providerKey;
-    capturedTimeout = timeout;
-    onUsage({ inputTokens: 2, outputTokens: 1, totalTokens: 3, exact: true });
-    return {
-      result: {
-        status: 'ok',
-        data: {
-          answer: 'Fix completed.',
-          usedFiles: ['C:\\repo\\src\\app.ts'],
-          changes: [],
-          toolCalls: [],
-          tokenUsage: { inputTokens: 3, outputTokens: 2, totalTokens: 5, exact: true }
+  const storage = context({
+    global: {
+      'devMate.conversationSessions.v2': sessions,
+      'devMate.llmProfiles.v1': [
+        {
+          id: 'local',
+          name: 'Local',
+          provider: 'ollama',
+          model: 'qwen3-coder',
+          baseUrl: 'http://127.0.0.1:11434/v1'
         }
-      },
-      retriesExhausted: false
-    };
-  };
-
-  await withoutDelays(() => provider.answerQuestion({
-    command: 'ask',
-    mode: 'debug',
-    question: '  Continue the fix  ',
-    scope: { kind: 'project', label: 'Project A', detail: '' }
-  }, new AbortController().signal, checkpoint));
-
-  assert.equal(provider.activeRequestDiffs.has('existing'), true);
-  assert.equal(capturedProviderKey, undefined);
-  assert.equal(capturedTimeout, 1_830_000);
-  assert.deepEqual(enabledArguments[0], ['debug', 1, 2, 1]);
-  assert.equal(capturedRequest.question, 'Continue the fix');
-  assert.equal(capturedRequest.mode, 'debug');
-  assert.equal(capturedRequest.settings.maxTokens, 2048);
-  assert.equal(capturedRequest.settings.temperature, 0.35);
-  assert.equal(capturedRequest.settings.timeoutSeconds, 1800);
-  assert.equal(capturedRequest.settings.reasoningEffort, 'auto');
-  assert.deepEqual(capturedRequest.enabledTools, ['read_file', 'run_command']);
-  assert.equal(capturedRequest.agentEditsEnabled, true);
-  assert.equal(capturedRequest.forceFinalAnswer, false);
-  assert.equal(capturedRequest.disableThinking, false);
-  assert.deepEqual(capturedRequest.toolHistory, checkpoint.toolHistory);
-  assert.deepEqual(capturedRequest.conversationHistory, [{
-    user: 'Earlier question',
-    assistant: 'Earlier answer'
-  }]);
-  assert.equal(savedCheckpoints[0].workspaceRevision, 8);
-  assert.equal(savedCheckpoints[0].createdAt, checkpoint.createdAt);
-  assert.deepEqual(
-    messages.find((message) => message.command === 'tokenUsageUpdated').usage,
-    { inputTokens: 12, outputTokens: 6, totalTokens: 18, exact: true }
-  );
-  assert.equal(clearedCheckpoints, 1);
-});
-
-test('validates tool calls, records outcomes, and dispatches dedicated tool families', async () => {
-  const provider = providerWithoutConstructor();
-  const activities = [];
-  let executedCall;
-  provider.commandTerminals = new Map();
-  provider.postAgentToolActivity = (...argumentsList) => activities.push(argumentsList);
-  provider.runAgentTool = async (call) => {
-    executedCall = call;
-    return {
-      result: 'Full tool result',
-      resultSummary: 'Tool summary',
-      usedFiles: ['C:\\repo\\src\\app.ts'],
-      mutationCharacters: 0
-    };
-  };
-
-  const execution = await provider.executeAgentToolCall({
-    id: 'read-1',
-    name: 'read_file',
-    arguments: { path: 'src/app.ts', startLine: 2, endLine: 4 }
+      ],
+      'devMate.activeLlmProfileId.v1': 'local'
+    },
+    workspace: { 'devMate.agentCheckpoint.v1': checkpoint }
   });
-  assert.equal(executedCall.name, 'read_file');
-  assert.deepEqual(executedCall.arguments, {
-    path: 'src/app.ts',
-    startLine: 2,
-    endLine: 4
+  harness.configuration.set('requestTimeoutSeconds', 1900);
+  harness.configuration.set('maxTokens', 2048);
+  let completeTransport;
+  let capturedRequest;
+  let capturedTimeout;
+  let transportCalls = 0;
+  const transport = {
+    ask: async () => assert.fail('Streaming should be supported'),
+    askStream: async (_url, request, _key, timeout, _signal, onEvent) => {
+      transportCalls += 1;
+      capturedRequest = request;
+      capturedTimeout = timeout;
+      onEvent({
+        type: 'usage',
+        usage: {
+          inputTokens: 2,
+          outputTokens: 1,
+          totalTokens: 3,
+          exact: true
+        }
+      });
+      await new Promise(resolve => {
+        completeTransport = resolve;
+      });
+      return {
+        unsupported: false,
+        result: {
+          status: 'ok',
+          data: {
+            answer: 'Fix completed.',
+            usedFiles: [],
+            changes: [],
+            toolCalls: []
+          }
+        }
+      };
+    }
+  };
+  const provider = new DevMateChatViewProvider(storage, backend, { show() {} }, transport);
+  const messages = [];
+  let receive;
+  provider.resolveWebviewView({
+    webview: {
+      cspSource: 'test',
+      asWebviewUri: uri => uri,
+      postMessage: value => messages.push(value),
+      onDidReceiveMessage: callback => {
+        receive = callback;
+        return { dispose() {} };
+      }
+    },
+    onDidDispose: () => ({ dispose() {} })
   });
-  assert.equal(execution.step.isError, false);
-  assert.equal(execution.step.result, 'Full tool result');
-  assert.deepEqual(execution.usedFiles, ['C:\\repo\\src\\app.ts']);
-  assert.equal(activities.at(-1)[3], 'completed');
-
-  const rejected = await provider.executeAgentToolCall({
-    id: 'bad-read',
-    name: 'read_file',
-    arguments: { path: '../outside.ts' }
-  });
-  assert.equal(rejected.step.isError, true);
-  assert.match(rejected.step.result, /unsafe segments/i);
-
-  const dispatchProvider = providerWithoutConstructor();
-  const dispatched = [];
-  const marker = (name) => ({
-    result: name,
-    resultSummary: name,
-    usedFiles: [],
-    mutationCharacters: 0
-  });
-  dispatchProvider.getAgentToolSettings = () => ({
-    readFileMaxLines: 400,
-    listFilesMaxResults: 200,
-    searchCodeMaxResults: 50,
-    diagnosticsMaxResults: 100,
-    terminalErrorsMaxResults: 5,
-    codeNavigationMaxResults: 100
-  });
-  dispatchProvider.readWorkspaceDiagnostics = (call) => {
-    dispatched.push(call.name);
-    return marker(call.name);
-  };
-  dispatchProvider.readDocumentSymbols = async (call) => {
-    dispatched.push(call.name);
-    return marker(call.name);
-  };
-  dispatchProvider.findCodeLocations = async (call) => {
-    dispatched.push(call.name);
-    return marker(call.name);
-  };
-  dispatchProvider.deleteAgentFile = async (call) => {
-    dispatched.push(call.name);
-    return marker(call.name);
-  };
-  dispatchProvider.relocateAgentFile = async (call) => {
-    dispatched.push(call.name);
-    return marker(call.name);
-  };
-  dispatchProvider.runDependencyInstallation = async (call) => {
-    dispatched.push(call.name);
-    return marker(call.name);
-  };
-  dispatchProvider.runVerificationCommand = async (call) => {
-    dispatched.push(call.name);
-    return marker(call.name);
-  };
-
-  const calls = [
-    { id: 'diagnostics', name: 'get_diagnostics', arguments: {} },
-    { id: 'symbols', name: 'get_symbols', arguments: { path: 'src/app.ts' } },
-    { id: 'definition', name: 'find_definition', arguments: { path: 'src/app.ts', line: 1, column: 1 } },
-    { id: 'references', name: 'find_references', arguments: { path: 'src/app.ts', line: 1, column: 1 } },
-    { id: 'delete', name: 'delete_file', arguments: { path: 'src/old.ts' } },
-    { id: 'rename', name: 'rename_file', arguments: { path: 'src/a.ts', newPath: 'src/b.ts' } },
-    { id: 'move', name: 'move_file', arguments: { path: 'src/b.ts', newPath: 'archive/b.ts' } },
-    { id: 'dependencies', name: 'install_dependencies', arguments: { manifestPath: 'backend/requirements.txt' } },
-    { id: 'command', name: 'run_command', arguments: { executable: 'npm', args: ['test'], cwd: '' } }
-  ];
-  for (const call of calls) {
-    const parsed = parseAgentToolCall(call);
-    const result = await dispatchProvider.runAgentTool(parsed, 10_000);
-    assert.equal(result.result, call.name);
+  try {
+    await withoutDelays(async () => {
+      receive({ command: 'continueAgentRun' });
+      for (let attempt = 0; !completeTransport && attempt < 100; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
+      assert.ok(completeTransport, JSON.stringify(messages));
+      receive({
+        command: 'ask',
+        mode: 'ideas',
+        question: 'Another request',
+        scope: { kind: 'project' }
+      });
+      assert.ok(messages.some(message => /already working/.test(message.text ?? '')));
+      assert.equal(transportCalls, 1);
+      assert.equal(capturedTimeout, 1830000);
+      assert.equal(capturedRequest.settings.maxTokens, 2048);
+      assert.equal(capturedRequest.enabledTools.includes('install_dependencies'), false);
+      assert.equal(capturedRequest.enabledTools.includes('run_command'), true);
+      assert.deepEqual(capturedRequest.toolHistory, checkpoint.toolHistory);
+      assert.deepEqual(capturedRequest.conversationHistory, [{ user: 'Earlier question', assistant: 'Earlier answer' }]);
+      assert.equal(storage.workspaceValues.get('devMate.agentCheckpoint.v1').workspaceRevision, 8);
+      assert.deepEqual(messages.find(message => message.command === 'tokenUsageUpdated').usage, {
+        inputTokens: 12,
+        outputTokens: 6,
+        totalTokens: 18,
+        exact: true
+      });
+      completeTransport();
+      for (let attempt = 0; !messages.some(message => message.command === 'assistantResponse') && attempt < 100; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
+      assert.ok(messages.some(message => message.command === 'assistantResponse'));
+    });
+    assert.equal(storage.workspaceValues.has('devMate.agentCheckpoint.v1'), false);
+    assert.equal(
+      storage.globalValues.get('devMate.conversationSessions.v2').sessions[0].turns.at(-1).user,
+      'Continue the fix'
+    );
+  } finally {
+    provider.dispose();
+    harness.configuration.clear();
   }
-  assert.deepEqual(dispatched, calls.map((call) => call.name));
 });
 
-test('rejects file changes at the workspace-trust boundary before inspecting files', async () => {
-  const provider = providerWithoutConstructor();
+test('executor validates and dispatches actual read, list, search and diagnostics tools', async () => {
+  harness.files.clear();
+  setFile('src/app.ts', 'first line\nconst needle = 42;\nlast line');
+  const activities = [];
+  const executor = makeExecutor(context(), { postMessage: message => activities.push(message) });
+  try {
+    const read = await executor.executeAgentToolCall(
+      { id: 'read', name: 'read_file', arguments: { path: 'src/app.ts', startLine: 2, endLine: 2 } }
+    );
+    assert.equal(read.step.isError, false);
+    assert.match(read.step.result, /Lines: 2-2 of 3/);
+    assert.match(read.step.result, /const needle = 42;/);
+    const list = await executor.executeAgentToolCall({ id: 'list', name: 'list_files', arguments: {} });
+    assert.match(list.step.result, /src\/app.ts/);
+    const search = await executor.executeAgentToolCall({ id: 'search', name: 'search_code', arguments: { query: 'needle' } });
+    assert.match(search.step.result, /src\/app.ts:2:/);
+    const diagnostics = await executor.executeAgentToolCall({ id: 'diagnostics', name: 'get_diagnostics', arguments: {} });
+    assert.equal(diagnostics.step.isError, false);
+    const invalid = await executor.executeAgentToolCall({ id: 'bad', name: 'read_file', arguments: { path: '../outside.ts' } });
+    assert.equal(invalid.step.isError, true);
+    assert.match(invalid.step.result, /unsafe segments/i);
+    assert.ok(activities.some(message => message.activity?.status === 'completed'));
+  } finally {
+    executor.dispose();
+  }
+});
+
+test('executor stops mutations at the workspace trust boundary', async () => {
+  const executor = makeExecutor();
   vscode.workspace.isTrusted = false;
   try {
     await assert.rejects(
-      () => provider.confirmAndApplyFileChanges(
-        [{ path: 'src/app.ts', content: 'export const changed = true;' }],
-        'Update app.ts',
+      () => executor.confirmAndApplyFileChanges(
+        [{ path: 'src/app.ts', content: 'changed' }],
+        'Update',
         new AbortController().signal
       ),
       /Trust this workspace/
     );
+    assert.equal(executor.enabledAgentTools('code', 0, 0, 0).includes('edit_file'), false);
   } finally {
     vscode.workspace.isTrusted = true;
+    executor.dispose();
+  }
+});
+
+test('executor rechecks trust after permission and cancels pending file work', async () => {
+  harness.files.clear();
+  setFile('src/existing.ts', 'unchanged');
+  let executor;
+  executor = makeExecutor(context(), {
+    postMessage: message => {
+      if (message.command === 'permissionRequest') {
+        vscode.workspace.isTrusted = false;
+        void executor.handlePermissionDecision(message.requestId, 'allowOnce');
+      }
+    }
+  });
+  try {
+    await assert.rejects(
+      () => executor.confirmAndApplyFileChanges([{ path: 'src/new.ts', content: 'new' }], 'Create', new AbortController().signal),
+      /Workspace Trust changed/
+    );
+  } finally {
+    vscode.workspace.isTrusted = true;
+    executor.dispose();
+  }
+  const controller = new AbortController();
+  executor = makeExecutor(context(), {
+    postMessage: message => {
+      if (message.command === 'permissionRequest') {
+        controller.abort();
+        executor.cancelPendingWork();
+      }
+    }
+  });
+  try {
+    const result = await executor.confirmAndApplyFileChanges([{ path: 'src/new.ts', content: 'new' }], 'Create', controller.signal);
+    assert.equal(result, 'Proposed file changes were not applied.');
+  } finally {
+    executor.dispose();
+  }
+});
+
+test('executor rejects content changed while file permission was pending', async () => {
+  harness.files.clear();
+  setFile('src/app.ts', 'original');
+  const originalOpenDocument = vscode.workspace.openTextDocument;
+  let content = 'original';
+  vscode.workspace.openTextDocument = async () => ({ isDirty: false, getText: () => content });
+  let executor;
+  executor = makeExecutor(context(), {
+    postMessage: message => {
+      if (message.command === 'permissionRequest') {
+        content = 'changed outside DevMate';
+        void executor.handlePermissionDecision(message.requestId, 'allowOnce');
+      }
+    }
+  });
+  try {
+    await assert.rejects(
+      () => executor.confirmAndApplyFileChanges(
+        [{ path: 'src/app.ts', content: 'proposed' }],
+        'Update',
+        new AbortController().signal
+      ),
+      /changed while permission was pending/
+    );
+  } finally {
+    vscode.workspace.openTextDocument = originalOpenDocument;
+    executor.dispose();
   }
 });

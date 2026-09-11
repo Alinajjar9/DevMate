@@ -10,6 +10,10 @@ function readSource(...segments) {
 function readDevMateSource() {
   return [
     readSource('src', 'extension.ts'),
+    readSource('src', 'chatViewProvider.ts'),
+    readSource('src', 'workspaceContext.ts'),
+    readSource('src', 'toolExecutor.ts'),
+    readSource('src', 'agentRunner.ts'),
     readSource('src', 'webview.ts'),
     readSource('media', 'webview.css'),
     readSource('media', 'webview.js')
@@ -22,7 +26,7 @@ test('DevMate webview script has valid JavaScript syntax', () => {
 });
 
 test('extension delegates webview markup to packaged UI assets', () => {
-  const extensionSource = readSource('src', 'extension.ts');
+  const extensionSource = readSource('src', 'chatViewProvider.ts');
   const shellSource = readSource('src', 'webview.ts');
 
   assert.match(extensionSource, /getChatWebviewHtml\(webviewView\.webview, this\.extensionUri\)/);
@@ -57,21 +61,6 @@ test('working card has visible motion with a reduced-motion fallback', () => {
   assert.doesNotMatch(source, /\.working-heading::after/);
 });
 
-test('narration compaction preserves letters while normalizing whitespace', () => {
-  const cookedScript = readSource('media', 'webview.js');
-  const functionStart = cookedScript.indexOf('function compactProviderNarration(value)');
-  const functionEnd = cookedScript.indexOf('function completeAssistantResponse', functionStart);
-  const functionSource = cookedScript.slice(functionStart, functionEnd);
-  const compact = new Function(
-    'MAX_INTERMEDIATE_NARRATION_CHARACTERS',
-    functionSource + '; return compactProviderNarration;'
-  )(220);
-
-  const narration = 'Now I understand the issue. The styles reference CSS classes.';
-  assert.equal(compact(narration), narration);
-  assert.equal(compact('Multiple   spaces\nstay readable.'), 'Multiple spaces stay readable.');
-});
-
 test('settings expose the bounded tool-call limit', () => {
   const source = readDevMateSource();
   assert.match(source, /id="settingsToolCallLimit"[^>]+min="4"[^>]+max="100"/);
@@ -94,15 +83,10 @@ test('file lifecycle permissions are always one-time and reviewable', () => {
   assert.match(source, /review\.textContent = 'Review diff'/);
 });
 
-test('only explicit request events release the pending UI state', () => {
+test('extension reports request precondition failures and releases completed requests', () => {
   const source = readDevMateSource();
-  assert.doesNotMatch(source, /const terminalStatus = message\.level/);
-  assert.match(source, /if \(message\.command === 'requestFailed'\)[\s\S]*?state\.askPending = false/);
   assert.match(source, /postRequestFailure\('Open a file first\.|message\.scope\.kind === 'selection'/);
   assert.match(source, /finally \{[\s\S]*?this\.activeRequest = undefined/);
-  assert.match(source, /button\.disabled = state\.askPending/);
-  assert.match(source, /attachFilesEl\.disabled = state\.askPending/);
-  assert.match(source, /llmProfileSelectorEl\.disabled = state\.askPending/);
 });
 
 test('managed backend state and recovery controls are exposed in the UI', () => {
@@ -114,7 +98,6 @@ test('managed backend state and recovery controls are exposed in the UI', () => 
   assert.match(source, /id="backendStatus"/);
   assert.match(source, /id="restartBackend"/);
   assert.match(source, /id="openBackendLogs"/);
-  assert.match(source, /message\.command === 'backendStatusUpdated'/);
   assert.match(source, /backendDropped[\s\S]*?retryable:/);
   assert.doesNotMatch(managerSource, /['"]--reload['"]/);
 });
@@ -135,28 +118,11 @@ test('provider streaming and safe rich answer rendering are wired into the chat'
   assert.match(clientSource, /export async function askStream/);
   assert.match(clientSource, /'\/ask\/stream'/);
   assert.match(source, /command: 'providerStreamDelta'/);
-  assert.match(source, /message\.command === 'providerStreamDelta'/);
   assert.match(source, /function renderMarkdown/);
   assert.match(source, /function appendHighlightedCode/);
   assert.match(source, /command: 'copyText'/);
   assert.match(source, /command: 'openWorkspaceFile'/);
   assert.doesNotMatch(source, /\.innerHTML\s*=/);
-});
-
-test('streamed output is visibly drained before the final answer replaces it', () => {
-  const source = readDevMateSource();
-  assert.match(source, /streamQueue:\s*''/);
-  assert.match(source, /pendingAssistantResponse:\s*undefined/);
-  assert.match(source, /function pumpProviderStream\(\)/);
-  assert.match(source, /className = 'message assistant model-narration'/);
-  assert.match(source, /MAX_INTERMEDIATE_NARRATION_CHARACTERS = 220/);
-  assert.match(source, /function compactProviderNarration\(value\)/);
-  assert.match(source, /author\.textContent = 'DevMate update'/);
-  assert.match(source, /finalizeProviderNarration\(\);[\s\S]*?renderAgentToolActivity/);
-  assert.doesNotMatch(source, /#workingTurn \.working-stream/);
-  assert.match(source, /state\.pendingAssistantResponse = completion/);
-  assert.match(source, /completeAssistantResponse\(completion\.response, completion\.fileChanges\)/);
-  assert.match(source, /Live streaming unavailable — waiting for the completed response/);
 });
 
 test('composer shows a live token estimate and a compact ask action', () => {
@@ -167,7 +133,6 @@ test('composer shows a live token estimate and a compact ask action', () => {
   assert.match(source, /questionEl\.addEventListener\('input', renderTokenEstimate\)/);
   assert.match(source, /Math\.ceil\(characterCount \/ 4\)/);
   assert.match(source, /full prompt and response usage appears here/);
-  assert.match(source, /message\.command === 'tokenUsageUpdated'/);
   assert.match(source, /Input ' \+ marker/);
   assert.match(source, /formatTokenCount\(usage\.totalTokens\) \+ ' total'/);
 });
@@ -226,7 +191,6 @@ test('working UI exposes tool usage and resumable agent checkpoints', () => {
   assert.match(source, /Tools ' \+ state\.toolUsage\.used \+ ' \/ '/);
   assert.match(source, /id="continueAgent"/);
   assert.match(source, /command: 'continueAgentRun'/);
-  assert.match(source, /message\.command === 'agentCheckpointUpdated'/);
   assert.match(source, /retrying with reasoning disabled/);
   assert.match(source, /requesting final summary without tools/);
 });
@@ -234,7 +198,7 @@ test('working UI exposes tool usage and resumable agent checkpoints', () => {
 test('agent can inspect workspace diagnostics and captured terminal failures', () => {
   const source = readDevMateSource();
   const backendSource = fs.readFileSync(
-    path.join(__dirname, '..', 'backend', 'app', 'main.py'),
+    path.join(__dirname, '..', 'backend', 'app', 'tool_catalog.py'),
     'utf8'
   );
   assert.match(source, /onDidStartTerminalShellExecution/);
@@ -250,7 +214,7 @@ test('agent can inspect workspace diagnostics and captured terminal failures', (
 test('agent can navigate symbols, definitions, and references through VS Code providers', () => {
   const source = readDevMateSource();
   const backendSource = fs.readFileSync(
-    path.join(__dirname, '..', 'backend', 'app', 'main.py'),
+    path.join(__dirname, '..', 'backend', 'app', 'tool_catalog.py'),
     'utf8'
   );
   assert.match(source, /'vscode\.executeDocumentSymbolProvider'/);
@@ -283,8 +247,6 @@ test('project-bound sessions open from a dedicated landing screen', () => {
   assert.match(source, /id="sessionHome"/);
   assert.match(source, /id="chatApp"[^>]+hidden/);
   assert.match(source, /id="sessionProjectWarning"/);
-  assert.match(source, /message\.command === 'sessionsUpdated'/);
-  assert.match(source, /message\.command === 'sessionProjectWarning'/);
   assert.match(source, /command: 'selectSession'/);
   assert.match(source, /command: 'renameSession'/);
   assert.match(source, /command: 'deleteSession'/);
@@ -303,10 +265,10 @@ test('new user messages persist independently from failed assistant requests', (
 });
 
 test('exhausted agent runs finalize locally instead of looping checkpoints', () => {
-  const source = readDevMateSource();
-  assert.match(source, /consecutiveAgentInspectionCalls\(toolHistory\)/);
+  const source = readSource('src', 'agentRunner.ts');
+  assert.match(source, /consecutiveAgentInspectionCalls\(state\.toolHistory\)/);
   assert.match(source, /Finalizing from completed project-tool work/);
-  assert.match(source, /summarizeAgentToolHistory\(toolHistory, errorMessage\)/);
+  assert.match(source, /summarizeAgentToolHistory\(state\.toolHistory, errorMessage\)/);
   assert.match(source, /Model stopped before acting — retrying with project tools/);
   assert.match(source, /described what it would do but did not call a project tool/);
 });

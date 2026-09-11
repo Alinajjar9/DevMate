@@ -1,3 +1,5 @@
+/** Request/response contracts shared by the extension modules. Runtime payload checks live in the transport and backend. */
+
 export type AssistantMode = 'ideas' | 'code' | 'debug';
 export type ScopeType = 'project' | 'file' | 'selection';
 export type ContextSource = 'file' | 'selection' | 'attachment';

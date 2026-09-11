@@ -112,6 +112,103 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(completion.tool_calls[0].name, "read_file")
         self.assertEqual(completion.tool_calls[0].arguments, '{"path":"app.py"}')
 
+    async def test_stream_accepts_json_fallback_and_preserves_completion_metadata(self) -> None:
+        for content in ("  JSON answer  ", None):
+            with self.subTest(content=content):
+                provider = OpenAICompatibleProvider(transport=httpx.MockTransport(
+                    lambda request: httpx.Response(200, json={
+                        "choices": [{
+                            "finish_reason": "tool_calls",
+                            "message": {
+                                "content": content,
+                                "reasoning_content": "internal reasoning",
+                                "tool_calls": [{
+                                    "id": "call-1",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": '{"path":"app.py"}',
+                                    },
+                                }],
+                            },
+                        }],
+                        "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+                    })
+                ))
+
+                events = [event async for event in provider.stream(self._request())]
+
+                self.assertEqual(
+                    [event.kind for event in events],
+                    ["content", "complete"] if content else ["complete"],
+                )
+                if content:
+                    self.assertEqual(events[0].text, "JSON answer")
+                completion = events[-1].completion
+                self.assertEqual(completion.content, "JSON answer" if content else None)
+                self.assertEqual(completion.reasoning_content, "internal reasoning")
+                self.assertEqual(completion.finish_reason, "tool_calls")
+                self.assertEqual(completion.tool_calls, (
+                    ChatToolCall(id="call-1", name="read_file", arguments='{"path":"app.py"}'),
+                ))
+                self.assertEqual(completion.usage.total_tokens, 14)
+
+    async def test_stream_ignores_keep_alives_and_stops_at_done_marker(self) -> None:
+        provider = OpenAICompatibleProvider(transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"Content-Type": "text/event-stream"},
+                content=(
+                    ': keep-alive\n\nevent: message\nid: 1\n'
+                    'data: {"choices":[{"delta":{"content":"Answer"}}]}\n'
+                    'data: [DONE]\n'
+                    'data: invalid text after completion\n'
+                ),
+            )
+        ))
+
+        events = [event async for event in provider.stream(self._request())]
+
+        self.assertEqual([event.kind for event in events], ["content", "complete"])
+        self.assertEqual(events[-1].completion.content, "Answer")
+
+    async def test_stream_rejects_invalid_events_and_invalid_json_fallbacks(self) -> None:
+        cases = (
+            ("text/event-stream", "data: {broken}\n", "invalid streaming event"),
+            ("application/json", "{broken}", "non-streaming invalid response"),
+            ("application/json", "{}", "empty or invalid answer"),
+        )
+        for content_type, content, expected_message in cases:
+            with self.subTest(content_type=content_type, content=content):
+                provider = OpenAICompatibleProvider(transport=httpx.MockTransport(
+                    lambda request: httpx.Response(
+                        200, headers={"Content-Type": content_type}, content=content,
+                    )
+                ))
+
+                with self.assertRaises(ProviderError) as caught:
+                    _ = [event async for event in provider.stream(self._request())]
+
+                self.assertEqual(caught.exception.status_code, 502)
+                self.assertIn(expected_message, str(caught.exception))
+
+    async def test_stream_preserves_http_error_mapping_before_decoding_events(self) -> None:
+        for status_code, expected_status in ((302, 502), (401, 401), (429, 429)):
+            with self.subTest(status_code=status_code):
+                provider = OpenAICompatibleProvider(transport=httpx.MockTransport(
+                    lambda request: httpx.Response(
+                        status_code, json={"error": {"message": "Provider rejected this request"}},
+                    )
+                ))
+
+                with self.assertRaises(ProviderError) as caught:
+                    _ = [event async for event in provider.stream(self._request())]
+
+                self.assertEqual(caught.exception.status_code, expected_status)
+                if status_code == 302:
+                    self.assertIn("redirect", str(caught.exception))
+                else:
+                    self.assertEqual(str(caught.exception), "Provider rejected this request")
+
     async def test_sends_nvidia_compatible_request_and_reads_answer(self) -> None:
         async def handler(request: httpx.Request) -> httpx.Response:
             self.assertEqual(

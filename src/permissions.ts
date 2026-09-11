@@ -1,5 +1,6 @@
+/** Workspace permission preferences and remembered command approvals, with asking as the default. */
+
 export const FILE_PERMISSION_POLICY_STORAGE_KEY = 'devMate.filePermissionPolicy.v2';
-export const LEGACY_FILE_PERMISSION_POLICY_STORAGE_KEY = 'devMate.filePermissionPolicy.v1';
 export const REMEMBERED_COMMANDS_STORAGE_KEY = 'devMate.rememberedCommands.v1';
 export const MAX_REMEMBERED_COMMANDS = 50;
 
@@ -21,6 +22,7 @@ export const DEFAULT_FILE_PERMISSION_POLICY: FilePermissionPolicy = {
   updateFiles: 'ask'
 };
 
+/** Read saved preferences conservatively: missing or invalid values require asking again. */
 export function parseFilePermissionPolicy(value: unknown): FilePermissionPolicy {
   if (!isRecord(value)) {
     return { ...DEFAULT_FILE_PERMISSION_POLICY };
@@ -32,6 +34,7 @@ export function parseFilePermissionPolicy(value: unknown): FilePermissionPolicy 
   };
 }
 
+/** Only create/update permissions can be remembered; delete, rename and move always require a new decision. */
 export function permissionBehaviorForAction(
   policy: FilePermissionPolicy,
   action: FilePermissionAction
@@ -60,19 +63,7 @@ export function allowActions(
   return updated;
 }
 
-export function permissionPolicyLabel(policy: FilePermissionPolicy): string {
-  if (policy.createFiles === 'allow' && policy.updateFiles === 'allow') {
-    return 'Changes allowed';
-  }
-  if (policy.createFiles === 'allow') {
-    return 'Creates allowed';
-  }
-  if (policy.updateFiles === 'allow') {
-    return 'Edits allowed';
-  }
-  return 'Ask for changes';
-}
-
+/** Discard invalid or duplicate saved entries and cap the approval list before it is used. */
 export function parseRememberedCommands(value: unknown): RememberedCommand[] {
   if (!Array.isArray(value)) {
     return [];

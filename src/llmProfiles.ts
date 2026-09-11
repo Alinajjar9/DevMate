@@ -1,3 +1,5 @@
+/** Model profile metadata and validation. API keys are kept separately in VS Code SecretStorage. */
+
 export const LLM_PROFILES_STORAGE_KEY = 'devMate.llmProfiles.v1';
 export const ACTIVE_LLM_PROFILE_STORAGE_KEY = 'devMate.activeLlmProfileId.v1';
 export const LLM_REASONING_EFFORT_STORAGE_KEY = 'devMate.reasoningEffortByProfile.v1';
@@ -52,6 +54,7 @@ export function normalizeProfileDraft(draft: LlmProfileDraft): LlmProfileDraft {
   };
 }
 
+/** Return the first user-facing validation error, or undefined when the profile can be saved. */
 export function validateProfileDraft(
   draft: LlmProfileDraft,
   existingProfiles: LlmProfile[],
@@ -104,6 +107,7 @@ export function validateProfileDraft(
   return undefined;
 }
 
+/** Recover usable profile metadata from storage, skipping malformed and duplicate entries. */
 export function parseStoredProfiles(value: unknown): LlmProfile[] {
   if (!Array.isArray(value)) {
     return [];
@@ -178,6 +182,7 @@ export function providerLabelForProfile(profile: LlmProfile): string {
   return isBuiltInLlmProfile(profile) ? 'NVIDIA' : PROVIDER_LABELS[profile.provider];
 }
 
+/** Offer reasoning levels supported by the recognized model/profile family; unknown profiles keep the default. */
 export function reasoningEffortOptionsForProfile(profile: LlmProfile): ReasoningEffort[] {
   const model = profile.model.trim().toLocaleLowerCase();
   if (/^(?:nvidia\/)?nemotron-3-ultra(?:-|$)/.test(model)) {

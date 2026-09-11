@@ -1,3 +1,5 @@
+"""Validate extension requests and translate model replies into DevMate's API format."""
+
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -14,7 +16,6 @@ from .providers import (
     ChatCompletion,
     ChatCompletionRequest,
     ChatProvider,
-    ChatToolDefinition,
     OpenAICompatibleProvider,
     ProviderError,
     ProviderName,
@@ -24,6 +25,12 @@ from .text_tool_calls import (
     classify_text_tool_call_prefix,
     looks_like_text_tool_call,
     parse_text_tool_calls,
+)
+from .tool_catalog import (
+    AGENT_TOOL_DEFINITIONS,
+    MUTATING_AGENT_TOOLS,
+    READ_ONLY_AGENT_TOOLS,
+    AgentToolName,
 )
 
 
@@ -45,45 +52,10 @@ MAX_AGENT_TOOL_HISTORY_CHARACTERS = 80_000
 MAX_CONVERSATION_TURNS = 6
 MAX_CONVERSATION_TURN_CHARACTERS = 6_000
 MAX_CONVERSATION_HISTORY_CHARACTERS = 20_000
-AgentToolName = Literal[
-    "list_files",
-    "read_file",
-    "search_code",
-    "get_symbols",
-    "find_definition",
-    "find_references",
-    "get_diagnostics",
-    "read_terminal_errors",
-    "create_file",
-    "edit_file",
-    "delete_file",
-    "rename_file",
-    "move_file",
-    "install_dependencies",
-    "run_command",
-]
-READ_ONLY_AGENT_TOOLS: tuple[AgentToolName, ...] = (
-    "list_files",
-    "read_file",
-    "search_code",
-    "get_symbols",
-    "find_definition",
-    "find_references",
-    "get_diagnostics",
-    "read_terminal_errors",
-)
-MUTATING_AGENT_TOOLS: tuple[AgentToolName, ...] = (
-    "create_file",
-    "edit_file",
-    "delete_file",
-    "rename_file",
-    "move_file",
-    "install_dependencies",
-    "run_command",
-)
 
 
 def _utf16_character_count(value: str) -> int:
+    """Count UTF-16 units so limits match JavaScript's string.length, including emoji."""
     return len(value.encode("utf-16-le")) // 2
 
 
@@ -108,6 +80,7 @@ class AskContextItem(BaseModel):
 
     @model_validator(mode="after")
     def validate_character_metadata(self) -> "AskContextItem":
+        """Check that the extension's length and truncation metadata describes this content."""
         if self.includedCharacters != _utf16_character_count(self.content):
             raise ValueError("includedCharacters must match the content length")
         if self.includedCharacters > self.totalCharacters:
@@ -124,6 +97,7 @@ class AskScope(BaseModel):
 
     @model_validator(mode="after")
     def validate_items_for_scope(self) -> "AskScope":
+        """Apply the context limits for the selected scope, including attached files."""
         attachments = [item for item in self.items if item.source == "attachment"]
         primary_items = [item for item in self.items if item.source != "attachment"]
 
@@ -204,6 +178,7 @@ class AskRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_tool_history(self) -> "AskRequest":
+        """Bound the accumulated history and reject ambiguous duplicate tool-call IDs."""
         call_ids = [step.callId for step in self.toolHistory]
         if len(call_ids) != len(set(call_ids)):
             raise ValueError("tool history contains duplicate call ids")
@@ -260,353 +235,12 @@ class AskResult(BaseModel):
     data: AskData
 
 
-AGENT_TOOL_DEFINITIONS = (
-    ChatToolDefinition(
-        name="list_files",
-        description="List eligible workspace text files, optionally below a relative directory.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Optional path relative to the open workspace. Do not include the workspace folder name. Use an empty string for the project root.",
-                },
-                "maxResults": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 500,
-                },
-            },
-            "additionalProperties": False,
-        },
-    ),
-    ChatToolDefinition(
-        name="read_file",
-        description="Read one eligible text file using its workspace-relative path.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "File path relative to the open workspace; never an absolute path.",
-                },
-                "startLine": {"type": "integer", "minimum": 1},
-                "endLine": {"type": "integer", "minimum": 1},
-            },
-            "required": ["path"],
-            "additionalProperties": False,
-        },
-    ),
-    ChatToolDefinition(
-        name="search_code",
-        description="Search eligible project text files for a plain-text query and return matching lines.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "minLength": 2, "maxLength": 200},
-                "path": {
-                    "type": "string",
-                    "description": "Optional file or directory relative to the open workspace. Do not include the workspace folder name.",
-                },
-                "maxResults": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 200,
-                },
-            },
-            "required": ["query"],
-            "additionalProperties": False,
-        },
-    ),
-    ChatToolDefinition(
-        name="get_symbols",
-        description=(
-            "Read the structural symbols declared in one workspace file through VS Code's language provider. "
-            "Returns symbol kinds, names, containers, and one-based source positions."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Workspace-relative source file path; never an absolute path.",
-                },
-                "maxResults": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 300,
-                },
-            },
-            "required": ["path"],
-            "additionalProperties": False,
-        },
-    ),
-    ChatToolDefinition(
-        name="find_definition",
-        description=(
-            "Find workspace definitions for the symbol at a one-based line and column using VS Code's language provider. "
-            "Use read_file or search_code first to identify the source position."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Workspace-relative source file path; never an absolute path.",
-                },
-                "line": {"type": "integer", "minimum": 1},
-                "column": {"type": "integer", "minimum": 1},
-                "maxResults": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 300,
-                },
-            },
-            "required": ["path", "line", "column"],
-            "additionalProperties": False,
-        },
-    ),
-    ChatToolDefinition(
-        name="find_references",
-        description=(
-            "Find workspace references for the symbol at a one-based line and column using VS Code's language provider. "
-            "Use read_file or search_code first to identify the source position."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Workspace-relative source file path; never an absolute path.",
-                },
-                "line": {"type": "integer", "minimum": 1},
-                "column": {"type": "integer", "minimum": 1},
-                "maxResults": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 300,
-                },
-            },
-            "required": ["path", "line", "column"],
-            "additionalProperties": False,
-        },
-    ),
-    ChatToolDefinition(
-        name="get_diagnostics",
-        description=(
-            "Read current VS Code Problems diagnostics for workspace files. "
-            "Returns errors and warnings with workspace-relative paths and positions."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Optional workspace-relative file or directory. Use an empty string for the entire workspace.",
-                },
-                "maxResults": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 300,
-                },
-            },
-            "additionalProperties": False,
-        },
-    ),
-    ChatToolDefinition(
-        name="read_terminal_errors",
-        description=(
-            "Read recent failed commands captured from user terminals in the current workspace. "
-            "Only failures observed after DevMate activation through VS Code Terminal Shell Integration are available."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "maxResults": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 10,
-                },
-            },
-            "additionalProperties": False,
-        },
-    ),
-    ChatToolDefinition(
-        name="create_file",
-        description=(
-            "Create one new eligible workspace text file, automatically creating missing parent directories. "
-            "Use complete file content and never use this for an existing file or create placeholder .gitkeep files."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "New file path relative to the open workspace; never an absolute path.",
-                },
-                "content": {"type": "string"},
-            },
-            "required": ["path", "content"],
-            "additionalProperties": False,
-        },
-    ),
-    ChatToolDefinition(
-        name="edit_file",
-        description=(
-            "Edit an existing text file with 1-20 sequential exact replacements. Each oldText must match exactly once."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Existing file path relative to the open workspace; never an absolute path.",
-                },
-                "replacements": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 20,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "oldText": {"type": "string", "minLength": 1},
-                            "newText": {"type": "string"},
-                        },
-                        "required": ["oldText", "newText"],
-                        "additionalProperties": False,
-                    },
-                },
-            },
-            "required": ["path", "replacements"],
-            "additionalProperties": False,
-        },
-    ),
-    ChatToolDefinition(
-        name="delete_file",
-        description=(
-            "Delete one existing eligible workspace text file. Use only when removal is necessary. "
-            "The extension always asks the user for one-time approval and does not delete directories."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Existing file path relative to the open workspace; never an absolute path.",
-                },
-            },
-            "required": ["path"],
-            "additionalProperties": False,
-        },
-    ),
-    ChatToolDefinition(
-        name="rename_file",
-        description=(
-            "Rename one existing eligible workspace text file within its current directory. "
-            "The destination must not exist and the extension always asks for one-time approval."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Existing file path relative to the open workspace.",
-                },
-                "newPath": {
-                    "type": "string",
-                    "description": "New file path in the same directory, relative to the open workspace.",
-                },
-            },
-            "required": ["path", "newPath"],
-            "additionalProperties": False,
-        },
-    ),
-    ChatToolDefinition(
-        name="move_file",
-        description=(
-            "Move one existing eligible workspace text file to a different workspace-relative path. "
-            "Missing destination directories are created automatically. The destination must not exist and the "
-            "extension always asks for one-time approval. Never use run_command with move, mv, or mkdir."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Existing file path relative to the open workspace.",
-                },
-                "newPath": {
-                    "type": "string",
-                    "description": "Destination file path relative to the open workspace.",
-                },
-            },
-            "required": ["path", "newPath"],
-            "additionalProperties": False,
-        },
-    ),
-    ChatToolDefinition(
-        name="install_dependencies",
-        description=(
-            "Install Python dependencies from one validated requirements*.txt manifest into a project-local virtual "
-            "environment. Use only after verification reports a missing dependency. This always requires explicit "
-            "user approval; never use run_command for pip or package installation."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "manifestPath": {
-                    "type": "string",
-                    "description": "Path to requirements.txt or requirements-*.txt relative to the open workspace.",
-                },
-                "timeoutSeconds": {
-                    "type": "integer",
-                    "minimum": 10,
-                    "maximum": 1800,
-                },
-            },
-            "required": ["manifestPath"],
-            "additionalProperties": False,
-        },
-    ),
-    ChatToolDefinition(
-        name="run_command",
-        description=(
-            "Run one approved verification command such as a test, lint, type-check, or build command. "
-            "Installation, Git, shells, servers, generators, and writable formatters are blocked. "
-            "If pytest is unavailable, convert the tests to Python unittest and run "
-            "python -m unittest <test-file> -v instead of trying to install pytest."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "executable": {"type": "string"},
-                "args": {
-                    "type": "array",
-                    "maxItems": 50,
-                    "items": {"type": "string", "maxLength": 500},
-                },
-                "cwd": {
-                    "type": "string",
-                    "description": "Optional working directory relative to the open workspace. Use '.' for the workspace root and do not include the workspace folder name.",
-                },
-                "timeoutSeconds": {
-                    "type": "integer",
-                    "minimum": 10,
-                    "maximum": 1800,
-                },
-            },
-            "required": ["executable"],
-            "additionalProperties": False,
-        },
-    ),
-)
-
-
 app = FastAPI(title="DevMate Backend", version=DEVMATE_BACKEND_VERSION)
 _chat_provider = OpenAICompatibleProvider()
 
 
 def get_chat_provider() -> ChatProvider:
+    """Expose the provider as a FastAPI dependency so tests can replace network calls."""
     return _chat_provider
 
 
@@ -615,6 +249,7 @@ async def request_validation_error(
     request: Request,
     error: RequestValidationError,
 ) -> JSONResponse:
+    """Return useful field errors without echoing request bodies, source code, or keys."""
     issues = [
         {
             "loc": [part for part in item.get("loc", ()) if isinstance(part, (str, int))],
@@ -648,6 +283,7 @@ async def ask(
         Header(alias="X-DevMate-Provider-Key", max_length=10_000),
     ] = None,
 ) -> AskResult:
+    """Request one model response; the extension runs any returned tools and sends their results back."""
     completion_request, enabled_tools, used_files = _build_completion_request(
         request,
         provider_api_key,
@@ -678,6 +314,7 @@ async def ask_stream(
         Header(alias="X-DevMate-Provider-Key", max_length=10_000),
     ] = None,
 ) -> StreamingResponse:
+    """Send progress and a final result as newline-delimited JSON to the extension."""
     completion_request, enabled_tools, used_files = _build_completion_request(
         request,
         provider_api_key,
@@ -690,6 +327,7 @@ async def ask_stream(
         completion: ChatCompletion | None = None
         reasoning_announced = False
         tool_announced = False
+        # Hold the prefix until we know it is prose, so tool markup does not flash in the chat.
         preview_mode: Literal["pending", "answer", "tool"] = "pending"
         preview_buffer = ""
         try:
@@ -749,6 +387,7 @@ async def ask_stream(
                 _completion_token_usage(completion_request, completion),
             )
             yield _stream_line({"type": "final", "result": result.model_dump(mode="json")})
+        # Headers have already been sent, so stream errors as events rather than new HTTP responses.
         except ProviderError as error:
             yield _stream_line({
                 "type": "error",
@@ -783,28 +422,17 @@ def _build_completion_request(
     request: AskRequest,
     provider_api_key: str | None,
 ) -> tuple[ChatCompletionRequest, tuple[AgentToolName, ...], list[str]]:
+    """Build the same provider input for both the normal and streaming endpoints."""
     used_files = _used_files(request.scope)
     api_key = provider_api_key.strip() if provider_api_key else None
-    requested_tools = (
-        tuple(request.enabledTools)
-        if request.enabledTools is not None
-        else READ_ONLY_AGENT_TOOLS if request.toolsEnabled else ()
-    )
-    mode_tools = READ_ONLY_AGENT_TOOLS if request.mode == "ideas" else (
-        *READ_ONLY_AGENT_TOOLS,
-        *MUTATING_AGENT_TOOLS,
-    )
-    enabled_tools = tuple(
-        tool for tool in requested_tools if tool in mode_tools
-    ) if not request.forceFinalAnswer else ()
-    tools_enabled = bool(enabled_tools)
+    enabled_tools = _enabled_tools(request)
     messages = build_chat_messages(
         mode=request.mode,
         scope_type=request.scope.type,
         question=request.question,
         context_items=request.scope.items,
         tool_steps=request.toolHistory,
-        tools_enabled=tools_enabled,
+        tools_enabled=bool(enabled_tools),
         force_final_answer=request.forceFinalAnswer,
         disable_thinking=request.disableThinking,
         agent_edits_enabled=request.agentEditsEnabled,
@@ -830,6 +458,21 @@ def _build_completion_request(
     ), enabled_tools, used_files
 
 
+def _enabled_tools(request: AskRequest) -> tuple[AgentToolName, ...]:
+    """Limit the requested tools by mode; a forced final answer must not start more work."""
+    if request.forceFinalAnswer:
+        return ()
+    if request.enabledTools is not None:
+        requested_tools = tuple(request.enabledTools)
+    else:
+        requested_tools = READ_ONLY_AGENT_TOOLS if request.toolsEnabled else ()
+    mode_tools = READ_ONLY_AGENT_TOOLS if request.mode == "ideas" else (
+        *READ_ONLY_AGENT_TOOLS,
+        *MUTATING_AGENT_TOOLS,
+    )
+    return tuple(tool for tool in requested_tools if tool in mode_tools)
+
+
 def _ask_result_from_completion(
     request: AskRequest,
     completion: ChatCompletion,
@@ -837,10 +480,10 @@ def _ask_result_from_completion(
     used_files: list[str],
     token_usage: TokenUsage,
 ) -> AskResult:
+    """Validate the model reply and return either tool requests or a usable final answer."""
     completion, _ = _normalize_text_tool_completion(completion)
-    tools_enabled = bool(enabled_tools)
     if completion.tool_calls:
-        if not tools_enabled:
+        if not enabled_tools:
             raise HTTPException(
                 status_code=502,
                 detail="The model requested another tool when DevMate required a final answer.",
@@ -874,6 +517,7 @@ def _ask_result_from_completion(
             detail="The model provider returned an empty final answer.",
         )
 
+    # Tool-based edits were handled by the extension; only the proposal mode returns full files here.
     changes: list[FileChange] = []
     if request.mode == "code" and not request.agentEditsEnabled:
         try:
@@ -899,6 +543,7 @@ def _ask_result_from_completion(
 def _normalize_text_tool_completion(
     completion: ChatCompletion,
 ) -> tuple[ChatCompletion, bool]:
+    """Convert supported textual tool markup into the same format as native tool calls."""
     if completion.tool_calls or not completion.content:
         return completion, False
     if not looks_like_text_tool_call(completion.content):
@@ -922,6 +567,7 @@ def _completion_token_usage(
     request: ChatCompletionRequest,
     completion: ChatCompletion | None,
 ) -> TokenUsage:
+    """Prefer provider counts; otherwise label the character-based fallback as an estimate."""
     if completion and completion.usage:
         return TokenUsage(
             inputTokens=completion.usage.input_tokens,
@@ -968,6 +614,7 @@ def _parse_agent_tool_calls(
     tool_calls: tuple[object, ...],
     enabled_tools: set[AgentToolName],
 ) -> list[AgentToolCall]:
+    """Reject unknown tools and malformed arguments before handing calls to the extension."""
     parsed_calls: list[AgentToolCall] = []
     seen_ids: set[str] = set()
     for tool_call in tool_calls:
