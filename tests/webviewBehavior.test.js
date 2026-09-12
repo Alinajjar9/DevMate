@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createWebviewHarness } = require('./helpers/webviewHarness');
+const { loadSettings } = require('./helpers/webviewSettings');
 
 function readyWebview() {
   const view = createWebviewHarness();
@@ -98,25 +99,22 @@ test('profile form validates credentials and clears API keys when the dialog clo
   assert.equal(view.get('llmProfileDialog').dataset.hasApiKey, 'false');
 });
 
-test('settings and agent-tool dialogs preserve values and return to the parent dialog after saving', () => {
+test('settings preserve tool values in the same form and close after saving', () => {
   const view = readyWebview();
+  loadSettings(view, {}, {}, 'global');
   view.get('settingsButton').click();
   assert.equal(view.get('permissionDialog').open, true);
   assert.equal(view.get('settingsToolCallLimit').value, '16');
-  view.get('openAgentToolSettings').click();
-  assert.equal(view.get('permissionDialog').open, false);
-  assert.equal(view.get('agentToolSettingsDialog').open, true);
   view.get('settingsReadFileMaxLines').value = '600';
-  view.get('agentToolSettingsForm').dispatch('submit');
+  view.get('permissionForm').dispatch('submit');
   assert.deepEqual(view.messages.at(-1), {
-    command: 'saveAgentToolSettings',
+    command: 'saveSettings',
+    scope: 'global',
     settings: {
-      readFileMaxLines: 600, listFilesMaxResults: 200, searchCodeMaxResults: 50,
-      diagnosticsMaxResults: 100, terminalErrorsMaxResults: 5, codeNavigationMaxResults: 100
+      configuration: {}, agentTools: { readFileMaxLines: 600 },
+      policy: { createFiles: 'ask', updateFiles: 'ask' }
     }
   });
-  view.receive({ command: 'agentToolSettingsSaved' });
-  assert.equal(view.get('agentToolSettingsDialog').open, false);
   assert.equal(view.get('permissionDialog').open, true);
   view.receive({ command: 'settingsSaved' });
   assert.equal(view.get('permissionDialog').open, false);

@@ -1,5 +1,8 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { realpath } from 'fs/promises';
+import { isContextExcluded } from './contextControls';
+import type { ContextPreferences } from './contextControls';
 import type {
   AskContextItem,
   AskScope
@@ -76,7 +79,8 @@ export class WorkspaceContext {
    * Build the selected project, file or selection context. With no question, only project metadata is collected.
    * Explicit attachments share the same character budget as the automatically selected code.
    */
-  async collectScope(scope: ScopeKind, question?: string): Promise<CollectedScope | undefined> {
+  async collectScope(scope: ScopeKind, question?: string, preferences?: ContextPreferences): Promise<CollectedScope | undefined> {
+    const options: ContextPreferences = preferences ?? { contextCharacters: MAX_PROJECT_CONTEXT_CHARACTERS, pinnedFiles: [], excludedPaths: [] };
     if (scope === 'project') {
       const folder = vscode.workspace.workspaceFolders?.[0];
       if (!folder) {
@@ -96,11 +100,11 @@ export class WorkspaceContext {
       const attachmentItems = question
         ? await this.collectAttachmentItems(
           MAX_PROJECT_FILES,
-          MAX_PROJECT_CONTEXT_CHARACTERS
+          options.contextCharacters, new Set(), options
         )
         : [];
       const items = question
-        ? await this.collectProjectItems(folder, question, attachmentItems)
+        ? await this.collectProjectItems(folder, question, attachmentItems, options)
         : [];
       const includedCharacters = items.reduce(
         (total, item) => total + item.includedCharacters,
@@ -144,11 +148,16 @@ export class WorkspaceContext {
       return undefined;
     }
 
+    if (isContextExcluded(relativePath, options.excludedPaths)) {
+      this.events.postStatus('This file is excluded from starting context. Change the context settings to include it.', 'warning');
+      return undefined;
+    }
     const contextItem = createBoundedContextItem(
       source,
       filePath,
       editor.document.languageId,
-      content
+      content,
+      Math.min(20_000, options.contextCharacters)
     );
     const size = formatContextSize(
       contextItem.includedCharacters,
@@ -159,8 +168,8 @@ export class WorkspaceContext {
     const attachmentItems = question
       ? await this.collectAttachmentItems(
         MAX_ATTACHED_FILES,
-        MAX_PROJECT_CONTEXT_CHARACTERS - contextItem.includedCharacters,
-        new Set([contextItem.filePath])
+        options.contextCharacters - contextItem.includedCharacters,
+        new Set([contextItem.filePath]), options
       )
       : [];
 
@@ -200,7 +209,8 @@ export class WorkspaceContext {
   private async collectProjectItems(
     folder: vscode.WorkspaceFolder,
     question: string,
-    attachmentItems: AskContextItem[]
+    attachmentItems: AskContextItem[],
+    options: ContextPreferences
   ): Promise<AskScope['items']> {
     const includedAttachmentCharacters = attachmentItems.reduce(
       (total, item) => total + item.includedCharacters,
@@ -208,13 +218,13 @@ export class WorkspaceContext {
     );
     if (
       attachmentItems.length >= MAX_PROJECT_FILES
-      || includedAttachmentCharacters >= MAX_PROJECT_CONTEXT_CHARACTERS
+      || includedAttachmentCharacters >= options.contextCharacters
     ) {
       return attachmentItems;
     }
 
     const remainingFiles = MAX_PROJECT_FILES - attachmentItems.length;
-    const remainingCharacters = MAX_PROJECT_CONTEXT_CHARACTERS - includedAttachmentCharacters;
+    const remainingCharacters = options.contextCharacters - includedAttachmentCharacters;
     const attachedPaths = new Set(attachmentItems.map((item) => item.filePath));
 
     try {
@@ -223,7 +233,7 @@ export class WorkspaceContext {
       this.events.postStatus(refresh.changedFiles > 0 || refresh.removedFiles > 0
         ? `Indexed ${formatFileCount(refresh.index.files.length)}`
         : 'Searching project index');
-      const chunks = retrieveProjectChunks(refresh.index, question, {
+      const chunks = retrieveProjectChunks({ ...refresh.index, files: refresh.index.files.filter(file => !isContextExcluded(file.relativePath, options.excludedPaths)) }, question, {
         maxChunks: remainingFiles,
         maxCharacters: Math.max(0, remainingCharacters - remainingFiles * 64),
         excludedFilePaths: attachedPaths
@@ -243,7 +253,8 @@ export class WorkspaceContext {
       question,
       attachmentItems,
       remainingFiles,
-      remainingCharacters
+      remainingCharacters,
+      options
     );
   }
 
@@ -253,7 +264,8 @@ export class WorkspaceContext {
     question: string,
     attachmentItems: AskContextItem[],
     remainingFiles: number,
-    remainingCharacters: number
+    remainingCharacters: number,
+    options: ContextPreferences
   ): Promise<AskScope['items']> {
     let uris: vscode.Uri[];
     try {
@@ -269,7 +281,7 @@ export class WorkspaceContext {
     const candidates: ProjectFileCandidate[] = [];
     const batchSize = 20;
     for (let offset = 0; offset < uris.length; offset += batchSize) {
-      const batch = uris.slice(offset, offset + batchSize);
+      const batch = uris.slice(offset, offset + batchSize).filter(uri => !isContextExcluded(vscode.workspace.asRelativePath(uri, false), options.excludedPaths));
       const batchCandidates = await Promise.all(
         batch.map((uri) => this.readProjectCandidate(uri))
       );
@@ -355,6 +367,7 @@ export class WorkspaceContext {
           vscode.workspace.asRelativePath(uri, false)
         );
         try {
+          if (!await this.isSafeProjectUri(uri)) return undefined;
           const stat = await vscode.workspace.fs.stat(uri);
           if ((stat.type & vscode.FileType.File) === 0 || stat.size > MAX_PROJECT_FILE_BYTES) {
             return undefined;
@@ -448,7 +461,8 @@ export class WorkspaceContext {
   private async collectAttachmentItems(
     maxFiles: number,
     maxCharacters: number,
-    excludedFilePaths: Set<string> = new Set()
+    excludedFilePaths: Set<string> = new Set(),
+    preferences?: ContextPreferences
   ): Promise<AskContextItem[]> {
     const items: AskContextItem[] = [];
     let remainingCharacters = Math.max(0, maxCharacters);
@@ -457,7 +471,14 @@ export class WorkspaceContext {
       return items;
     }
 
-    for (const uri of this.attachedFiles.values()) {
+    // Pinned files are reread for every request and take priority over automatic retrieval.
+    const pinnedUris = (preferences?.pinnedFiles ?? []).map(file => vscode.Uri.joinPath(currentFolder.uri, file));
+    const candidates = [...pinnedUris, ...this.attachedFiles.values()];
+    const seen = new Set<string>();
+    for (const uri of candidates) {
+      const identity = uri.toString();
+      if (seen.has(identity) || isContextExcluded(vscode.workspace.asRelativePath(uri, false), preferences?.excludedPaths ?? [])) { continue; }
+      seen.add(identity);
       if (items.length >= maxFiles || remainingCharacters <= 0) {
         break;
       }
@@ -579,6 +600,7 @@ export class WorkspaceContext {
     }
 
     try {
+      if (!await this.isSafeProjectUri(uri)) return undefined;
       const stat = await vscode.workspace.fs.stat(uri);
       if ((stat.type & vscode.FileType.File) === 0 || stat.size > MAX_PROJECT_FILE_BYTES) {
         return undefined;
@@ -598,6 +620,20 @@ export class WorkspaceContext {
     } catch {
       return undefined;
     }
+  }
+
+  /** Do not let a pin or cached alias reveal a protected file through a symbolic link. */
+  private async isSafeProjectUri(uri: vscode.Uri): Promise<boolean> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder || uri.scheme !== folder.uri.scheme) return false;
+    if (uri.scheme !== 'file') return vscode.workspace.getWorkspaceFolder(uri)?.uri.toString() === folder.uri.toString();
+    try {
+      const [rootPath, filePath] = await Promise.all([realpath(folder.uri.fsPath), realpath(uri.fsPath)]);
+      const relative = path.relative(rootPath, filePath);
+      if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative) || shouldSkipProjectFile(relative)) return false;
+      const expected = path.resolve(rootPath, path.relative(folder.uri.fsPath, uri.fsPath));
+      return process.platform === 'win32' ? expected.toLowerCase() === filePath.toLowerCase() : expected === filePath;
+    } catch { return false; }
   }
 }
 

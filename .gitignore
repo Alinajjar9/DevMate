@@ -1,13 +1,35 @@
+# Dependencies and Python environments.
 node_modules/
 .venv/
+venv/
+
+# Generated builds, packages, and test output.
+out/
+backend-runtime/
+.pyinstaller-build/
+.vscode-test/
+release/
+tmp/
+output/
+*.zip
+*.vsix
+*.log
+__pycache__/
+*.py[cod]
+
+# Documentation and assistant files kept on this computer.
+/docs/
+/CHANGELOG.md
+/IMPLEMENTATION_PLAN.local.md
+/.codex-remote-attachments/
+/.codex/
+/.agents/
+
+# Local credentials; keep the example configuration available.
 .env
 .env.*
 !.env.example
-__pycache__/
-*.py[cod]
-.pyinstaller-build/
-backend-runtime/
-.vscode-test/
-*.vsix
 
-IMPLEMENTATION_PLAN.local.md
+# Operating-system metadata.
+.DS_Store
+Thumbs.db

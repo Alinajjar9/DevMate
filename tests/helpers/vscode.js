@@ -7,6 +7,8 @@ function createVscodeHarness() {
   const reads = [];
   const writes = [];
   const configuration = new Map();
+  const workspaceConfiguration = new Map();
+  const realpaths = new Map();
   const normalize = value => path.resolve(value).toLowerCase();
   const uri = value => ({
     scheme: 'file',
@@ -34,6 +36,7 @@ function createVscodeHarness() {
     },
     FileType: { File: 1, Directory: 2, SymbolicLink: 64 },
     FileSystemError,
+    ConfigurationTarget: { Global: 1, Workspace: 2 },
     RelativePattern: class {
       constructor(base, pattern) {
         this.base = base;
@@ -43,9 +46,16 @@ function createVscodeHarness() {
     workspace: {
       workspaceFolders: [folder],
       isTrusted: true,
-      asRelativePath: value => path.relative(root, value.fsPath).replace(/\\/g, '/'),
+      asRelativePath: value => path.relative(root, typeof value === 'string' ? value : value.fsPath).replace(/\\/g, '/'),
       getWorkspaceFolder: value => normalize(value.fsPath).startsWith(normalize(root)) ? folder : undefined,
-      getConfiguration: () => ({ get: (key, fallback) => configuration.get(key) ?? fallback }),
+      getConfiguration: () => ({
+        get: (key, fallback) => workspaceConfiguration.get(key) ?? configuration.get(key) ?? fallback,
+        inspect: key => ({ key, globalValue: configuration.get(key), workspaceValue: workspaceConfiguration.get(key) }),
+        update: async (key, value, target) => {
+          const destination = target === 2 ? workspaceConfiguration : configuration;
+          if (value === undefined) destination.delete(key); else destination.set(key, value);
+        }
+      }),
       findFiles: async (_include, _exclude, limit) => [...files.values()].filter(file => file.uri.fsPath.startsWith(root)).slice(0, limit).map(file => file.uri),
       fs: {
         stat: async (value) => {
@@ -121,7 +131,10 @@ function createVscodeHarness() {
   function load(relativeModule) {
     const originalLoad = Module._load;
     Module._load = function(request, parent, isMain) {
-      return request === 'vscode' ? vscode : originalLoad.call(this, request, parent, isMain);
+      if (request === 'vscode') return vscode;
+      if (request === 'fs/promises') return { ...originalLoad.call(this, request, parent, isMain),
+        realpath: async value => realpaths.get(path.resolve(value)) ?? path.resolve(value) };
+      return originalLoad.call(this, request, parent, isMain);
     };
     try {
       return require(path.resolve(__dirname, '../../out', relativeModule));
@@ -139,6 +152,8 @@ function createVscodeHarness() {
     reads,
     writes,
     configuration,
+    workspaceConfiguration,
+    realpaths,
     context,
     load
   };

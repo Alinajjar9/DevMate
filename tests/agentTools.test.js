@@ -1,8 +1,10 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const { providerState } = require('./helpers/providerState');
 
 const {
   AGENT_TOOL_NAMES,
+  COMMAND_AGENT_TOOL_NAMES,
   DEFAULT_AGENT_TOOL_CALL_LIMIT,
   FILE_MUTATION_AGENT_TOOL_NAMES,
   MAX_AGENT_CONSECUTIVE_INSPECTIONS,
@@ -19,6 +21,7 @@ const {
   consecutiveAgentInspectionCalls,
   isDeferredAgentPlanAnswer,
   isFileMutationAgentTool,
+  isCommandAgentTool,
   isReadOnlyAgentTool,
   normalizeAgentToolCallForWorkspace,
   normalizeAgentToolPath,
@@ -54,7 +57,7 @@ test('classifies every supported agent tool exactly once', () => {
     ...READ_ONLY_AGENT_TOOL_NAMES,
     ...FILE_MUTATION_AGENT_TOOL_NAMES,
     'install_dependencies',
-    'run_command'
+    ...COMMAND_AGENT_TOOL_NAMES
   ];
   assert.deepEqual(new Set(grouped), new Set(AGENT_TOOL_NAMES));
   assert.equal(grouped.length, AGENT_TOOL_NAMES.length);
@@ -89,6 +92,27 @@ test('compacts oldest tool results when a higher call limit fills context', () =
   assert.match(compacted[0].result, /omitted/);
   assert.equal(compacted.at(-1).result, history.at(-1).result);
   assert.equal(history[0].result.length, 10_000);
+});
+
+test('keeps provider output intact while compacting results and summarizing edit arguments', () => {
+  const state = providerState();
+  const call = {
+    id: 'call-one', name: 'create_file', arguments: { path: 'large.ts', content: 'x'.repeat(20_000) },
+    providerState: state
+  };
+  state.outputItems[2] = {
+    type: 'function_call', call_id: call.id, name: call.name, arguments: JSON.stringify(call.arguments)
+  };
+  const history = Array.from({ length: 10 }, (_, index) => ({
+    callId: `call-${index}`, name: call.name, arguments: summarizedAgentToolArguments(parseAgentToolCall(call)),
+    result: 'x'.repeat(10_000), isError: false, providerState: state
+  }));
+  const compacted = compactAgentToolHistory(history);
+  assert.match(compacted[0].result, /omitted/);
+  assert.notEqual(compacted[0].arguments.content, call.arguments.content);
+  assert.deepEqual(compacted[0].providerState, state);
+  assert.equal(JSON.parse(compacted[0].providerState.outputItems[2].arguments).content, call.arguments.content);
+  assert.deepEqual(normalizeAgentToolCallForWorkspace(call, workspace).providerState, state);
 });
 
 test('canonicalizes semantically identical tool calls', () => {
@@ -384,7 +408,8 @@ test('parses bounded read-only tool calls', () => {
   }), {
     id: 'call-2',
     name: 'search_code',
-    arguments: { query: 'permission', path: 'src/api', maxResults: 20 }
+    arguments: { query: 'permission', path: 'src/api', maxResults: 20,
+      caseSensitive: false, wholeWord: false, filePattern: '', contextLines: 0 }
   });
 
   assert.deepEqual(parseAgentToolCall({
@@ -403,6 +428,58 @@ test('parses bounded read-only tool calls', () => {
   }).arguments, {
     maxResults: 10
   });
+});
+
+test('parses project, Git, symbol, formatter and command-stop calls in their capability groups', () => {
+  const call = (name, args = {}) => parseAgentToolCall({ id: 'call', name, arguments: args });
+  assert.deepEqual(call('get_project_info').arguments, { path: '' });
+  assert.deepEqual(call('get_git_changes', { path: 'src', staged: true }).arguments, { path: 'src', staged: true });
+  assert.equal(call('get_git_changes').arguments.staged, false);
+  assert.deepEqual(call('rename_symbol', { path: 'src/app.ts', line: 2, column: 5, newName: 'newName' }).arguments,
+    { path: 'src/app.ts', line: 2, column: 5, newName: 'newName' });
+  assert.deepEqual(call('format_file', { path: 'src/app.ts' }).arguments, { path: 'src/app.ts' });
+  assert.deepEqual(call('stop_command', { id: 'server-call-1' }).arguments, { id: 'server-call-1' });
+  for (const name of ['get_project_info', 'get_git_changes']) assert.equal(isReadOnlyAgentTool(name), true);
+  for (const name of ['rename_symbol', 'format_file']) assert.equal(isFileMutationAgentTool(name), true);
+  assert.equal(isReadOnlyAgentTool('stop_command'), false);
+  assert.equal(isFileMutationAgentTool('stop_command'), false);
+  assert.equal(isCommandAgentTool('stop_command'), true);
+  assert.throws(() => call('rename_symbol', { path: 'src/app.ts', line: 0, column: 1, newName: 'name' }), /one-based/);
+  assert.throws(() => call('get_git_changes', { path: '../private' }), /unsafe/);
+  assert.throws(() => call('get_git_changes', { staged: 'true' }), /boolean/);
+  assert.throws(() => call('stop_command', { id: 'a\nb' }), /whitespace|control/);
+});
+
+test('preserves literal search options and bounds nearby lines', () => {
+  const call = args => parseAgentToolCall({ id: 'search', name: 'search_code', arguments: { query: 'a.b', ...args } });
+  assert.deepEqual(call({ wholeWord: true, caseSensitive: true, filePattern: '**/*.{ts,tsx}', contextLines: 100 }).arguments, {
+    query: 'a.b', path: '', wholeWord: true, caseSensitive: true, filePattern: '**/*.{ts,tsx}', contextLines: 5, maxResults: 20
+  });
+  assert.throws(() => call({ filePattern: '../*.ts' }), /relative glob/);
+  assert.throws(() => call({ wholeWord: 'true' }), /boolean/);
+});
+
+test('new path tools normalize the workspace prefix but command identifiers remain opaque', () => {
+  for (const name of ['get_project_info', 'get_git_changes', 'rename_symbol', 'format_file']) {
+    const normalized = normalizeAgentToolCallForWorkspace({ id: 'call', name,
+      arguments: { path: `${workspace.name}/src/app.ts` } }, workspace);
+    assert.equal(normalized.arguments.path, 'src/app.ts');
+  }
+  const stop = { id: 'stop', name: 'stop_command', arguments: { id: `${workspace.name}/command` } };
+  assert.deepEqual(normalizeAgentToolCallForWorkspace(stop, workspace), stop);
+});
+
+test('background command parsing defers access checks and summaries do not claim completion', () => {
+  const parsed = parseAgentToolCall({ id: 'server', name: 'run_command',
+    arguments: { executable: 'npm', args: ['run', 'dev'], background: true } });
+  assert.equal(parsed.arguments.background, true);
+  const summary = summarizeAgentToolHistory([{ ...parsed, result: 'Started server.', isError: false }], 'Provider unavailable');
+  assert.match(summary, /background; completion has not been verified/);
+  assert.doesNotMatch(summary, /exited with code 0/);
+  assert.equal(consecutiveAgentInspectionCalls([
+    { name: 'get_project_info', isError: false }, { name: 'format_file', isError: false },
+    { name: 'get_git_changes', isError: false }
+  ]), 1);
 });
 
 test('rejects absolute, traversal, and missing read paths', () => {

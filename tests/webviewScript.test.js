@@ -71,7 +71,7 @@ test('dependency installation permission cannot be remembered', () => {
   const source = readDevMateSource();
   assert.match(source, /Permission required to install Python dependencies/);
   assert.match(source, /rememberable:\s*false/);
-  assert.match(source, /if \(message\.rememberable !== false\)/);
+  assert.match(source, /if \(message\.rememberable !== false && message\.allowRemember !== false\)/);
 });
 
 test('file lifecycle permissions are always one-time and reviewable', () => {
@@ -143,7 +143,8 @@ test('built-in Nemotron setup locks provider fields while keeping the API key co
   assert.match(source, /llmProfileNameEl\.disabled = isBuiltIn/);
   assert.match(source, /llmProfileProviderEl\.disabled = isBuiltIn/);
   assert.match(source, /Configure built-in Nemotron/);
-  assert.match(source, /Save API key/);
+  assert.match(source, /Save changes/);
+  assert.match(source, /id="profileMaxTokens"/);
   assert.match(source, /The built-in Nemotron profile cannot be deleted/);
 });
 
@@ -176,13 +177,15 @@ test('recognized reasoning models expose a compact icon intelligence menu beside
   assert.doesNotMatch(source, /id="reasoningEffort"/);
 });
 
-test('settings expose a separate bounded agent-tool limits dialog', () => {
+test('Advanced opens the draft-only tools popup with bounded result limits', () => {
   const source = readDevMateSource();
+  assert.match(source, /id="advancedSettings"/);
   assert.match(source, /id="openAgentToolSettings"/);
-  assert.match(source, /id="agentToolSettingsDialog"/);
+  assert.match(source, /id="agentToolsDialog"/);
+  assert.match(source, /id="toolResultLimits"/);
   assert.match(source, /id="settingsReadFileMaxLines"[^>]*max="1000"/);
-  assert.match(source, /command: 'saveAgentToolSettings'/);
-  assert.match(source, /agentTools: this\.getAgentToolSettings\(\)/);
+  assert.match(source, /command: 'saveSettings'/);
+  assert.match(source, /agentTools: this\.getAgentToolSettings\(this\.configuration\.scope\)/);
 });
 
 test('working UI exposes tool usage and resumable agent checkpoints', () => {

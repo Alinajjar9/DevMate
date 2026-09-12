@@ -1,4 +1,4 @@
-/** Pure validation and text-edit helpers used before the executor touches workspace files. */
+/** Pure validation, file-read formatting and text-edit helpers used by the executor. */
 
 import { shouldSkipProjectFile } from './projectIndex';
 
@@ -37,10 +37,74 @@ export type RelocateFileToolArguments = {
   newPath: string;
 };
 
+/** Return complete lines so a copied read result remains usable as exact edit text. */
+export function formatReadFileResult(input: {
+  path: string;
+  languageId: string;
+  content: string;
+  startLine: number;
+  endLine: number;
+  maxCharacters: number;
+}): { result: string; resultSummary: string } {
+  const lines = input.content === '' ? [] : input.content.split(/\r?\n/);
+  if (input.startLine > Math.max(1, lines.length)) {
+    throw new Error(`${input.path} has only ${lines.length} lines.`);
+  }
+  const requestedLines = lines.slice(input.startLine - 1, input.endLine);
+  const format = (returnedLines: string[], note?: string): string => [
+    `Path: ${input.path}`,
+    `Language: ${input.languageId}`,
+    returnedLines.length > 0
+      ? `Lines: ${input.startLine}-${input.startLine + returnedLines.length - 1} of ${lines.length}`
+      : `Lines: none of ${lines.length}${lines.length === 0 ? ' (empty file)' : ''}`,
+    ...(note ? [note] : []),
+    'Content:',
+    returnedLines.join('\n')
+  ].join('\n');
+  const resultFor = (returnedLines: string[], result: string) => ({
+    result,
+    resultSummary: `${returnedLines.join('\n').length} characters read`
+  });
+
+  // Try the whole requested range first: a complete response needs no continuation hint.
+  const complete = format(requestedLines);
+  if (complete.length <= input.maxCharacters) {
+    return resultFor(requestedLines, complete);
+  }
+
+  const returnedLines: string[] = [];
+  let result = '';
+  for (const line of requestedLines) {
+    const nextLines = [...returnedLines, line];
+    const nextLine = input.startLine + nextLines.length;
+    const candidate = format(nextLines,
+      `Next read: startLine=${nextLine}. Line ${nextLine} was not returned; the result limit allows only complete lines.`);
+    if (candidate.length > input.maxCharacters) {
+      break;
+    }
+    returnedLines.push(line);
+    result = candidate;
+  }
+
+  if (returnedLines.length === 0) {
+    const firstLineFitsAlone = format(requestedLines.slice(0, 1)).length <= input.maxCharacters;
+    const guidance = firstLineFitsAlone
+      ? `No text was returned. Read just this line with startLine=${input.startLine}, endLine=${input.startLine} so the continuation note does not consume its space.`
+      : `Line ${input.startLine} cannot fit within the ${input.maxCharacters}-character result limit. `
+        + 'No text from this line was returned. Use a targeted search or inspect it in the editor; repeating this read will not help.';
+    result = format([], guidance);
+  }
+  if (result.length > input.maxCharacters) {
+    throw new Error('The read_file result limit is too small for the file metadata and read guidance.');
+  }
+  return resultFor(returnedLines, result);
+}
+
 type FileChangeToolStep = {
   name: string;
   arguments: Record<string, unknown>;
   isError: boolean;
+  result?: string;
 };
 
 // Collapse successful operations into the final per-file changes shown in the chat.
@@ -51,6 +115,10 @@ export function collectFileChangeSummary(
   const changes = new Map<string, FileChangeSummaryItem>();
   for (const step of steps) {
     if (step.isError) {
+      continue;
+    }
+    if (step.name === 'rename_symbol' || step.name === 'format_file') {
+      for (const change of parseAppliedFileChangeOutcome(step.result ?? '')) applyUpdated(changes, change.path);
       continue;
     }
     const path = safePath(step.arguments.path);
@@ -330,20 +398,30 @@ export function parseEditFileArguments(value: Record<string, unknown>): {
   if (typeof value.path !== 'string') {
     throw new Error('edit_file requires a workspace-relative path.');
   }
-  if (!Array.isArray(value.replacements)
-    || value.replacements.length === 0
-    || value.replacements.length > MAX_EDIT_REPLACEMENTS) {
-    throw new Error(`edit_file requires between 1 and ${MAX_EDIT_REPLACEMENTS} replacements.`);
+  if (!Array.isArray(value.replacements)) {
+    throw editArgumentError('edit_file.replacements must be an array.');
+  }
+  if (value.replacements.length === 0 || value.replacements.length > MAX_EDIT_REPLACEMENTS) {
+    throw editArgumentError(
+      `edit_file.replacements must contain between 1 and ${MAX_EDIT_REPLACEMENTS} entries; received ${value.replacements.length}.`
+    );
   }
 
   const replacements: ExactTextReplacement[] = [];
   let argumentCharacters = 0;
-  for (const candidate of value.replacements) {
-    if (!isRecord(candidate)
-      || typeof candidate.oldText !== 'string'
-      || typeof candidate.newText !== 'string'
-      || !candidate.oldText) {
-      throw new Error('Every edit replacement requires non-empty oldText and string newText.');
+  for (const [index, candidate] of value.replacements.entries()) {
+    const field = `replacements[${index}]`;
+    if (!isRecord(candidate)) {
+      throw editArgumentError(`${field} must be an object with oldText and newText fields.`);
+    }
+    if (typeof candidate.oldText !== 'string') {
+      throw editArgumentError(`${field}.oldText ${invalidTextValue(candidate.oldText)}; copy the exact existing text.`);
+    }
+    if (candidate.oldText === '') {
+      throw editArgumentError(`${field}.oldText must not be empty. To insert text, match an existing anchor and include that anchor with the new text in newText.`);
+    }
+    if (typeof candidate.newText !== 'string') {
+      throw editArgumentError(`${field}.newText ${invalidTextValue(candidate.newText)}; use the empty string "" to delete matched text.`);
     }
     if (candidate.oldText.includes('\0') || candidate.newText.includes('\0')) {
       throw new Error('DevMate will not edit binary content.');
@@ -368,6 +446,19 @@ export function parseEditFileArguments(value: Record<string, unknown>): {
     path: normalizeWorkspaceRelativePath(value.path),
     replacements
   };
+}
+
+function editArgumentError(detail: string): Error {
+  return new Error(`${detail} No changes from this edit_file call were applied. `
+    + 'Replacement shape: {"oldText":"exact existing text","newText":"replacement text"}.');
+}
+
+function invalidTextValue(value: unknown): string {
+  if (value === undefined) {
+    return 'is missing';
+  }
+  const receivedType = value === null ? 'null' : Array.isArray(value) ? 'an array' : typeof value;
+  return `must be a string; received ${receivedType}`;
 }
 
 export function parseDeleteFileArguments(value: Record<string, unknown>): { path: string } {
@@ -404,17 +495,20 @@ export function applyExactReplacements(
     if (!match) {
       throw new Error(
         `Replacement ${index + 1} did not match the current file. `
-        + 'Use read_file around the relevant lines and copy oldText exactly, including broken syntax and whitespace.'
+        + 'No changes from this edit_file call were applied. '
+        + 'Use read_file around the relevant lines and retry one replacement with oldText copied exactly, including whitespace.'
       );
     }
     if (match.occurrences > 1) {
-      throw new Error(`Replacement ${index + 1} matched more than once; provide a more specific oldText value.`);
+      throw new Error(`Replacement ${index + 1} matched more than once. No changes from this edit_file call were applied. `
+        + 'Include more surrounding text in oldText so it matches exactly once.');
     }
     const targetEol = lineEndingFor(match.value) ?? lineEndingFor(updated);
     const newText = targetEol
       ? normalizeLineEndings(replacement.newText, targetEol)
       : replacement.newText;
-    updated = updated.replace(match.value, newText);
+    // A replacement string interprets $&, $$ and similar tokens; the callback keeps source text literal.
+    updated = updated.replace(match.value, () => newText);
     if (updated.length > MAX_FILE_CHANGE_CHARACTERS) {
       throw new Error('The edited file exceeds the per-file change limit.');
     }

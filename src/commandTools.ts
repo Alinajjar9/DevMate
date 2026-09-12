@@ -1,4 +1,4 @@
-/** Parse the limited verification-command format and prepare terminal output for the chat and model. */
+/** Validate supported command forms. This is an allowlist, not a sandbox for project code. */
 
 import { createHash } from 'crypto';
 
@@ -10,12 +10,20 @@ export const MAX_CHAT_COMMAND_OUTPUT_CHARACTERS = 20_000;
 export const MAX_MODEL_COMMAND_OUTPUT_CHARACTERS = 10_000;
 export const MAX_CAPTURED_TERMINAL_ERRORS = 5;
 export const MAX_CAPTURED_TERMINAL_OUTPUT_CHARACTERS = 8_000;
+export const COMMAND_ACCESS_STORAGE_KEY = 'devMate.commandAccess.v1';
+export type CommandAccess = 'standard' | 'extended';
+
+/** Access comes from extension workspace state, never a project file or model argument. */
+export function parseCommandAccess(value: unknown): CommandAccess {
+  return value === 'extended' ? 'extended' : 'standard';
+}
 
 export type ValidatedCommand = {
   executable: string;
   args: string[];
   cwd: string;
   timeoutSeconds: number;
+  background?: boolean;
 };
 export type CapturedTerminalError = {
   command: string;
@@ -26,7 +34,7 @@ export type CapturedTerminalError = {
   capturedAt: number;
 };
 
-const packageScriptPattern = /(^|:)(test|lint|check|type-?check|build)(:|$)/i;
+const packageScriptPattern = /(^|:)(test|lint|check|type-?check|build|verify|compile)(:|$)/i;
 const forbiddenArgumentPattern = /[\0\r\n;&|<>`$'"(){}!^%]/;
 const forbiddenBehaviorPattern = /(^|[-_:])(install|add|remove|uninstall|publish|deploy|serve|server|start|watch|dev|fix|write|generate|generator)([-_:]|$)/i;
 const blockedWorkingDirectories = new Set([
@@ -90,7 +98,10 @@ export function formatCapturedTerminalErrors(
 }
 
 /** Accept structured arguments or a simple command string, then enforce the verification-command registry. */
-export function parseRunCommandArguments(value: Record<string, unknown>): ValidatedCommand {
+export function parseRunCommandArguments(
+  value: Record<string, unknown>,
+  access: CommandAccess | 'deferred' = 'standard'
+): ValidatedCommand {
   let executableValue = value.executable;
   let argumentsValue = value.args ?? value.arguments;
   if ((typeof executableValue !== 'string' || !executableValue.trim()) && typeof value.command === 'string') {
@@ -116,8 +127,21 @@ export function parseRunCommandArguments(value: Record<string, unknown>): Valida
   const args = parseArguments(argumentsValue);
   const cwd = normalizeCommandCwd(typeof value.cwd === 'string' ? value.cwd : '');
   const timeoutSeconds = boundedTimeout(value.timeoutSeconds);
-  validateVerificationCommand(executable, args);
-  return { executable, args, cwd, timeoutSeconds };
+  if (value.background !== undefined && typeof value.background !== 'boolean') {
+    throw new Error('run_command background must be a boolean.');
+  }
+  validateCommonCommandArguments(executable, args);
+  if (access !== 'deferred') {
+    if (value.background && (access !== 'extended' || !isServerCommand(executable, args))) {
+      throw new Error('Background commands require Extended access and a supported project dev/start/serve script.');
+    }
+    if (access === 'standard') {
+      validateVerificationCommand(executable, args);
+    } else {
+      validateExtendedCommand(executable, args, value.background === true);
+    }
+  }
+  return { executable, args, cwd, timeoutSeconds, ...(value.background ? { background: true } : {}) };
 }
 
 /** Identify approval by executable, arguments and working directory, so approval does not extend to another command. */
@@ -155,18 +179,24 @@ export function boundedModelCommandOutput(value: string): string {
 }
 
 /** Restrict model requests to known check/build/test forms. These checks do not sandbox project scripts. */
-function validateVerificationCommand(executable: string, args: string[]): void {
+function validateCommonCommandArguments(executable: string, args: string[]): void {
   const name = commandName(executable);
   const fileToolGuidance = filesystemCommandGuidance(name);
   if (fileToolGuidance) {
     throw new Error(fileToolGuidance);
   }
   if (args.some((argument) => forbiddenArgumentPattern.test(argument))) {
-    throw new Error('Verification command arguments cannot contain shell operators or control characters.');
+    throw new Error('Command arguments cannot contain shell operators or control characters.');
   }
   if (args.some(isOutsideWorkspaceArgument)) {
-    throw new Error('Verification command arguments cannot reference absolute or parent paths.');
+    throw new Error('Command arguments cannot reference absolute or parent paths.');
   }
+}
+
+function validateVerificationCommand(executable: string, args: string[]): void {
+  const name = commandName(executable);
+  if (isRuntimeVersion(name, args) || isDependencyListing(name, args)) { return; }
+  if (name === 'git') { validateGitInspection(args); return; }
   if (args.some((argument) => argument !== '--no-install' && forbiddenBehaviorPattern.test(argument))) {
     throw new Error('Installation, generation, watch, server, deploy, and write commands are blocked.');
   }
@@ -264,14 +294,132 @@ function filesystemCommandGuidance(name: string): string | undefined {
 }
 
 function validatePackageCommand(name: string, args: string[]): void {
+  rejectFlags(args, ['--script-shell', '--prefix', '--global', '-g', '--dir', '-C', '--cwd', '--userconfig', '--globalconfig']);
   if (args[0] === 'test' && name !== 'yarn') {
     return;
   }
   const scriptIndex = args[0] === 'run' ? 1 : name === 'yarn' ? 0 : -1;
   const script = scriptIndex >= 0 ? args[scriptIndex] : undefined;
   if (!script || !packageScriptPattern.test(script) || forbiddenBehaviorPattern.test(script)) {
-    throw new Error('Package managers are limited to test, lint, check, type-check, and build scripts.');
+    throw new Error('Package managers are limited to test, lint, check, type-check, build, verify, and compile scripts in Standard access.');
   }
+}
+
+function isRuntimeVersion(name: string, args: string[]): boolean {
+  return ['node', 'npm', 'pnpm', 'yarn', 'python', 'python3', 'py', 'git', 'cargo', 'rustc', 'dotnet', 'pytest', 'ruff'].includes(name)
+    && args.length === 1 && args[0] === '--version'
+    || name === 'go' && args.length === 1 && args[0] === 'version';
+}
+
+function isDependencyListing(name: string, args: string[]): boolean {
+  if (['npm', 'pnpm', 'yarn'].includes(name) && ['list', 'ls'].includes(args[0] ?? '')) {
+    if (!args.slice(1).every((arg) => ['--json', '--all', '--long', '--production', '--dev'].includes(arg)
+      || /^--depth=[0-5]$/.test(arg))) {
+      throw new Error('Dependency listings accept --depth=0 through --depth=5, --json, --all, --long, --production, or --dev.');
+    }
+    return true;
+  }
+  if (['python', 'python3', 'py'].includes(name) && args[0] === '-m' && args[1] === 'pip') {
+    if (args[2] === 'list' && args.slice(3).every((arg) => ['--format=json', '--format=columns', '--local', '--not-required'].includes(arg))) {
+      return true;
+    }
+    if (args[2] === 'show' && args.length > 3 && args.slice(3).every((arg) => /^[a-z0-9][a-z0-9._-]*$/i.test(arg))) {
+      return true;
+    }
+    throw new Error('Python pip commands are limited to list and show; use install_dependencies for a requirements file.');
+  }
+  return false;
+}
+
+/** Git receives only inspection options; execution adds flags disabling pagers and external diff helpers. */
+function validateGitInspection(args: string[]): void {
+  const [operation, ...rest] = args;
+  const allowed = operation === 'status'
+    ? new Set(['--short', '--branch', '--porcelain', '--porcelain=v1', '--untracked-files=no', '--untracked-files=normal'])
+    : operation === 'diff'
+      ? new Set(['--stat', '--name-only', '--name-status', '--cached', '--staged', '--check', '--no-color'])
+      : operation === 'log'
+        ? new Set(['--oneline', '--no-decorate', '--no-color', '--stat', '--name-only'])
+        : undefined;
+  if (!allowed) { throw new Error('Git is limited to status, diff, log, or --version. Git writes are not supported.'); }
+  let paths = false;
+  for (const argument of rest) {
+    if (argument === '--' && operation !== 'log' && !paths) { paths = true; continue; }
+    if (paths) {
+      if (!argument || argument.startsWith('-') || argument.startsWith(':')) {
+        throw new Error('Git paths must be simple relative paths after --.');
+      }
+    } else if (!allowed.has(argument)
+      && !(operation === 'log' && /^--max-count=([1-9]|[1-4][0-9]|50)$/.test(argument))) {
+      throw new Error('This Git inspection option is not supported. Use bounded status, diff, or log options.');
+    }
+  }
+}
+
+/** Produce the actual Git invocation after policy validation, so config cannot start a pager or diff helper. */
+export function commandExecutionArguments(command: ValidatedCommand): string[] {
+  if (commandName(command.executable) !== 'git' || command.args[0] === '--version') { return [...command.args]; }
+  const [operation, ...rest] = command.args;
+  return ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', operation,
+    ...(operation === 'diff' || operation === 'log' ? ['--no-ext-diff', '--no-textconv'] : []),
+    ...(operation === 'log' ? ['--max-count=20'] : []), ...rest];
+}
+
+export function commandProjectScript(command: ValidatedCommand): string | undefined {
+  const name = commandName(command.executable);
+  if (['node', 'python', 'python3', 'py'].includes(name) && command.args[0] && !command.args[0].startsWith('-')) {
+    return command.args[0].replace(/^\.\//, '');
+  }
+  return undefined;
+}
+
+function isServerCommand(executable: string, args: string[]): boolean {
+  const name = commandName(executable);
+  if (!['npm', 'pnpm', 'yarn'].includes(name)) { return false; }
+  const script = args[0] === 'run' ? args[1] : args[0];
+  return /^(dev|start|serve)(:[a-z0-9_-]+)*$/i.test(script ?? '');
+}
+
+function validateExtendedCommand(executable: string, args: string[], background: boolean): void {
+  const name = commandName(executable);
+  // Extension access still does not accept shell execution, deployment, deletion, or global installation.
+  rejectFlags(args, ['--global', '-g', '--prefix', '--script-shell', '--userconfig', '--globalconfig', '--cwd', '--dir', '-C']);
+  if (args.some((argument) => /(^|[-_:])(publish|deploy|uninstall|remove|delete)([-_:]|$)/i.test(argument))) {
+    throw new Error('Publish, deploy, removal, and global commands are not supported.');
+  }
+  if (['npm', 'pnpm', 'yarn'].includes(name)) {
+    if (['install', 'ci', 'add'].includes(args[0] ?? '')) {
+      if (background || args[0] === 'ci' && name !== 'npm'
+        || !args.slice(1).every((arg) => ['--save-dev', '-D', '--save-exact', '--frozen-lockfile', '--ignore-scripts', '--no-audit', '--no-fund'].includes(arg)
+          || /^(@[a-z0-9._-]+\/)?[a-z0-9][a-z0-9._-]*(@[a-z0-9.*~+_-]+)?$/i.test(arg))) {
+        throw new Error('Project installs accept package names and supported local install flags only. URLs and global installs are blocked.');
+      }
+      return;
+    }
+    const scriptIndex = args[0] === 'run' ? 1 : name === 'yarn' || ['test', 'start'].includes(args[0] ?? '') ? 0 : -1;
+    const script = scriptIndex >= 0 ? args[scriptIndex] : undefined;
+    if (script && /^[a-z0-9][a-z0-9:_-]*$/i.test(script)
+      && (packageScriptPattern.test(script) || /(^|:)(generate|codegen|format|fix|dev|start|serve)(:|$)/i.test(script))) {
+      if (isServerCommand(executable, args) && !background) {
+        throw new Error('Use background:true for dev/start/serve scripts so DevMate can track and stop the server.');
+      }
+      return;
+    }
+  }
+  if (name === 'node' || ['python', 'python3', 'py'].includes(name)) {
+    const script = args[0] ?? '';
+    if (script && !script.startsWith('-') && (name === 'node' ? /\.(c?js|mjs)$/i : /\.py$/i).test(script)) {
+      rejectFlags(args, ['-e', '--eval', '-p', '--print', '-c', '--command', '--require', '--import', '--loader', '--experimental-loader']);
+      return;
+    }
+  }
+  if (name === 'npx' && args[0] === '--no-install' && ['eslint', 'prettier'].includes(args[1] ?? '')) {
+    rejectFlags(args, ['--watch']);
+    return;
+  }
+  if (name === 'ruff' && ['check', 'format'].includes(args[0] ?? '')) { return; }
+  if (name === 'cargo' && args[0] === 'fmt') { return; }
+  validateVerificationCommand(executable, args);
 }
 
 function validateBuildTasks(args: string[], allowedTasks: Set<string>): void {
@@ -370,6 +518,9 @@ function sameCommandName(candidate: unknown, executable: string): boolean {
 
 function normalizeCommandCwd(value: string): string {
   const trimmed = value.trim();
+  if (trimmed.length > 500 || trimmed.split(/[\\/]/).length > 30) {
+    throw new Error('Command working directories exceed the supported path length.');
+  }
   if (!trimmed || trimmed === '.' || trimmed === './' || trimmed === '.\\') {
     return '';
   }
@@ -377,7 +528,7 @@ function normalizeCommandCwd(value: string): string {
     throw new Error('Command working directories must be workspace-relative.');
   }
   const normalized = trimmed.replace(/\\/g, '/').replace(/\/$/, '');
-  if (normalized.split('/').some((part) =>
+  if (/[\0-\x1f:<>"|?*]/.test(normalized) || normalized.split('/').some((part) =>
     !part || part === '.' || part === '..' || blockedWorkingDirectories.has(part.toLocaleLowerCase())
   )) {
     throw new Error('The command working directory contains unsafe segments.');
@@ -401,7 +552,7 @@ function commandName(executable: string): string {
 }
 
 function rejectFlags(args: string[], flags: string[]): void {
-  if (args.some((argument) => flags.includes(argument))) {
+  if (args.some((argument) => flags.some((flag) => argument === flag || argument.startsWith(`${flag}=`)))) {
     throw new Error(`The verification command cannot use ${flags.join(', ')}.`);
   }
 }

@@ -248,7 +248,7 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
             )
 
         provider = OpenAICompatibleProvider(transport=httpx.MockTransport(handler))
-        request = self._request(base_url=None)
+        request = self._request(base_url=None, api="chat_completions")
 
         self.assertEqual(
             await provider.complete(request),
@@ -269,14 +269,15 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
             base_url=None,
             model="gpt-5.4-nano",
             reasoning_effort="xhigh",
+            api="chat_completions",
         ))
 
         self.assertEqual(completion.content, "Reasoned answer")
 
-    async def test_does_not_send_reasoning_effort_to_unknown_compatible_endpoints(self) -> None:
+    async def test_forwards_explicit_reasoning_effort_to_compatible_endpoints(self) -> None:
         async def handler(request: httpx.Request) -> httpx.Response:
             payload = json.loads(request.content)
-            self.assertNotIn("reasoning_effort", payload)
+            self.assertEqual(payload["reasoning_effort"], "high")
             return httpx.Response(
                 200,
                 json={"choices": [{"message": {"content": "Compatible answer"}}]},
@@ -292,6 +293,7 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_maps_nemotron_intelligence_to_supported_controls(self) -> None:
         expected = {
+            "none": ({"enable_thinking": False, "force_nonempty_content": True}, None),
             "low": ({"enable_thinking": True, "force_nonempty_content": True}, 300),
             "medium": ({
                 "enable_thinking": True,
@@ -320,6 +322,16 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
                     reasoning_effort=effort,
                 ))
                 self.assertEqual(completion.content, "Nemotron answer")
+
+    async def test_nemotron_rejects_unsupported_explicit_levels_without_downgrading(self) -> None:
+        def handler(request):
+            self.fail("Unsupported explicit settings must not be sent as Auto")
+        provider = OpenAICompatibleProvider(transport=httpx.MockTransport(handler))
+        for effort in ("xhigh", "max"):
+            with self.assertRaisesRegex(ProviderError, "thinking controls support"):
+                await provider.complete(self._request(
+                    model="nvidia/nemotron-3-ultra-550b-a55b", reasoning_effort=effort,
+                ))
 
     async def test_uses_the_request_specific_provider_timeout(self) -> None:
         async def handler(request: httpx.Request) -> httpx.Response:
@@ -565,6 +577,7 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
         disable_thinking: bool = False,
         reasoning_effort: str = "auto",
         timeout_seconds: float | None = None,
+        api: str = "auto",
     ) -> ChatCompletionRequest:
         return ChatCompletionRequest(
             provider="openai",
@@ -582,6 +595,7 @@ class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
             tools=tools,
             force_final_answer=force_final_answer,
             disable_thinking=disable_thinking,
+            api=api,
         )
 
 

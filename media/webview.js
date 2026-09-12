@@ -18,6 +18,7 @@ const state = {
     updateFiles: 'ask'
   },
   settings: {
+    agentToolOverrides: {},
     timeoutSeconds: 900,
     commandTimeoutSeconds: 300,
     toolCallLimit: 16,
@@ -55,6 +56,19 @@ const state = {
   requestTokenUsage: undefined,
   checkpointAvailable: false,
   lastRequest: undefined,
+  configurationScope: 'global',
+  configurationState: undefined,
+  settingsPending: false,
+  settingsReset: false,
+  settingsScopePending: false,
+  undo: { available: false, label: '', files: 0 },
+  undoHost: undefined,
+  undoPending: false,
+  profileTestPending: '',
+  commandAccess: { access: 'standard', workspaceTrusted: false, workspaceAvailable: false },
+  commandAccessPending: false,
+  managedCommands: [],
+  stoppingCommandIds: [],
   askPending: false
 };
 
@@ -65,8 +79,10 @@ const currentProjectLabelEl = document.getElementById('currentProjectLabel');
 const sessionProjectWarningEl = document.getElementById('sessionProjectWarning');
 const sessionEmptyEl = document.getElementById('sessionEmpty');
 const messagesEl = document.getElementById('messages');
+const requestUndoPanelEl = document.getElementById('requestUndoPanel');
+const undoRequestEl = document.getElementById('undoRequest');
+const managedCommandsPanelEl = document.getElementById('managedCommandsPanel');
 const questionEl = document.getElementById('question');
-const scopeDetailEl = document.getElementById('scopeDetail');
 const attachmentPanelEl = document.getElementById('attachmentPanel');
 const attachmentListEl = document.getElementById('attachmentList');
 const attachFilesEl = document.getElementById('attachFiles');
@@ -96,6 +112,7 @@ const llmProfileNameEl = document.getElementById('llmProfileName');
 const llmProfileProviderEl = document.getElementById('llmProfileProvider');
 const llmProfileModelEl = document.getElementById('llmProfileModel');
 const llmProfileBaseUrlEl = document.getElementById('llmProfileBaseUrl');
+const llmProfileApiEl = document.getElementById('llmProfileApi');
 const llmProfileBaseUrlHelpEl = document.getElementById('llmProfileBaseUrlHelp');
 const llmProfileApiKeyFieldEl = document.getElementById('llmProfileApiKeyField');
 const llmProfileApiKeyEl = document.getElementById('llmProfileApiKey');
@@ -107,22 +124,11 @@ const settingsButtonEl = document.getElementById('settingsButton');
 const backendStatusEl = document.getElementById('backendStatus');
 const permissionDialogEl = document.getElementById('permissionDialog');
 const permissionFormEl = document.getElementById('permissionForm');
+const agentToolsDialogEl = document.getElementById('agentToolsDialog');
 const permissionCreateFilesEl = document.getElementById('permissionCreateFiles');
 const permissionUpdateFilesEl = document.getElementById('permissionUpdateFiles');
 const settingsTimeoutSecondsEl = document.getElementById('settingsTimeoutSeconds');
 const settingsTimeoutHelpEl = document.getElementById('settingsTimeoutHelp');
-const settingsCommandTimeoutSecondsEl = document.getElementById('settingsCommandTimeoutSeconds');
-const settingsToolCallLimitEl = document.getElementById('settingsToolCallLimit');
-const settingsMaxTokensEl = document.getElementById('settingsMaxTokens');
-const settingsTemperatureEl = document.getElementById('settingsTemperature');
-const agentToolSettingsDialogEl = document.getElementById('agentToolSettingsDialog');
-const agentToolSettingsFormEl = document.getElementById('agentToolSettingsForm');
-const settingsReadFileMaxLinesEl = document.getElementById('settingsReadFileMaxLines');
-const settingsListFilesMaxResultsEl = document.getElementById('settingsListFilesMaxResults');
-const settingsSearchCodeMaxResultsEl = document.getElementById('settingsSearchCodeMaxResults');
-const settingsDiagnosticsMaxResultsEl = document.getElementById('settingsDiagnosticsMaxResults');
-const settingsTerminalErrorsMaxResultsEl = document.getElementById('settingsTerminalErrorsMaxResults');
-const settingsCodeNavigationMaxResultsEl = document.getElementById('settingsCodeNavigationMaxResults');
 const rememberedCommandListEl = document.getElementById('rememberedCommandList');
 const clearRememberedCommandsEl = document.getElementById('clearRememberedCommands');
 const workspaceTrustBadgeEl = document.getElementById('workspaceTrustBadge');
@@ -132,6 +138,45 @@ const backendSettingsBadgeEl = document.getElementById('backendSettingsBadge');
 const restartBackendEl = document.getElementById('restartBackend');
 const openBackendLogsEl = document.getElementById('openBackendLogs');
 const ollamaDefaultBaseUrl = 'http://127.0.0.1:11434';
+const configurationNumberFields = {
+  maxTokens: 'settingsMaxTokens', temperature: 'settingsTemperature',
+  timeoutSeconds: 'settingsTimeoutSeconds', commandTimeoutSeconds: 'settingsCommandTimeoutSeconds',
+  toolCallLimit: 'settingsToolCallLimit', maxFileEdits: 'configurationMaxFileEdits',
+  maxCommands: 'configurationMaxCommands', maxRepairAttempts: 'configurationMaxRepairAttempts',
+  contextCharacters: 'configurationContextCharacters', historyCharacters: 'configurationHistoryCharacters',
+  runTokenBudget: 'configurationRunTokenBudget'
+};
+const agentToolNumberFields = {
+  readFileMaxLines: 'settingsReadFileMaxLines', listFilesMaxResults: 'settingsListFilesMaxResults',
+  searchCodeMaxResults: 'settingsSearchCodeMaxResults', diagnosticsMaxResults: 'settingsDiagnosticsMaxResults',
+  terminalErrorsMaxResults: 'settingsTerminalErrorsMaxResults', codeNavigationMaxResults: 'settingsCodeNavigationMaxResults'
+};
+const profileNumberFields = {
+  maxTokens: 'profileMaxTokens', temperature: 'profileTemperature',
+  timeoutSeconds: 'profileTimeoutSeconds', contextCharacters: 'profileContextCharacters'
+};
+const toolDescriptions = {
+  list_files: ['read', 'List files', 'Find files and folders in the workspace.'],
+  read_file: ['read', 'Read a file', 'Read a file or a range of lines.'],
+  search_code: ['read', 'Search code', 'Find text across project files.'],
+  get_project_info: ['read', 'Project information', 'Inspect project manifests and configuration.'],
+  get_git_changes: ['read', 'Git changes', 'Inspect local Git status and changes.'],
+  get_symbols: ['read', 'File symbols', 'List functions, classes and other symbols.'],
+  find_definition: ['read', 'Find definition', 'Go to where a symbol is defined.'],
+  find_references: ['read', 'Find references', 'Find where a symbol is used.'],
+  get_diagnostics: ['read', 'Problems', 'Read errors and warnings reported by VS Code.'],
+  read_terminal_errors: ['read', 'Recent command errors', 'Inspect errors captured from DevMate commands.'],
+  create_file: ['edit', 'Create a file', 'Add a workspace file.'],
+  edit_file: ['edit', 'Edit a file', 'Apply exact text replacements.'],
+  delete_file: ['edit', 'Delete a file', 'Remove a file after approval.'],
+  rename_file: ['edit', 'Rename a file', 'Change a file name after approval.'],
+  move_file: ['edit', 'Move a file', 'Move a file within the workspace after approval.'],
+  rename_symbol: ['edit', 'Rename a symbol', 'Rename a symbol and its references using VS Code.'],
+  format_file: ['edit', 'Format a file', 'Use the workspace formatter.'],
+  install_dependencies: ['commands', 'Install dependencies', 'Install supported project dependencies after approval.'],
+  run_command: ['commands', 'Run a command', 'Run a workspace command under the selected access policy.'],
+  stop_command: ['commands', 'Stop a command', 'Stop a running command started by DevMate.']
+};
 
 // Only these extension messages can update the webview.
 const messageHandlers = new Map([
@@ -151,8 +196,8 @@ const messageHandlers = new Map([
   ['closeLlmProfileForm', handleCloseLlmProfileForm],
   ['permissionPolicyUpdated', handlePermissionPolicyUpdated],
   ['settingsUpdated', handleSettingsUpdated],
-  ['agentToolSettingsSaved', handleAgentToolSettingsSaved],
   ['settingsSaved', handleSettingsSaved],
+  ['settingsError', handleSettingsError],
   ['backendStatusUpdated', handleBackendStatusUpdated],
   ['permissionRequest', handlePermissionRequest],
   ['commandPermissionRequest', handleCommandPermissionRequest],
@@ -161,7 +206,13 @@ const messageHandlers = new Map([
   ['providerStreamDelta', handleProviderStreamDelta],
   ['toolUsageUpdated', handleToolUsageUpdated],
   ['tokenUsageUpdated', handleTokenUsageUpdated],
-  ['agentCheckpointUpdated', handleAgentCheckpointUpdated]
+  ['agentCheckpointUpdated', handleAgentCheckpointUpdated],
+  ['configurationState', handleConfigurationState],
+  ['configurationError', handleConfigurationError],
+  ['modelTestResult', handleModelTestResult],
+  ['undoState', handleUndoState],
+  ['commandAccessUpdated', handleCommandAccessUpdated],
+  ['managedCommandsUpdated', handleManagedCommandsUpdated]
 ]);
 
 initializeWebview();
@@ -221,13 +272,24 @@ function setupProfileEvents() {
 
 function setupSettingsEvents() {
   settingsButtonEl.addEventListener('click', openSettingsDialog);
-  document.getElementById('openAgentToolSettings').addEventListener('click', openAgentToolSettings);
-  document.getElementById('cancelAgentToolSettings').addEventListener('click', closeAgentToolSettings);
-  agentToolSettingsFormEl.addEventListener('submit', saveAgentToolSettings);
   settingsTimeoutSecondsEl.addEventListener('input', renderTimeoutApproximation);
   document.getElementById('cancelPermissionSettings').addEventListener('click', closeSettingsDialog);
+  permissionDialogEl.addEventListener('cancel', event => { if (state.settingsPending) event.preventDefault(); });
   clearRememberedCommandsEl.addEventListener('click', clearRememberedCommands);
   permissionFormEl.addEventListener('submit', saveSettings);
+  document.getElementById('settingsScope').addEventListener('change', changeSettingsScope);
+  document.getElementById('resetSettings').addEventListener('click', resetSettingsDraft);
+  document.getElementById('openAgentToolSettings').addEventListener('click', openAgentTools);
+  document.getElementById('closeAgentTools').addEventListener('click', () => agentToolsDialogEl.close());
+  agentToolsDialogEl.addEventListener('close', returnFromAgentTools);
+  document.getElementById('commandAccess').addEventListener('change', requestCommandAccess);
+  document.getElementById('testLlmProfile').addEventListener('click', testSavedLlmProfile);
+  undoRequestEl.addEventListener('click', () => {
+    if (state.askPending || state.undoPending || !state.undo.available) return;
+    state.undoPending = true;
+    renderAskAvailability();
+    vscode.postMessage({ command: 'undoRequest' });
+  });
 }
 
 function setupSessionEvents() {
@@ -411,6 +473,13 @@ function saveLlmProfile(event) {
     return;
   }
 
+  let settings;
+  try {
+    settings = readProfileSettings();
+  } catch (error) {
+    setLlmProfileFormError(error.message);
+    return;
+  }
   setLlmProfileFormSaving(true);
   vscode.postMessage({
     command: 'saveLlmProfile',
@@ -420,90 +489,375 @@ function saveLlmProfile(event) {
       provider,
       model,
       baseUrl: baseUrl || undefined,
+      api: llmProfileApiEl.value,
+      settings,
       apiKey: provider === 'openai' && apiKey ? apiKey : undefined
     }
   });
 }
 
-// Settings and remembered permissions.
+// One form edits scoped defaults, tool limits and permissions together.
 function openSettingsDialog() {
-  permissionCreateFilesEl.value = state.permissionPolicy.createFiles;
-  permissionUpdateFilesEl.value = state.permissionPolicy.updateFiles;
-  settingsTimeoutSecondsEl.value = String(state.settings.timeoutSeconds);
-  settingsCommandTimeoutSecondsEl.value = String(state.settings.commandTimeoutSeconds);
-  settingsToolCallLimitEl.value = String(state.settings.toolCallLimit);
-  settingsMaxTokensEl.value = String(state.settings.maxTokens);
-  settingsTemperatureEl.value = String(state.settings.temperature);
-  renderTimeoutApproximation();
-  renderRememberedCommands();
-  if (!permissionDialogEl.open) {
-    permissionDialogEl.showModal();
-  }
-  settingsTimeoutSecondsEl.focus();
-}
-
-function openAgentToolSettings() {
-  const settings = state.settings.agentTools;
-  settingsReadFileMaxLinesEl.value = String(settings.readFileMaxLines);
-  settingsListFilesMaxResultsEl.value = String(settings.listFilesMaxResults);
-  settingsSearchCodeMaxResultsEl.value = String(settings.searchCodeMaxResults);
-  settingsDiagnosticsMaxResultsEl.value = String(settings.diagnosticsMaxResults);
-  settingsTerminalErrorsMaxResultsEl.value = String(settings.terminalErrorsMaxResults);
-  settingsCodeNavigationMaxResultsEl.value = String(settings.codeNavigationMaxResults);
-  permissionDialogEl.close();
-  agentToolSettingsDialogEl.showModal();
-  settingsReadFileMaxLinesEl.focus();
-}
-
-function closeAgentToolSettings() {
-  agentToolSettingsDialogEl.close();
-  openSettingsDialog();
-}
-
-function saveAgentToolSettings(event) {
-  event.preventDefault();
-  vscode.postMessage({
-    command: 'saveAgentToolSettings',
-    settings: {
-      readFileMaxLines: Number(settingsReadFileMaxLinesEl.value),
-      listFilesMaxResults: Number(settingsListFilesMaxResultsEl.value),
-      searchCodeMaxResults: Number(settingsSearchCodeMaxResultsEl.value),
-      diagnosticsMaxResults: Number(settingsDiagnosticsMaxResultsEl.value),
-      terminalErrorsMaxResults: Number(settingsTerminalErrorsMaxResultsEl.value),
-      codeNavigationMaxResults: Number(settingsCodeNavigationMaxResultsEl.value)
-    }
-  });
+  if (state.askPending || state.settingsPending) return;
+  state.settingsReset = false;
+  showSettingsError('');
+  document.getElementById('settingsNotice').hidden = true;
+  fillSettingsDraft();
+  if (!permissionDialogEl.open) permissionDialogEl.showModal();
+  document.getElementById('settingsScope').focus({ preventScroll: true });
+  permissionDialogEl.scrollTop = 0;
+  vscode.postMessage({ command: 'openConfiguration' });
 }
 
 function closeSettingsDialog() {
-  permissionDialogEl.close();
+  if (!state.settingsPending) permissionDialogEl.close();
+}
+
+// Opening this popup never reloads the draft. Only the main Save button persists tool settings.
+function openAgentTools() {
+  if (state.askPending || state.settingsPending) return;
+  if (permissionDialogEl.open) permissionDialogEl.close();
+  if (!agentToolsDialogEl.open) agentToolsDialogEl.showModal();
+  renderCommandAccess();
+  document.getElementById('closeAgentTools').focus({ preventScroll: true });
+  agentToolsDialogEl.scrollTop = 0;
+}
+
+function returnFromAgentTools() {
+  if (!permissionDialogEl.open) permissionDialogEl.showModal();
+  document.getElementById('openAgentToolSettings').focus();
 }
 
 function clearRememberedCommands() {
   vscode.postMessage({ command: 'clearRememberedCommands' });
 }
 
+function changeSettingsScope() {
+  state.settingsScopePending = true;
+  state.settingsReset = false;
+  showSettingsError('');
+  document.getElementById('settingsNotice').hidden = true;
+  renderSettingsAvailability();
+  vscode.postMessage({ command: 'setConfigurationScope', scope: document.getElementById('settingsScope').value });
+}
+
+function handleConfigurationState(message) {
+  state.configurationState = message;
+  state.configurationScope = message.scope;
+  state.settingsScopePending = false;
+  const select = document.getElementById('settingsScope');
+  select.value = message.scope;
+  Array.from(select.options).forEach(option => {
+    if (option.value === 'workspace') option.disabled = message.workspaceAvailable === false;
+  });
+  if (!state.settingsPending) fillSettingsDraft();
+  renderSettingsAvailability();
+}
+
+function fillSettingsDraft() {
+  const configuration = state.configurationState;
+  if (configuration) fillConfigurationFields(state.settingsReset ? configuration.inheritedConfiguration : configuration.configuration);
+  fillAgentToolSettings(state.settingsReset ? state.settings.inheritedAgentTools : state.settings.agentTools);
+  permissionCreateFilesEl.value = state.permissionPolicy.createFiles;
+  permissionUpdateFilesEl.value = state.permissionPolicy.updateFiles;
+  renderRememberedCommands();
+  renderSettingsAvailability();
+}
+
+function fillAgentToolSettings(settings) {
+  if (!settings) return;
+  for (const [key, id] of Object.entries(agentToolNumberFields)) document.getElementById(id).value = String(settings[key]);
+}
+
+function fillConfigurationFields(configuration) {
+  if (!configuration) return;
+  for (const [key, id] of Object.entries(configurationNumberFields)) document.getElementById(id).value = String(configuration[key]);
+  renderTimeoutApproximation();
+  renderToolChoices(configuration.enabledTools);
+}
+
+function renderToolChoices(enabledTools) {
+  const list = document.getElementById('configurationTools');
+  list.replaceChildren();
+  for (const [group, title] of [['read', 'Read and inspect'], ['edit', 'Edit'], ['commands', 'Commands'], ['other', 'Other tools']]) {
+    const names = state.configurationState.toolNames.filter(name => (toolDescriptions[name]?.[0] || 'other') === group);
+    if (!names.length) continue;
+    const section = document.createElement('fieldset');
+    section.className = 'agent-tool-group';
+    const legend = document.createElement('legend');
+    legend.textContent = title;
+    section.appendChild(legend);
+    for (const name of names) {
+      const [, friendlyName, description] = toolDescriptions[name] || ['other', name.replace(/_/g, ' '), 'Additional tool provided by DevMate.'];
+      const label = document.createElement('label');
+      label.className = 'configuration-tool';
+      label.title = name;
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.value = name;
+      checkbox.checked = enabledTools.includes(name);
+      const copy = document.createElement('span');
+      const nameLabel = document.createElement('strong');
+      nameLabel.textContent = friendlyName;
+      const detail = document.createElement('span');
+      detail.className = 'field-help';
+      detail.textContent = description;
+      copy.append(nameLabel, detail);
+      label.append(checkbox, copy);
+      section.appendChild(label);
+    }
+    list.appendChild(section);
+  }
+}
+
+function readBoundedNumber(id, optional = false) {
+  const input = document.getElementById(id);
+  if (optional && input.value.trim() === '') return undefined;
+  const number = Number(input.value);
+  const minimum = Number(input.getAttribute('min'));
+  const maximum = Number(input.getAttribute('max'));
+  if (input.value.trim() === '' || !Number.isFinite(number) || number < minimum || number > maximum
+    || (input.getAttribute('step') === '1' && !Number.isInteger(number))) {
+    if (agentToolsDialogEl.contains(input) && !agentToolsDialogEl.open) openAgentTools();
+    const details = input.closest?.('details');
+    if (details) details.open = true;
+    input.focus();
+    throw new Error('Enter ' + (input.getAttribute('step') === '1' ? 'a whole number' : 'a number')
+      + ' from ' + minimum + ' to ' + maximum + ' for '
+      + document.querySelector('label[for="' + id + '"]').textContent.toLowerCase() + '.');
+  }
+  return number;
+}
+
+function readConfigurationFields() {
+  const configuration = {};
+  for (const [key, id] of Object.entries(configurationNumberFields)) configuration[key] = readBoundedNumber(id);
+  const selectedTools = new Set(Array.from(document.getElementById('configurationTools').querySelectorAll('input'))
+    .filter(checkbox => checkbox.checked).map(checkbox => checkbox.value));
+  const baseline = state.settingsReset ? state.configurationState.inheritedConfiguration : state.configurationState.configuration;
+  // Grouping the checkboxes should not turn an unchanged selection into a saved override.
+  configuration.enabledTools = [...new Set([...baseline.enabledTools, ...state.configurationState.toolNames])]
+    .filter(name => selectedTools.has(name));
+  return configuration;
+}
+
+// Preserve explicit overrides, without freezing every inherited default when one field changes.
+function changedOverrides(values, baseline, existing) {
+  const overrides = { ...existing };
+  for (const [key, value] of Object.entries(values)) {
+    if (JSON.stringify(value) !== JSON.stringify(baseline[key])) overrides[key] = value;
+  }
+  return overrides;
+}
+
 function saveSettings(event) {
   event.preventDefault();
-  const timeoutSeconds = Number(settingsTimeoutSecondsEl.value);
-  const commandTimeoutSeconds = Number(settingsCommandTimeoutSecondsEl.value);
-  const toolCallLimit = Number(settingsToolCallLimitEl.value);
-  const maxTokens = Number(settingsMaxTokensEl.value);
-  const temperature = Number(settingsTemperatureEl.value);
-  vscode.postMessage({
-    command: 'saveSettings',
-    settings: {
-      timeoutSeconds,
-      commandTimeoutSeconds,
-      toolCallLimit,
-      maxTokens,
-      temperature,
-      policy: {
-        createFiles: permissionCreateFilesEl.value,
-        updateFiles: permissionUpdateFilesEl.value
-      }
+  if (state.askPending || state.settingsPending || state.commandAccessPending || !state.configurationState || state.settingsScopePending
+    || (state.settings.scope && state.settings.scope !== state.configurationScope)) return;
+  showSettingsError('');
+  try {
+    const snapshot = state.configurationState;
+    const existing = { ...snapshot.overrides };
+    // Reset only controls still shown here; keep saved instructions and file-selection preferences intact.
+    if (state.settingsReset) {
+      for (const key of [...Object.keys(configurationNumberFields), 'enabledTools']) delete existing[key];
     }
-  });
+    const configuration = changedOverrides(readConfigurationFields(),
+      state.settingsReset ? snapshot.inheritedConfiguration : snapshot.configuration,
+      existing);
+    const tools = {};
+    for (const [key, id] of Object.entries(agentToolNumberFields)) tools[key] = readBoundedNumber(id);
+    const agentTools = changedOverrides(tools,
+      state.settingsReset ? state.settings.inheritedAgentTools : state.settings.agentTools,
+      state.settingsReset ? {} : state.settings.agentToolOverrides);
+    state.settingsPending = true;
+    renderAskAvailability();
+    renderSettingsAvailability();
+    vscode.postMessage({ command: 'saveSettings', scope: state.configurationScope, settings: {
+      configuration, agentTools,
+      policy: { createFiles: permissionCreateFilesEl.value, updateFiles: permissionUpdateFilesEl.value }
+    } });
+  } catch (error) { showSettingsError(error.message); }
+}
+
+function resetSettingsDraft() {
+  if (state.settingsPending || !state.configurationState?.inheritedConfiguration || !state.settings.inheritedAgentTools) return;
+  state.settingsReset = true;
+  fillConfigurationFields(state.configurationState.inheritedConfiguration);
+  fillAgentToolSettings(state.settings.inheritedAgentTools);
+  showSettingsError('');
+  const notice = document.getElementById('settingsNotice');
+  notice.textContent = 'Inherited defaults loaded for the settings shown here. Save to apply, or Cancel to keep your settings.';
+  notice.hidden = false;
+}
+
+function renderSettingsAvailability() {
+  const loading = !state.configurationState || state.settingsScopePending
+    || (state.settings.scope && state.settings.scope !== state.configurationScope);
+  permissionFormEl.querySelectorAll('input, textarea, select, button').forEach(control => { control.disabled = state.settingsPending; });
+  agentToolsDialogEl.querySelectorAll('input, select, button').forEach(control => { control.disabled = state.settingsPending; });
+  document.getElementById('saveSettings').disabled = Boolean(state.settingsPending || state.commandAccessPending || loading);
+  document.getElementById('saveSettings').textContent = state.settingsPending ? 'Saving…' : 'Save settings';
+  document.getElementById('resetSettings').disabled = state.settingsPending || !state.configurationState?.inheritedConfiguration || !state.settings.inheritedAgentTools;
+  // Backend recovery has its own availability rules in addition to the form's saving state.
+  restartBackendEl.disabled = state.settingsPending || state.askPending || !state.backendStatus.canRestart;
+  clearRememberedCommandsEl.disabled = state.settingsPending || !(state.settings.rememberedCommands || []).length;
+  renderCommandAccess();
+}
+
+function showSettingsError(message) {
+  const error = document.getElementById('settingsError');
+  error.textContent = message;
+  error.hidden = !message;
+  const toolError = document.getElementById('agentToolsError');
+  toolError.textContent = message;
+  toolError.hidden = !message;
+}
+
+function handleSettingsError(message) {
+  state.settingsPending = false;
+  state.settingsScopePending = false;
+  showSettingsError(message.message);
+  renderSettingsAvailability();
+  renderAskAvailability();
+}
+
+function handleConfigurationError(message) {
+  state.settingsScopePending = false;
+  document.getElementById('settingsScope').value = state.configurationScope;
+  if (permissionDialogEl.open) {
+    showSettingsError(message.message);
+  } else { setStatus(message.message, 'error'); }
+  renderSettingsAvailability();
+}
+
+function readProfileSettings() {
+  const settings = {};
+  for (const [key, id] of Object.entries(profileNumberFields)) {
+    const value = readBoundedNumber(id, true);
+    if (value !== undefined) settings[key] = value;
+  }
+  const effort = document.getElementById('profileReasoningEffort').value;
+  if (effort) settings.reasoningEffort = effort;
+  return settings;
+}
+
+function testSavedLlmProfile() {
+  const profileId = llmProfileIdEl.value;
+  if (!profileId || state.askPending || state.profileTestPending) return;
+  state.profileTestPending = profileId;
+  renderAskAvailability();
+  document.getElementById('testLlmProfile').disabled = true;
+  const result = document.getElementById('profileTestResult');
+  result.hidden = false;
+  result.textContent = 'Testing the saved profile…';
+  vscode.postMessage({ command: 'testLlmProfile', profileId });
+}
+
+function handleModelTestResult(message) {
+  if (state.profileTestPending === message.profileId) state.profileTestPending = '';
+  renderAskAvailability();
+  document.getElementById('testLlmProfile').disabled = state.askPending || Boolean(state.profileTestPending);
+  if (llmProfileIdEl.value !== message.profileId) return;
+  const result = document.getElementById('profileTestResult');
+  result.hidden = false;
+  result.textContent = ['Connection: ' + message.result.connection, 'Tools: ' + message.result.tools,
+    'Streaming: ' + message.result.streaming, 'Reasoning: ' + message.result.reasoning, message.result.detail].join('\n');
+}
+
+// The selector requests a policy change; only the extension's approved state changes the badge and value.
+function requestCommandAccess() {
+  const select = document.getElementById('commandAccess');
+  const access = select.value;
+  select.value = state.commandAccess.access;
+  if (select.disabled || state.commandAccessPending || !['standard', 'extended'].includes(access) || access === state.commandAccess.access) return;
+  state.commandAccessPending = true;
+  renderCommandAccess();
+  renderAskAvailability();
+  renderSettingsAvailability();
+  vscode.postMessage({ command: 'setCommandAccess', access });
+}
+
+function handleCommandAccessUpdated(message) {
+  state.commandAccess = message;
+  state.commandAccessPending = message.pending === true;
+  renderSettingsAvailability();
+  renderAskAvailability();
+}
+
+function renderCommandAccess() {
+  const { access, workspaceAvailable, workspaceTrusted } = state.commandAccess;
+  const select = document.getElementById('commandAccess');
+  select.value = access;
+  select.disabled = state.askPending || state.settingsPending || state.commandAccessPending || state.undoPending
+    || Boolean(state.profileTestPending) || !workspaceAvailable || !workspaceTrusted;
+  document.getElementById('extendedAccessBadge').hidden = access !== 'extended';
+  document.getElementById('commandAccessStatus').textContent = state.commandAccessPending
+    ? 'Waiting for the workspace access decision…'
+    : !workspaceAvailable ? 'Open a workspace to change command access.'
+      : !workspaceTrusted ? 'Trust this workspace before changing command access.' : '';
+}
+
+function handleManagedCommandsUpdated(message) {
+  const hadCommands = state.managedCommands.length > 0;
+  state.managedCommands = Array.isArray(message.commands) ? message.commands : [];
+  state.stoppingCommandIds = [];
+  if (!hadCommands && state.managedCommands.length) managedCommandsPanelEl.open = true;
+  renderManagedCommands();
+}
+
+// This list contains only processes owned by DevMate. Stopping one remains available during an agent run.
+function renderManagedCommands() {
+  messagesEl.appendChild(managedCommandsPanelEl);
+  managedCommandsPanelEl.hidden = state.managedCommands.length === 0;
+  document.getElementById('managedCommandsSummary').textContent = 'Running commands (' + state.managedCommands.length + ')';
+  const list = document.getElementById('managedCommandsList');
+  list.replaceChildren();
+  for (const command of state.managedCommands) {
+    const row = document.createElement('div');
+    row.className = 'managed-command-row';
+    const label = document.createElement('span');
+    label.textContent = command.label;
+    const stop = document.createElement('button');
+    stop.className = 'action-button secondary';
+    stop.type = 'button';
+    stop.disabled = state.stoppingCommandIds.includes(command.id);
+    stop.textContent = stop.disabled ? 'Stopping…' : 'Stop';
+    stop.setAttribute('aria-label', 'Stop ' + command.label);
+    stop.addEventListener('click', () => {
+      if (state.stoppingCommandIds.includes(command.id)) return;
+      state.stoppingCommandIds.push(command.id);
+      renderManagedCommands();
+      vscode.postMessage({ command: 'stopManagedCommand', id: command.id });
+    });
+    row.append(label, stop);
+    list.appendChild(row);
+  }
+}
+
+function handleUndoState(message) {
+  state.undo = message;
+  state.undoPending = false;
+  renderAskAvailability();
+}
+
+function renderConfigurationAvailability() {
+  const busy = state.askPending || state.undoPending || state.settingsPending || state.commandAccessPending || Boolean(state.profileTestPending);
+  settingsButtonEl.disabled = busy;
+  renderCommandAccess();
+  renderRequestUndo(busy);
+}
+
+// Associate only live, known file changes. A restored workspace journal may belong to a different session.
+function renderRequestUndo(busy = state.askPending || state.undoPending || state.settingsPending || state.commandAccessPending || Boolean(state.profileTestPending)) {
+  const host = state.undoHost && messagesEl.contains(state.undoHost) ? state.undoHost : messagesEl;
+  host.appendChild(requestUndoPanelEl);
+  requestUndoPanelEl.hidden = !state.undo.available;
+  document.getElementById('requestUndoLabel').textContent = host === messagesEl ? 'Latest workspace edits' : '';
+  undoRequestEl.disabled = Boolean(busy);
+  undoRequestEl.textContent = state.undoPending ? 'Reviewing undo…' : 'Undo last request';
+  undoRequestEl.title = state.undo.label + ' · ' + state.undo.files + ' files. Review changes before undoing. Terminal command effects are not included.';
+  renderManagedCommands();
 }
 
 // Session navigation.
@@ -570,7 +924,9 @@ function handleAssistantResponse(message) {
 // Apply the extension's session snapshot; this browser view does not persist chat history itself.
 function handleSessionsUpdated(message) {
   state.sessions = Array.isArray(message.sessions) ? message.sessions : [];
-  state.activeSessionId = message.activeSessionId || '';
+  const nextSessionId = message.activeSessionId || '';
+  if (state.activeSessionId !== nextSessionId) state.undoHost = undefined;
+  state.activeSessionId = nextSessionId;
   state.activeSessionTitle = message.activeTitle || 'New session';
   state.currentWorkspaceName = message.currentWorkspaceName || 'No project open';
   sessionProjectWarningEl.hidden = true;
@@ -655,28 +1011,17 @@ function handlePermissionPolicyUpdated(message) {
 
 function handleSettingsUpdated(message) {
   state.settings = message.settings;
-  renderRememberedCommands();
-  if (permissionDialogEl.open) {
-    settingsTimeoutSecondsEl.value = String(state.settings.timeoutSeconds);
-    settingsCommandTimeoutSecondsEl.value = String(state.settings.commandTimeoutSeconds);
-    settingsToolCallLimitEl.value = String(state.settings.toolCallLimit);
-    settingsMaxTokensEl.value = String(state.settings.maxTokens);
-    settingsTemperatureEl.value = String(state.settings.temperature);
-    renderTimeoutApproximation();
-  }
-}
-
-function handleAgentToolSettingsSaved() {
-  if (agentToolSettingsDialogEl.open) {
-    agentToolSettingsDialogEl.close();
-    openSettingsDialog();
-  }
+  if (message.settings.scope) state.configurationScope = message.settings.scope;
+  if (!state.settingsPending) fillSettingsDraft();
+  renderSettingsAvailability();
 }
 
 function handleSettingsSaved() {
-  if (permissionDialogEl.open) {
-    permissionDialogEl.close();
-  }
+  state.settingsPending = false;
+  state.settingsReset = false;
+  if (permissionDialogEl.open) permissionDialogEl.close();
+  renderSettingsAvailability();
+  renderAskAvailability();
 }
 
 function handleBackendStatusUpdated(message) {
@@ -703,6 +1048,7 @@ function handleAgentToolActivity(message) {
     updateWorkingTurn(message.activity.title);
   }
   renderAgentToolActivity(message.activity);
+  renderManagedCommands();
 }
 
 function handleProviderStreamReset() {
@@ -816,7 +1162,7 @@ function renderRememberedCommands() {
   if (commands.length === 0) {
     const empty = document.createElement('li');
     empty.className = 'remembered-command-empty';
-    empty.textContent = 'No verification commands are remembered.';
+    empty.textContent = 'No runtime version commands are remembered.';
     rememberedCommandListEl.appendChild(empty);
     return;
   }
@@ -865,9 +1211,11 @@ function appendMessage(text, role, scroll = true, fileChanges = []) {
     appendFileChangeSummary(item, fileChanges);
   }
   messagesEl.appendChild(item);
+  renderRequestUndo();
   if (scroll) {
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
+  return item;
 }
 
 // Link the extension's recorded changes to their stored diff or current workspace file.
@@ -1218,6 +1566,7 @@ function appendHighlightedCode(container, codeText) {
 // Session history and the project landing screen.
 // Rebuild saved messages through the same renderer used for new responses.
 function renderSessionMessages(messages) {
+  state.undoHost = undefined;
   clearWorkingTimer();
   messagesEl.replaceChildren();
   messages.forEach((message) => {
@@ -1225,6 +1574,7 @@ function renderSessionMessages(messages) {
       appendMessage(message.text, message.role, false, message.fileChanges);
     }
   });
+  renderRequestUndo();
   messagesEl.scrollTop = messagesEl.scrollHeight;
   questionEl.focus();
 }
@@ -1310,6 +1660,7 @@ function renderSessions() {
 // Request progress, narration streaming and completion.
 // Create one progress card with cancel/retry controls; timers track display time, not backend timeouts.
 function startWorkingTurn() {
+  state.undoHost = undefined;
   finalizeProviderNarration();
   clearProviderStreamAnimation();
   document.getElementById('workingTurn')?.remove();
@@ -1676,7 +2027,9 @@ function finishWorkingTurn(response, fileChanges = []) {
   document.getElementById('workingTurn')?.remove();
   const narration = document.getElementById('providerNarration');
   if (!narration) {
-    appendMessage(response, 'assistant', true, fileChanges);
+    const message = appendMessage(response, 'assistant', true, fileChanges);
+    state.undoHost = message.querySelector('.file-change-summary') || undefined;
+    renderRequestUndo();
     return;
   }
   narration.removeAttribute('id');
@@ -1687,6 +2040,8 @@ function finishWorkingTurn(response, fileChanges = []) {
   body.textContent = '';
   renderMarkdown(body, response);
   appendFileChangeSummary(narration, fileChanges);
+  state.undoHost = narration.querySelector('.file-change-summary') || undefined;
+  renderRequestUndo();
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
@@ -1823,7 +2178,7 @@ function appendPermissionRequest(message) {
   };
 
   addDecisionButton('Deny', 'deny');
-  if (message.rememberable !== false) {
+  if (message.rememberable !== false && message.allowRemember !== false) {
     addDecisionButton('Always allow these', 'allowAlways');
   }
   addDecisionButton('Allow once', 'allowOnce', true);
@@ -1894,7 +2249,7 @@ function appendCommandPermissionRequest(message) {
     actions.appendChild(button);
   };
   addDecisionButton('Deny', 'deny');
-  if (message.rememberable !== false) {
+  if (message.rememberable !== false && message.allowRemember !== false) {
     addDecisionButton('Always allow this command', 'allowAlways');
   }
   addDecisionButton('Allow once', 'allowOnce', true);
@@ -1961,8 +2316,6 @@ function renderAgentToolActivity(activity) {
 
 // Composer availability, model selection and attachments.
 function renderScope() {
-  scopeDetailEl.textContent = state.scope.detail;
-
   document.querySelectorAll('.scope-button[data-scope]').forEach((button) => {
     button.setAttribute('aria-pressed', String(button.dataset.scope === state.scope.kind));
   });
@@ -2012,7 +2365,7 @@ function renderLlmProfile() {
     });
     intelligenceMenuOptionsEl.appendChild(option);
   });
-  const intelligenceLabel = selectedReasoning?.label || 'Auto';
+  const intelligenceLabel = selectedReasoning?.label || state.activeProfile.reasoningEffortLabel || 'Auto';
   intelligenceButtonEl.title = 'Intelligence: ' + intelligenceLabel;
   intelligenceButtonEl.setAttribute('aria-label', 'Model intelligence: ' + intelligenceLabel);
   llmProfileSelectorEl.title = state.activeProfile.providerLabel
@@ -2029,21 +2382,23 @@ function closeIntelligenceMenu() {
 
 // Lock the request's inputs while it runs so settings and session changes cannot race with it.
 function renderAskAvailability() {
-  askEl.disabled = !state.activeProfile || state.askPending;
+  renderConfigurationAvailability();
+  const auxiliaryBusy = state.undoPending || state.settingsPending || state.commandAccessPending || Boolean(state.profileTestPending);
+  askEl.disabled = !state.activeProfile || state.askPending || auxiliaryBusy;
   document.querySelectorAll('.mode-button, .scope-button[data-scope]').forEach((button) => {
-    button.disabled = state.askPending;
+    button.disabled = state.askPending || auxiliaryBusy;
   });
-  attachFilesEl.disabled = state.askPending;
-  llmProfileSelectorEl.disabled = state.askPending;
-  intelligenceButtonEl.disabled = state.askPending;
+  attachFilesEl.disabled = state.askPending || auxiliaryBusy;
+  llmProfileSelectorEl.disabled = state.askPending || auxiliaryBusy;
+  intelligenceButtonEl.disabled = state.askPending || auxiliaryBusy;
   if (state.askPending) {
     closeIntelligenceMenu();
   }
   continueAgentEl.hidden = !state.checkpointAvailable || state.askPending;
-  continueAgentEl.disabled = state.askPending;
-  sessionSelectorEl.disabled = state.askPending;
-  newSessionButtonEl.disabled = state.askPending;
-  newSessionOnHomeEl.disabled = state.askPending;
+  continueAgentEl.disabled = state.askPending || auxiliaryBusy;
+  sessionSelectorEl.disabled = state.askPending || auxiliaryBusy;
+  newSessionButtonEl.disabled = state.askPending || auxiliaryBusy;
+  newSessionOnHomeEl.disabled = state.askPending || auxiliaryBusy;
   renderBackendStatus();
   askEl.title = !state.activeProfile
     ? 'Add a model profile before asking'
@@ -2163,11 +2518,20 @@ function showLlmProfileForm(profile, hasApiKey) {
   llmProfileProviderEl.value = profile?.provider || 'openai';
   llmProfileModelEl.value = profile?.model || '';
   llmProfileBaseUrlEl.value = profile?.baseUrl || '';
+  llmProfileApiEl.value = profile?.api || 'auto';
+  for (const [key, id] of Object.entries(profileNumberFields)) {
+    document.getElementById(id).value = profile?.settings?.[key] === undefined ? '' : String(profile.settings[key]);
+  }
+  document.getElementById('profileReasoningEffort').value = profile?.settings?.reasoningEffort || 'auto';
+  document.getElementById('profileTestSection').hidden = !profile?.id;
+  document.getElementById('testLlmProfile').disabled = state.askPending || Boolean(state.profileTestPending);
+  document.getElementById('profileTestResult').hidden = true;
   llmProfileApiKeyEl.value = '';
   llmProfileNameEl.disabled = isBuiltIn;
   llmProfileProviderEl.disabled = isBuiltIn;
   llmProfileModelEl.disabled = isBuiltIn;
   llmProfileBaseUrlEl.disabled = isBuiltIn;
+  llmProfileApiEl.disabled = isBuiltIn;
   llmProfileProviderEl.options[0].textContent = isBuiltIn ? 'NVIDIA' : 'OpenAI';
   llmProfileFormEl.dataset.builtIn = String(isBuiltIn);
   llmProfileDialogEl.dataset.hasApiKey = String(Boolean(hasApiKey));
@@ -2181,7 +2545,7 @@ function showLlmProfileForm(profile, hasApiKey) {
     ? 'Nemotron is included with DevMate. Add your NVIDIA API key to use it.'
     : 'Save a reusable model configuration for DevMate.';
   saveLlmProfileEl.textContent = isBuiltIn
-    ? 'Save API key'
+    ? 'Save changes'
     : profile
       ? 'Save changes'
       : 'Add model';
@@ -2255,7 +2619,7 @@ function setLlmProfileFormSaving(saving) {
     saveLlmProfileEl.textContent = 'Saving...';
   } else {
     saveLlmProfileEl.textContent = llmProfileFormEl.dataset.builtIn === 'true'
-      ? 'Save API key'
+      ? 'Save changes'
       : llmProfileIdEl.value
         ? 'Save changes'
         : 'Add model';

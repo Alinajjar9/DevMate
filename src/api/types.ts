@@ -30,6 +30,7 @@ export type LlmSettings = {
   provider: string;
   model: string;
   baseUrl?: string;
+  api?: LlmApi;
   maxTokens: number;
   temperature: number;
   reasoningEffort: ReasoningEffort;
@@ -54,6 +55,7 @@ export type AskScope = {
 
 export type AskRequest = {
   question: string;
+  instructions?: string;
   mode: AssistantMode;
   scope: AskScope;
   settings: LlmSettings;
@@ -92,6 +94,7 @@ export type AgentToolStep = {
   arguments: Record<string, unknown>;
   result: string;
   isError: boolean;
+  providerState?: ProviderState;
 };
 
 export type FileChange = {
@@ -99,4 +102,5 @@ export type FileChange = {
   content: string;
 };
 import type { AgentToolCall, AgentToolName } from '../agentTools';
-import type { ReasoningEffort } from '../llmProfiles';
+import type { LlmApi, ReasoningEffort } from '../llmProfiles';
+import type { ProviderState } from '../providerState';

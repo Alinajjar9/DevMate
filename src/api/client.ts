@@ -3,6 +3,7 @@
 import type { ApiResult, AskRequest, AskResponse, HealthResponse } from './types';
 import { fetchJson, requestJson, requestStream } from './transport';
 import type { AskStreamEvent, AskStreamResult } from './transport';
+import { parseProviderState } from '../providerState';
 
 export type { AskStreamEvent, AskStreamResult } from './transport';
 
@@ -30,7 +31,7 @@ export async function ask(
     };
   }
 
-  return requestJson<AskResponse>(
+  return validateProviderContinuation(await requestJson<AskResponse>(
     backendUrl,
     '/ask',
     {
@@ -45,7 +46,7 @@ export async function ask(
     },
     timeoutMilliseconds,
     signal
-  );
+  ));
 }
 
 /** Send the streaming request and forward progress, text and usage events; unsupported tells the runner to try JSON. */
@@ -67,7 +68,7 @@ export async function askStream(
       unsupported: false
     };
   }
-  return requestStream(
+  const streamed = await requestStream(
     backendUrl,
     '/ask/stream',
     {
@@ -84,6 +85,23 @@ export async function askStream(
     signal,
     onEvent
   );
+  return { ...streamed, result: validateProviderContinuation(streamed.result) };
+}
+
+/** Reject malformed opaque state before the runner can execute any tool from this response. */
+function validateProviderContinuation(result: ApiResult<AskResponse>): ApiResult<AskResponse> {
+  if (result.status === 'ok' && Array.isArray(result.data?.toolCalls)) {
+    for (const call of result.data.toolCalls) {
+      if (call?.providerState !== undefined && !parseProviderState(call.providerState)) {
+        return {
+          status: 'error',
+          message: 'The DevMate backend returned invalid provider continuation data.',
+          errorKind: 'invalid-response'
+        };
+      }
+    }
+  }
+  return result;
 }
 
 /** Limit credential forwarding to recognized local HTTP(S) addresses without embedded URL credentials. */

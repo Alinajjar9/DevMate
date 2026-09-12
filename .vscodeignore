@@ -1,6 +1,8 @@
 .agents/**
 .codex/**
+.codex-remote-attachments/**
 .git/**
+.gitlab-ci.yml
 .gitignore
 .nvmrc
 .python-version
@@ -15,6 +17,11 @@ venv/**
 tests/**
 backend/tests/**
 docs/**
+README.md
+tmp/**
+output/**
+release/**
+CHANGELOG.md
 backend/requirements-dev.txt
 IMPLEMENTATION_PLAN.local.md
 package-lock.json
@@ -22,5 +29,5 @@ scripts/**
 **/__pycache__/**
 **/*.map
 *.vsix
+*.zip
 tsconfig.json
-VSIX_README.md

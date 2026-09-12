@@ -3,6 +3,7 @@
 import { createHash } from 'crypto';
 import * as path from 'path';
 import type { ApiResult } from './api/types';
+import type { ProviderState } from './providerState';
 import {
   MAX_COMMAND_TIMEOUT_SECONDS,
   MIN_COMMAND_TIMEOUT_SECONDS,
@@ -18,6 +19,7 @@ import {
   normalizeWorkspaceRelativePath
 } from './fileTools';
 import type { ExactTextReplacement, RelocateFileToolArguments } from './fileTools';
+import { normalizeSearchFilePattern } from './projectTools';
 
 export const MAX_DEPENDENCY_MANIFEST_BYTES = 64_000;
 export const MAX_DEPENDENCY_REQUIREMENTS = 100;
@@ -276,13 +278,14 @@ export function isDeferredAgentPlanAnswer(value: unknown): boolean {
   ).test(normalized);
 }
 
-/** Replace older large results with omission markers while preserving tool-call order and recent evidence. */
+/** Replace older large results with omission markers; opaque provider state must survive unchanged. */
 export function compactAgentToolHistory<
   T extends { name: string; result: string }
->(steps: T[]): T[] {
+>(steps: T[], maximumCharacters = MAX_AGENT_TOOL_HISTORY_CHARACTERS): T[] {
   const compacted = steps.map((step) => ({ ...step }));
+  const budget = Math.max(10_000, Math.min(MAX_AGENT_TOOL_HISTORY_CHARACTERS, maximumCharacters));
   let characters = compacted.reduce((total, step) => total + step.result.length, 0);
-  for (let index = 0; characters > MAX_AGENT_TOOL_HISTORY_CHARACTERS && index < compacted.length; index += 1) {
+  for (let index = 0; characters > budget && index < compacted.length; index += 1) {
     const step = compacted[index];
     const marker = `[Earlier ${step.name} result omitted to stay within the agent context budget.]`;
     if (step.result.length <= marker.length) {
@@ -297,6 +300,8 @@ export function compactAgentToolHistory<
 // Tool vocabulary and typed arguments shared with the executor and backend contracts.
 export const AGENT_TOOL_NAMES = [
   'list_files',
+  'get_project_info',
+  'get_git_changes',
   'read_file',
   'search_code',
   'get_symbols',
@@ -309,8 +314,11 @@ export const AGENT_TOOL_NAMES = [
   'delete_file',
   'rename_file',
   'move_file',
+  'rename_symbol',
+  'format_file',
   'install_dependencies',
-  'run_command'
+  'run_command',
+  'stop_command'
 ] as const;
 
 export type AgentToolName = typeof AGENT_TOOL_NAMES[number];
@@ -318,6 +326,8 @@ export type AgentToolName = typeof AGENT_TOOL_NAMES[number];
 // Tool groups live here so checkpoints and loop limits cannot quietly drift apart.
 export const READ_ONLY_AGENT_TOOL_NAMES = [
   'list_files',
+  'get_project_info',
+  'get_git_changes',
   'read_file',
   'search_code',
   'get_symbols',
@@ -332,8 +342,12 @@ export const FILE_MUTATION_AGENT_TOOL_NAMES = [
   'edit_file',
   'delete_file',
   'rename_file',
-  'move_file'
+  'move_file',
+  'rename_symbol',
+  'format_file'
 ] as const satisfies readonly AgentToolName[];
+
+export const COMMAND_AGENT_TOOL_NAMES = ['run_command', 'stop_command'] as const satisfies readonly AgentToolName[];
 
 const readOnlyAgentTools = new Set<AgentToolName>(READ_ONLY_AGENT_TOOL_NAMES);
 const fileMutationAgentTools = new Set<AgentToolName>(FILE_MUTATION_AGENT_TOOL_NAMES);
@@ -346,10 +360,15 @@ export function isFileMutationAgentTool(name: AgentToolName): boolean {
   return fileMutationAgentTools.has(name);
 }
 
+export function isCommandAgentTool(name: AgentToolName): boolean {
+  return (COMMAND_AGENT_TOOL_NAMES as readonly AgentToolName[]).includes(name);
+}
+
 export type AgentToolCall = {
   id: string;
   name: AgentToolName;
   arguments: Record<string, unknown>;
+  providerState?: ProviderState;
 };
 
 export type AgentWorkspacePathInfo = {
@@ -372,7 +391,17 @@ export type SearchCodeToolArguments = {
   query: string;
   path: string;
   maxResults: number;
+  caseSensitive: boolean;
+  wholeWord: boolean;
+  filePattern: string;
+  contextLines: number;
 };
+
+export type GetProjectInfoToolArguments = { path: string };
+export type GetGitChangesToolArguments = { path: string; staged: boolean };
+export type RenameSymbolToolArguments = { path: string; line: number; column: number; newName: string };
+export type FormatFileToolArguments = { path: string };
+export type StopCommandToolArguments = { id: string };
 
 export type GetDiagnosticsToolArguments = {
   path: string;
@@ -416,10 +445,13 @@ export type RunCommandToolArguments = {
   args: string[];
   cwd: string;
   timeoutSeconds: number;
+  background?: boolean;
 };
 
 export type ParsedAgentToolCall =
   | { id: string; name: 'list_files'; arguments: ListFilesToolArguments }
+  | { id: string; name: 'get_project_info'; arguments: GetProjectInfoToolArguments }
+  | { id: string; name: 'get_git_changes'; arguments: GetGitChangesToolArguments }
   | { id: string; name: 'read_file'; arguments: ReadFileToolArguments }
   | { id: string; name: 'search_code'; arguments: SearchCodeToolArguments }
   | { id: string; name: 'get_symbols'; arguments: GetSymbolsToolArguments }
@@ -432,8 +464,11 @@ export type ParsedAgentToolCall =
   | { id: string; name: 'delete_file'; arguments: DeleteFileToolArguments }
   | { id: string; name: 'rename_file'; arguments: RelocateFileToolArguments }
   | { id: string; name: 'move_file'; arguments: RelocateFileToolArguments }
+  | { id: string; name: 'rename_symbol'; arguments: RenameSymbolToolArguments }
+  | { id: string; name: 'format_file'; arguments: FormatFileToolArguments }
   | { id: string; name: 'install_dependencies'; arguments: InstallDependenciesToolArguments }
-  | { id: string; name: 'run_command'; arguments: RunCommandToolArguments };
+  | { id: string; name: 'run_command'; arguments: RunCommandToolArguments }
+  | { id: string; name: 'stop_command'; arguments: StopCommandToolArguments };
 
 /** Turn untrusted model arguments into a typed tool call, extracting supported fields and validating paths and values. */
 export function parseAgentToolCall(call: AgentToolCall): ParsedAgentToolCall {
@@ -442,6 +477,15 @@ export function parseAgentToolCall(call: AgentToolCall): ParsedAgentToolCall {
   }
   if (!isRecord(call.arguments)) {
     throw new Error('The model returned invalid tool arguments.');
+  }
+
+  if (call.name === 'get_project_info' || call.name === 'get_git_changes') {
+    const projectPath = normalizeAgentToolPath(optionalString(call.arguments.path));
+    return call.name === 'get_project_info'
+      ? { id: call.id, name: call.name, arguments: { path: projectPath } }
+      : { id: call.id, name: call.name, arguments: {
+          path: projectPath, staged: optionalBoolean(call.arguments.staged, 'staged')
+        } };
   }
 
   if (call.name === 'list_files') {
@@ -484,6 +528,10 @@ export function parseAgentToolCall(call: AgentToolCall): ParsedAgentToolCall {
       arguments: {
         query,
         path: normalizeAgentToolPath(optionalString(call.arguments.path)),
+        caseSensitive: optionalBoolean(call.arguments.caseSensitive, 'caseSensitive'),
+        wholeWord: optionalBoolean(call.arguments.wholeWord, 'wholeWord'),
+        filePattern: normalizeSearchFilePattern(call.arguments.filePattern),
+        contextLines: boundedInteger(call.arguments.contextLines, 0, 0, 5),
         maxResults: boundedInteger(
           call.arguments.maxResults,
           20,
@@ -618,11 +666,39 @@ export function parseAgentToolCall(call: AgentToolCall): ParsedAgentToolCall {
     };
   }
 
+  if (call.name === 'format_file') {
+    return { id: call.id, name: call.name, arguments: {
+      path: normalizeAgentToolPath(requiredString(call.arguments.path, 'format_file requires a path.'), false)
+    } };
+  }
+
+  if (call.name === 'rename_symbol') {
+    const newName = requiredString(call.arguments.newName, 'rename_symbol requires a newName.');
+    if (newName.length > 200 || /[\u0000-\u001f\u007f]/.test(newName)) {
+      throw new Error('rename_symbol newName must be at most 200 characters without control characters.');
+    }
+    return { id: call.id, name: call.name, arguments: {
+      path: normalizeAgentToolPath(requiredString(call.arguments.path, 'rename_symbol requires a path.'), false),
+      line: requiredPositiveInteger(call.arguments.line, 'rename_symbol requires a positive one-based line.'),
+      column: requiredPositiveInteger(call.arguments.column, 'rename_symbol requires a positive one-based column.'),
+      newName
+    } };
+  }
+
+  if (call.name === 'stop_command') {
+    const id = requiredString(call.arguments.id, 'stop_command requires the id returned by run_command.');
+    if (id.length > 200 || /[\u0000-\u0020\u007f]/.test(id)) {
+      throw new Error('stop_command id must be at most 200 characters without whitespace or control characters.');
+    }
+    return { id: call.id, name: call.name, arguments: { id } };
+  }
+
   if (call.name === 'run_command') {
     return {
       id: call.id,
       name: call.name,
-      arguments: parseRunCommandArguments(call.arguments)
+      // The executor revalidates against the actual workspace command-access setting.
+      arguments: parseRunCommandArguments(call.arguments, 'deferred')
     };
   }
 
@@ -640,6 +716,8 @@ export function normalizeAgentToolCallForWorkspace(
       ? 'manifestPath'
     : [
         'list_files',
+        'get_project_info',
+        'get_git_changes',
         'read_file',
         'search_code',
         'get_symbols',
@@ -650,7 +728,9 @@ export function normalizeAgentToolCallForWorkspace(
         'edit_file',
         'delete_file',
         'rename_file',
-        'move_file'
+        'move_file',
+        'rename_symbol',
+        'format_file'
       ].includes(call.name)
       ? 'path'
       : undefined;
@@ -661,6 +741,8 @@ export function normalizeAgentToolCallForWorkspace(
     return call;
   }
   const allowRoot = call.name === 'list_files'
+    || call.name === 'get_project_info'
+    || call.name === 'get_git_changes'
     || call.name === 'search_code'
     || call.name === 'get_diagnostics'
     || call.name === 'run_command';
@@ -731,7 +813,15 @@ export function boundedAgentToolHistoryArguments(
   if (serialized.length <= MAX_AGENT_TOOL_ARGUMENT_HISTORY_CHARACTERS) {
     return argumentsValue;
   }
+  // Preserve the target when malformed or oversized arguments are compacted.
+  // The runner needs it to recognize a failed repair after a checkpoint resume.
+  const targets = Object.fromEntries(
+    ['path', 'newPath', 'cwd', 'manifestPath', 'id']
+      .filter(key => typeof argumentsValue[key] === 'string')
+      .map(key => [key, (argumentsValue[key] as string).slice(0, 500)])
+  );
   return {
+    ...targets,
     summary: agentHistoryOmissionMarker(
       'content',
       serialized.length,
@@ -747,26 +837,11 @@ export function consecutiveAgentInspectionCalls(
   for (let index = steps.length - 1; index >= 0; index -= 1) {
     const step = steps[index];
     if (!step.isError && [
-      'create_file',
-      'edit_file',
-      'delete_file',
-      'rename_file',
-      'move_file',
-      'install_dependencies',
-      'run_command'
-    ].includes(step.name)) {
+      ...FILE_MUTATION_AGENT_TOOL_NAMES, ...COMMAND_AGENT_TOOL_NAMES, 'install_dependencies'
+    ].includes(step.name as AgentToolName)) {
       break;
     }
-    if ([
-      'list_files',
-      'read_file',
-      'search_code',
-      'get_symbols',
-      'find_definition',
-      'find_references',
-      'get_diagnostics',
-      'read_terminal_errors'
-    ].includes(step.name)) {
+    if ((READ_ONLY_AGENT_TOOL_NAMES as readonly string[]).includes(step.name)) {
       inspections += 1;
     }
   }
@@ -781,7 +856,8 @@ export function summarizeAgentToolHistory(
     result: string;
     isError: boolean;
   }>,
-  finalizationError: string
+  finalizationError: string,
+  opening = 'DevMate completed the available project-tool work, but the model did not return a usable final summary.'
 ): string {
   const completedChanges: string[] = [];
   const verification: string[] = [];
@@ -792,7 +868,9 @@ export function summarizeAgentToolHistory(
       const command = commandSummary(step.arguments);
       const exitCode = /(?:^|\n)Exit code:\s*(-?\d+)/i.exec(step.result)?.[1];
       verification.push(exitCode === undefined
-        ? `${command} did not return a usable exit code.`
+        ? step.arguments.background && !step.isError
+          ? `${command} was started in the background; completion has not been verified.`
+          : `${command} did not return a usable exit code.`
         : `${command} exited with code ${exitCode}.`);
     }
     if (step.isError) {
@@ -811,6 +889,12 @@ export function summarizeAgentToolHistory(
       completedChanges.push(`Renamed ${path} to ${newPath}.`);
     } else if (step.name === 'move_file' && path && newPath) {
       completedChanges.push(`Moved ${path} to ${newPath}.`);
+    } else if (step.name === 'rename_symbol' && path) {
+      completedChanges.push(`Renamed a symbol at ${path} to ${boundedSummaryValue(step.arguments.newName)}.`);
+    } else if (step.name === 'format_file' && path) {
+      completedChanges.push(`Formatted ${path}.`);
+    } else if (step.name === 'stop_command') {
+      verification.push(`Stopped background command ${boundedSummaryValue(step.arguments.id)}.`);
     } else if (step.name === 'install_dependencies') {
       const manifestPath = boundedSummaryValue(step.arguments.manifestPath);
       completedChanges.push(manifestPath
@@ -820,7 +904,7 @@ export function summarizeAgentToolHistory(
   }
 
   const lines = [
-    'DevMate completed the available project-tool work, but the model did not return a usable final summary.',
+    opening,
     '',
     completedChanges.length > 0 ? 'Completed:' : 'No file changes were completed.',
     ...completedChanges.map((item) => `- ${item}`)
@@ -944,6 +1028,12 @@ export function truncateAgentToolResult(value: string): string {
 
 function optionalString(value: unknown): string {
   return typeof value === 'string' ? value : '';
+}
+
+function optionalBoolean(value: unknown, name: string): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== 'boolean') throw new Error(`${name} must be a boolean.`);
+  return value;
 }
 
 function requiredString(value: unknown, message: string): string {

@@ -65,6 +65,20 @@ const literalContracts = [
     label: 'AgentToolName',
     typeScript: quotedValues(capture(agentTools, /export const AGENT_TOOL_NAMES\s*=\s*\[([\s\S]*?)\]\s*as const;/, 'TypeScript agent tools')),
     python: quotedValues(capture(backendToolCatalog, /AgentToolName\s*=\s*Literal\[([\s\S]*?)\]/, 'Python agent tools'))
+  },
+  {
+    label: 'Read-only tool group',
+    typeScript: quotedValues(capture(agentTools, /export const READ_ONLY_AGENT_TOOL_NAMES\s*=\s*\[([\s\S]*?)\]/, 'TypeScript read-only tools')),
+    python: quotedValues(capture(backendToolCatalog, /READ_ONLY_AGENT_TOOLS[^=]*=\s*\(([\s\S]*?)\)/, 'Python read-only tools'))
+  },
+  {
+    label: 'Mutating tool group',
+    typeScript: [
+      ...quotedValues(capture(agentTools, /export const FILE_MUTATION_AGENT_TOOL_NAMES\s*=\s*\[([\s\S]*?)\]/, 'TypeScript file tools')),
+      ...quotedValues(capture(agentTools, /export const COMMAND_AGENT_TOOL_NAMES\s*=\s*\[([\s\S]*?)\]/, 'TypeScript command tools')),
+      'install_dependencies'
+    ],
+    python: quotedValues(capture(backendToolCatalog, /MUTATING_AGENT_TOOLS[^=]*=\s*\(([\s\S]*?)\)/, 'Python mutating tools'))
   }
 ];
 

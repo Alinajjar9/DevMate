@@ -1,6 +1,14 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
+test('editor change summaries use actual affected files and omit no-op results', () => {
+  const { collectFileChangeSummary } = require('../out/fileTools');
+  assert.deepEqual(collectFileChangeSummary([
+    { name: 'rename_symbol', arguments: { path: 'a.ts' }, isError: false, result: 'Applied file changes:\n- Updated a.ts\n- Updated b.ts' },
+    { name: 'format_file', arguments: { path: 'c.ts' }, isError: false, result: 'No text changes were needed.' }
+  ]), [{ kind: 'updated', path: 'a.ts' }, { kind: 'updated', path: 'b.ts' }]);
+});
+
 const {
   applyExactReplacements,
   MAX_EDIT_REPLACEMENTS,
@@ -68,6 +76,57 @@ test('applies sequential exact replacements', () => {
     { oldText: 'use(value)', newText: 'render(value)' }
   ]);
   assert.equal(updated, 'const value = 2;\nrender(value);');
+});
+
+test('accepts an empty newText for partial deletion or an empty resulting file', () => {
+  const parsed = parseEditFileArguments({
+    path: 'src/app.ts',
+    replacements: [{ oldText: 'remove this\n', newText: '' }]
+  });
+  assert.equal(applyExactReplacements('keep this\nremove this\n', parsed.replacements), 'keep this\n');
+  assert.equal(applyExactReplacements('remove this\n', parsed.replacements), '');
+});
+
+test('replacement text preserves literal dollar sequences in source code', () => {
+  const newText = "const tokens = [\"$&\", \"$$\", \"$`\", \"$'\", \"$1\"];";
+  assert.equal(
+    applyExactReplacements('before\nPLACEHOLDER\nafter', [{ oldText: 'PLACEHOLDER', newText }]),
+    `before\n${newText}\nafter`
+  );
+});
+
+test('identifies the malformed edit field and explains empty strings correctly', () => {
+  const invalidCases = [
+    [{ oldText: 'match' }, /replacements\[0\]\.newText is missing.*empty string ""/],
+    [{ oldText: 'match', newText: null }, /replacements\[0\]\.newText must be a string; received null/],
+    [{ newText: '' }, /replacements\[0\]\.oldText is missing/],
+    [{ oldText: '', newText: 'insert' }, /replacements\[0\]\.oldText must not be empty.*existing anchor/],
+    ['match', /replacements\[0\] must be an object/]
+  ];
+  for (const [replacement, expected] of invalidCases) {
+    assert.throws(() => parseEditFileArguments({ path: 'app.ts', replacements: [replacement] }), expected);
+  }
+  assert.throws(() => parseEditFileArguments({ path: 'app.ts', replacements: {} }), /replacements must be an array/);
+  assert.throws(() => parseEditFileArguments({ path: 'app.ts', replacements: [] }), /between 1 and 20 entries; received 0/);
+  assert.throws(() => parseEditFileArguments({
+    path: 'app.ts', replacements: [{ oldText: 'valid', newText: '' }, { oldText: 'second', newText: 0 }]
+  }), /replacements\[1\]\.newText must be a string; received number/);
+});
+
+test('later match failures explain that the whole edit call leaves the file unchanged', () => {
+  const original = 'first\nsecond\nlast';
+  assert.throws(() => applyExactReplacements(original, [
+    { oldText: 'first', newText: 'changed' },
+    { oldText: 'second', newText: '' },
+    { oldText: 'missing', newText: 'replacement' }
+  ]), /Replacement 3 did not match.*No changes from this edit_file call were applied/);
+  assert.equal(original, 'first\nsecond\nlast');
+  assert.throws(() => applyExactReplacements('same same', [
+    { oldText: 'same', newText: '' }
+  ]), /matched more than once.*No changes from this edit_file call were applied/);
+  assert.throws(() => applyExactReplacements('same', [
+    { oldText: 'same', newText: 'same' }
+  ]), /do not change the file/);
 });
 
 test('matches model LF edits against CRLF files and preserves CRLF', () => {

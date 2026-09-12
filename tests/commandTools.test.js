@@ -44,14 +44,14 @@ test('normalizes safe legacy command strings without invoking a shell', () => {
   }), /shell operators/);
 });
 
-test('rejects shell, install, write, watch, git, and arbitrary commands', () => {
+test('rejects shell, install, write, watch, git writes, and arbitrary commands in Standard', () => {
   const commands = [
     { executable: 'npm', args: ['install'] },
     { executable: 'npm', args: ['run', 'test:watch'] },
     { executable: 'prettier', args: ['--write', '.'] },
     { executable: 'npx', args: ['eslint', '.'] },
     { executable: 'python', args: ['-c', 'print(1)'] },
-    { executable: 'git', args: ['status'] },
+    { executable: 'git', args: ['reset', '--hard'] },
     { executable: 'npm', args: ['test', '; rm -rf .'] },
     { executable: 'powershell', args: ['-Command', 'npm test'] },
     { executable: 'npm', args: ['test'], cwd: 'node_modules/pkg' },

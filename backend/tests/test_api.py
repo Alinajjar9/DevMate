@@ -1,3 +1,4 @@
+import copy
 import json
 import unittest
 from typing import get_args
@@ -75,6 +76,19 @@ class DevMateApiTests(unittest.TestCase):
             },
         )
 
+    def test_bounded_user_instructions_reach_both_provider_endpoints(self) -> None:
+        payload = self._ask_payload(scope_type="project", items=[])
+        payload["instructions"] = "Preserve public function names."
+        for endpoint in ("/ask", "/ask/stream"):
+            with self.subTest(endpoint=endpoint):
+                response = self.client.post(endpoint, json=payload)
+                self.assertEqual(response.status_code, 200)
+                messages = self.provider.requests[-1].messages
+                self.assertTrue(any(message.role == "user" and "Preserve public function names." in (message.content or "") for message in messages))
+                self.assertNotIn("Preserve public function names.", messages[0].content)
+        payload["instructions"] = "x" * 12_001
+        self.assertEqual(self.client.post("/ask", json=payload).status_code, 422)
+
     def test_every_supported_agent_tool_has_one_definition(self) -> None:
         supported = set(get_args(AgentToolName))
         classified = set((*READ_ONLY_AGENT_TOOLS, *MUTATING_AGENT_TOOLS))
@@ -143,6 +157,161 @@ class DevMateApiTests(unittest.TestCase):
 
         payload["settings"]["timeoutSeconds"] = 1_801
         self.assertEqual(self.client.post("/ask", json=payload).status_code, 422)
+
+    def test_ask_accepts_explicit_reasoning_off_for_luna(self) -> None:
+        payload = self._ask_payload(scope_type="project", items=[])
+        payload["settings"]["model"] = "gpt-5.6-luna"
+        payload["settings"]["reasoningEffort"] = "none"
+
+        response = self.client.post("/ask", json=payload)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.provider.requests[-1].reasoning_effort, "none")
+
+    def test_api_selection_defaults_to_auto_and_preserves_explicit_choice(self) -> None:
+        for api in (None, "auto", "chat_completions", "responses"):
+            with self.subTest(api=api):
+                payload = self._ask_payload(scope_type="project", items=[])
+                if api is not None:
+                    payload["settings"]["api"] = api
+                response = self.client.post("/ask", json=payload)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(self.provider.requests[-1].api, api or "auto")
+
+        payload["settings"]["api"] = "unsupported"
+        self.assertEqual(self.client.post("/ask", json=payload).status_code, 422)
+
+    def test_api_accepts_max_reasoning_for_responses(self) -> None:
+        payload = self._ask_payload(scope_type="project", items=[])
+        payload["settings"].update(api="responses", model="gpt-5.6-luna", reasoningEffort="max")
+        response = self.client.post("/ask", json=payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.provider.requests[-1].reasoning_effort, "max")
+
+    def test_provider_state_round_trips_only_as_tool_metadata(self) -> None:
+        state = self._provider_state()
+        for endpoint in ("/ask", "/ask/stream"):
+            with self.subTest(endpoint=endpoint):
+                self.provider.answer = ChatCompletion(content=None, tool_calls=(ChatToolCall(
+                    id="call-1", name="read_file", arguments='{"path":"app.py"}', provider_state=state,
+                ),))
+                payload = self._ask_payload(scope_type="project", items=[])
+                payload["settings"].update(api="responses", model="gpt-5.6-luna")
+                response = self.client.post(endpoint, json=payload)
+                self.assertEqual(response.status_code, 200)
+                if endpoint.endswith("stream"):
+                    events = [json.loads(line) for line in response.iter_lines() if line]
+                    data = events[-1]["result"]["data"]
+                    self.assertNotIn("opaque-state-marker", json.dumps(events[:-1]))
+                else:
+                    data = response.json()["data"]
+                self.assertEqual(data["answer"], "")
+                self.assertEqual(data["toolCalls"][0]["providerState"], state)
+
+                self.provider.answer = "Finished reading the file."
+                payload["forceFinalAnswer"] = True
+                payload["toolHistory"] = [{
+                    "callId": "call-1", "name": "read_file", "arguments": {"path": "app.py"},
+                    "result": "print('hello')", "providerState": data["toolCalls"][0]["providerState"],
+                }]
+                response = self.client.post(endpoint, json=payload)
+                self.assertEqual(response.status_code, 200)
+                messages = self.provider.requests[-1].messages
+                self.assertEqual(messages[-2].provider_state, state)
+                self.assertIsNone(messages[-1].provider_state)
+                self.assertNotIn("opaque-state-marker", "\n".join(message.content or "" for message in messages))
+                self.assertNotIn("opaque-state-marker", response.text)
+
+    def test_provider_state_rejects_unapproved_content_without_echoing_it(self) -> None:
+        valid = self._provider_state()
+        invalid = []
+
+        def changed(update):
+            state = copy.deepcopy(valid)
+            update(state)
+            invalid.append(state)
+
+        changed(lambda state: state.update(instructions="opaque-state-marker"))
+        changed(lambda state: state.update(model=" "))
+        changed(lambda state: state.update(endpoint="e" * 2_049))
+        changed(lambda state: state.update(model="m" * 121))
+        changed(lambda state: state["outputItems"][0].update(summary=[{"text": "opaque-state-marker"}]))
+        changed(lambda state: state["outputItems"][0].update(content="opaque-state-marker"))
+        changed(lambda state: state["outputItems"][0].update(encrypted_content="e" * 1_000_001))
+        changed(lambda state: state["outputItems"][0].update(id="i" * 201))
+        changed(lambda state: state["outputItems"][1].update(role="system"))
+        changed(lambda state: state["outputItems"][1].update(phase="reasoning"))
+        changed(lambda state: state["outputItems"][1]["content"][0].update(annotations=[{"text": "opaque-state-marker"}]))
+        changed(lambda state: state["outputItems"][1]["content"][0].update(type="input_text"))
+        changed(lambda state: state["outputItems"][1]["content"][0].update(text="t" * 400_001))
+        changed(lambda state: state["outputItems"][1]["content"][0].update(text="\U0001f600" * 200_001))
+        changed(lambda state: state["outputItems"][1].update(content=state["outputItems"][1]["content"] * 9))
+        changed(lambda state: state["outputItems"][2].update(name="n" * 121))
+        changed(lambda state: state["outputItems"][2].update(call_id="c" * 121))
+        changed(lambda state: state["outputItems"][2].update(arguments="a" * 1_200_001))
+        changed(lambda state: state["outputItems"][2].update(type="computer_call"))
+        changed(lambda state: state.update(outputItems=[state["outputItems"][0]] * 17))
+        changed(lambda state: state["outputItems"][0].update(encrypted_content=None))
+        changed(lambda state: state.update(outputItems="opaque-state-marker"))
+        invalid.extend(["opaque-state-marker", [], {"endpoint": "opaque-state-marker"}])
+
+        with self.assertLogs("backend.app.main", level="WARNING") as logs:
+            for state in invalid:
+                payload = self._ask_payload(scope_type="project", items=[])
+                payload["toolHistory"] = [{
+                    "callId": "call-1", "name": "read_file", "arguments": {},
+                    "result": "File contents", "providerState": state,
+                }]
+                response = self.client.post("/ask", json=payload)
+                self.assertEqual(response.status_code, 422)
+                self.assertNotIn("opaque-state-marker", response.text)
+        self.assertNotIn("opaque-state-marker", "\n".join(logs.output))
+        self.assertEqual(self.provider.requests, [])
+
+    def test_provider_state_preserves_empty_content_and_optional_ids(self) -> None:
+        state = self._provider_state()
+        state["outputItems"][1].pop("id")
+        state["outputItems"][1]["phase"] = "final_answer"
+        state["outputItems"][1]["content"][0]["text"] = ""
+        state["outputItems"][2].pop("id")
+        state["outputItems"][2]["arguments"] = ""
+        payload = self._ask_payload(scope_type="project", items=[])
+        payload["toolHistory"] = [{
+            "callId": "call-1", "name": "read_file", "arguments": {},
+            "result": "File contents", "providerState": state,
+        }]
+        response = self.client.post("/ask", json=payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.provider.requests[-1].messages[-2].provider_state, state)
+
+    def test_provider_state_enforces_per_state_and_whole_history_limits(self) -> None:
+        state = self._provider_state()
+        item = state["outputItems"][0]
+        item["encrypted_content"] = "e" * 850_000
+        state["outputItems"] = [item, {**item, "id": "reasoning-2"}]
+        payload = self._ask_payload(scope_type="project", items=[])
+        payload["forceFinalAnswer"] = True
+        payload["toolHistory"] = [{
+            "callId": f"call-{index}", "name": "read_file", "arguments": {},
+            "result": "File contents", "providerState": state,
+        } for index in range(4)]
+        self.assertEqual(self.client.post("/ask", json=payload).status_code, 200)
+        payload["toolHistory"].append({**payload["toolHistory"][0], "callId": "call-4"})
+        self.assertEqual(self.client.post("/ask", json=payload).status_code, 422)
+
+        state["outputItems"].append({**item, "id": "reasoning-3"})
+        payload["toolHistory"] = [payload["toolHistory"][0]]
+        self.assertEqual(self.client.post("/ask", json=payload).status_code, 422)
+
+    def test_invalid_state_from_provider_returns_a_bounded_error(self) -> None:
+        state = self._provider_state()
+        state["outputItems"][0]["summary"] = [{"text": "opaque-state-marker"}]
+        self.provider.answer = ChatCompletion(content=None, tool_calls=(ChatToolCall(
+            id="call-1", name="read_file", arguments="{}", provider_state=state,
+        ),))
+        response = self.client.post("/ask", json=self._ask_payload(scope_type="project", items=[]))
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json(), {"detail": "The model returned invalid provider state."})
 
     def test_selection_scope_accepts_workspace_attachment(self) -> None:
         items = [
@@ -411,10 +580,11 @@ class DevMateApiTests(unittest.TestCase):
                 }
             ],
         )
-        self.assertEqual(len(self.provider.requests[-1].tools), 8)
+        self.assertEqual(len(self.provider.requests[-1].tools), len(READ_ONLY_AGENT_TOOLS))
         self.assertEqual(
             [tool.name for tool in self.provider.requests[-1].tools],
             [
+                "get_project_info", "get_git_changes",
                 "list_files", "read_file", "search_code",
                 "get_symbols", "find_definition", "find_references",
                 "get_diagnostics", "read_terminal_errors",
@@ -594,6 +764,47 @@ class DevMateApiTests(unittest.TestCase):
         self.assertFalse(provider_request.force_final_answer)
         self.assertEqual([tool.name for tool in provider_request.tools], ["read_file", "edit_file"])
         self.assertIn("Thinking is disabled for recovery", provider_request.messages[0].content)
+
+    def test_read_only_code_agent_accepts_plain_answers_without_file_proposals(self) -> None:
+        for endpoint in ("/ask", "/ask/stream"):
+            with self.subTest(endpoint=endpoint):
+                payload = self._ask_payload(scope_type="project", items=[], mode="code")
+                payload["enabledTools"] = []
+                payload["agentEditsEnabled"] = True
+                self.provider.answer = "The selected configuration permits explanation only."
+                response = self.client.post(endpoint, json=payload)
+                self.assertEqual(response.status_code, 200)
+                result = response.json() if endpoint == "/ask" else next(
+                    json.loads(line)["result"] for line in response.text.splitlines()
+                    if json.loads(line)["type"] == "final"
+                )
+                self.assertEqual(result["data"]["answer"], self.provider.answer)
+                self.assertEqual(result["data"]["changes"], [])
+                self.assertEqual(self.provider.requests[-1].tools, ())
+
+    def test_forced_code_summary_never_parses_legacy_file_proposals(self) -> None:
+        answers = (
+            "The completed changes have been verified.",
+            '{"summary":"Done","changes":[{"path":"extra.ts","content":"unexpected edit"}]}',
+        )
+        for endpoint in ("/ask", "/ask/stream"):
+            for answer in answers:
+                with self.subTest(endpoint=endpoint, answer=answer):
+                    payload = self._ask_payload(scope_type="project", items=[], mode="code")
+                    payload["enabledTools"] = []
+                    payload["forceFinalAnswer"] = True
+                    payload["agentEditsEnabled"] = False  # Older clients still need safe summary behavior.
+                    self.provider.answer = answer
+                    response = self.client.post(endpoint, json=payload)
+                    self.assertEqual(response.status_code, 200)
+                    result = response.json() if endpoint == "/ask" else next(
+                        json.loads(line)["result"] for line in response.text.splitlines()
+                        if json.loads(line)["type"] == "final"
+                    )
+                    self.assertEqual(result["data"]["answer"], answer)
+                    self.assertEqual(result["data"]["changes"], [])
+                    self.assertEqual(result["data"]["toolCalls"], [])
+                    self.assertNotIn("Return only one JSON object", self.provider.requests[-1].messages[0].content)
 
     def test_ask_accepts_the_configurable_tool_history_ceiling(self) -> None:
         payload = self._ask_payload(scope_type="project", items=[])
@@ -816,6 +1027,21 @@ class DevMateApiTests(unittest.TestCase):
         self.assertIn("Use create_file, edit_file, delete_file", self.provider.requests[-1].messages[0].content)
         self.assertIn("Never use run_command for mkdir, move, mv", self.provider.requests[-1].messages[0].content)
         self.assertIn("create missing destination directories automatically", self.provider.requests[-1].messages[0].content)
+
+    @staticmethod
+    def _provider_state() -> dict[str, object]:
+        return {
+            "endpoint": "https://api.openai.com/v1/responses",
+            "model": "gpt-5.6-luna",
+            "outputItems": [
+                {"id": "reasoning-1", "type": "reasoning", "summary": [],
+                 "encrypted_content": "opaque-state-marker"},
+                {"id": "message-1", "type": "message", "role": "assistant", "phase": "commentary",
+                 "content": [{"type": "output_text", "text": "Reading app.py.", "annotations": []}]},
+                {"id": "function-1", "type": "function_call", "call_id": "call-1", "name": "read_file",
+                 "arguments": '{"path":"app.py"}'},
+            ],
+        }
 
     @staticmethod
     def _ask_payload(

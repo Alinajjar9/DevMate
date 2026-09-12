@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import type { AgentToolCall, AgentToolName, AgentToolSettings, ParsedAgentToolCall } from './agentTools';
@@ -8,6 +8,7 @@ import {
   MAX_AGENT_COMMAND_CALLS,
   MAX_AGENT_DEPENDENCY_INSTALLS,
   MAX_AGENT_FILE_MUTATIONS,
+  MAX_AGENT_TOOL_RESULT_CHARACTERS,
   MAX_DEPENDENCY_MANIFEST_BYTES,
   parseAgentToolCall,
   READ_ONLY_AGENT_TOOL_NAMES,
@@ -26,10 +27,16 @@ import {
   workspacePythonExecutable
 } from './backendManager';
 import type { CapturedTerminalError, ValidatedCommand } from './commandTools';
+import { commandApprovalIdentity, resolveCommandExecutable } from './commandApproval';
+import { ManagedCommandRegistry } from './managedCommands';
 import {
   boundedModelCommandOutput,
   commandLabel,
-  commandSignature,
+  COMMAND_ACCESS_STORAGE_KEY,
+  commandExecutionArguments,
+  commandProjectScript,
+  parseCommandAccess,
+  parseRunCommandArguments,
   DEFAULT_COMMAND_TIMEOUT_SECONDS,
   formatCapturedTerminalErrors,
   MAX_CAPTURED_TERMINAL_ERRORS,
@@ -41,10 +48,17 @@ import {
 import type { ValidatedFileChange } from './fileTools';
 import {
   applyExactReplacements,
+  formatReadFileResult,
   MAX_FILE_CHANGE_CHARACTERS,
   MAX_TOTAL_CHANGE_CHARACTERS,
+  normalizeWorkspaceRelativePath,
   validateFileChanges
 } from './fileTools';
+import {
+  assertUndoSnapshotsMatch, createRequestUndo, disableRequestUndo,
+  MAX_UNDO_BYTES, MAX_UNDO_STORAGE_BYTES, parseRequestUndo, recordRequestUndo, requestUndoState
+} from './requestUndo';
+import type { RequestUndoJournal, RequestUndoState, UndoFileSnapshot } from './requestUndo';
 import type {
   FilePermissionAction,
   FilePermissionPolicy,
@@ -52,6 +66,7 @@ import type {
 } from './permissions';
 import {
   allowActions,
+  canRememberCommandApproval,
   FILE_PERMISSION_POLICY_STORAGE_KEY,
   parseFilePermissionPolicy,
   parseRememberedCommands,
@@ -68,6 +83,8 @@ import {
   shouldSkipProjectFile
 } from './projectIndex';
 import { WorkspaceContext } from './workspaceContext';
+import { applyProviderTextEdits } from './editorTools';
+import { collectProjectInfo, readGitChanges, matchesSearchFilePattern, searchCodeSnippets } from './projectTools';
 
 type PendingCommandPermission = {
   id: string;
@@ -138,6 +155,7 @@ type AgentToolResult = {
   usedFiles: string[];
   mutationCharacters: number;
   mutationApplied?: boolean;
+  mutationFiles?: number;
   commandAttempted?: boolean;
   missingDependency?: string;
   pythonEnvironment?: string;
@@ -150,6 +168,7 @@ export type AgentToolExecution = {
   usedFiles: string[];
   mutationCharacters: number;
   mutationApplied?: boolean;
+  mutationFiles?: number;
   commandAttempted?: boolean;
   missingDependency?: string;
   pythonEnvironment?: string;
@@ -174,15 +193,22 @@ export class ToolExecutor implements vscode.Disposable {
   private readonly completedFileDiffs = new Map<string, CompletedFileDiff>();
   private readonly activeRequestDiffs = new Map<string, string>();
   private readonly commandTerminals = new Map<string, vscode.Terminal>();
+  private readonly managedCommands = new ManagedCommandRegistry(() => this.postManagedCommandState());
+  private readonly backgroundTerminals = new Set<vscode.Terminal>();
   private readonly activeTerminalCaptures = new Map<vscode.TerminalShellExecution, ActiveTerminalCapture>();
   private readonly recentTerminalErrors: CapturedTerminalError[] = [];
   private readonly lifetimeDisposables: vscode.Disposable[] = [];
+  private undoJournal?: RequestUndoJournal;
+  private undoQueue: Promise<void>;
+  private undoInProgress = false;
+  private undoPersistenceFailed = false;
 
   constructor(
     private readonly extensionContext: vscode.ExtensionContext,
     private readonly workspaceContext: WorkspaceContext,
     private readonly events: ToolExecutorEvents
   ) {
+    this.undoQueue = this.loadRequestUndo().catch(() => undefined);
     this.lifetimeDisposables.push(
       vscode.window.onDidStartTerminalShellExecution(event => this.captureWorkspaceTerminalExecution(event)),
       vscode.window.onDidEndTerminalShellExecution(event => { void this.finishWorkspaceTerminalExecution(event); })
@@ -194,6 +220,262 @@ export class ToolExecutor implements vscode.Disposable {
     if (!resuming) {
       this.activeRequestDiffs.clear();
     }
+    void this.queueUndo(async () => {
+      const workspaceId = this.undoWorkspaceId();
+      if (!workspaceId) {
+        this.undoJournal = undefined;
+        return;
+      }
+      if (!resuming || this.undoJournal?.workspaceId !== workspaceId) {
+        this.undoJournal = createRequestUndo(workspaceId, randomUUID());
+        if (resuming) {
+          this.undoJournal = disableRequestUndo(this.undoJournal, 'Undo unavailable: earlier changes from this resumed request were not saved.');
+        }
+        await this.persistRequestUndo();
+      }
+    });
+  }
+
+  async getUndoState(): Promise<RequestUndoState> {
+    await this.undoQueue;
+    return requestUndoState(this.undoJournal?.workspaceId === this.undoWorkspaceId() ? this.undoJournal : undefined);
+  }
+
+  /** Review the latest request's direct file edits, then restore exact bytes only if every result is still unchanged. */
+  async undoLastRequest(): Promise<boolean> {
+    await this.undoQueue;
+    const journal = this.undoJournal;
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (this.undoInProgress || !folder || !journal || !requestUndoState(journal).available
+      || journal.workspaceId !== this.undoWorkspaceId()) {
+      return false;
+    }
+    if (!vscode.workspace.isTrusted) {
+      throw new Error('Trust this workspace before undoing file changes.');
+    }
+    this.undoInProgress = true;
+    const previewUris: vscode.Uri[] = [];
+    try {
+      assertUndoSnapshotsMatch(journal, await this.readUndoSnapshots(folder, journal.files.map(file => file.path)));
+      const choices = journal.files.map(file => ({
+        label: file.path,
+        description: file.before === null ? 'Remove file created by this request'
+          : file.after === null ? 'Restore deleted or moved file' : 'Restore the previous contents',
+        file,
+        undo: false
+      }));
+      while (true) {
+        const choice = await vscode.window.showQuickPick([
+          { label: `Undo all ${journal.files.length} file changes`, description: 'Continue to confirmation', file: undefined, undo: true },
+          ...choices
+        ], { title: 'Review Undo last request', placeHolder: 'Select a file to review its diff, or continue to confirmation' });
+        if (!choice) {
+          return false;
+        }
+        if (choice.undo) {
+          break;
+        }
+        const file = choice.file!;
+        const id = randomUUID();
+        const currentUri = vscode.Uri.parse(`${ToolExecutor.diffScheme}:/undo/${id}/current`);
+        const restoredUri = vscode.Uri.parse(`${ToolExecutor.diffScheme}:/undo/${id}/restored`);
+        previewUris.push(currentUri, restoredUri);
+        this.diffDocuments.set(currentUri.toString(), file.after === null ? '' : Buffer.from(file.after, 'base64').toString('utf8'));
+        this.diffDocuments.set(restoredUri.toString(), file.before === null ? '' : Buffer.from(file.before, 'base64').toString('utf8'));
+        await vscode.commands.executeCommand('vscode.diff', currentUri, restoredUri, `Undo: ${file.path}`, { preview: true });
+      }
+      const confirmed = await vscode.window.showWarningMessage(
+        `Undo the last request's changes to ${journal.files.length} files?`,
+        { modal: true, detail: 'This restores direct DevMate file edits only. Terminal commands, installed dependencies, and created directories are not undone.' },
+        'Undo request'
+      );
+      if (confirmed !== 'Undo request') {
+        return false;
+      }
+      if (this.undoJournal !== journal || !vscode.workspace.isTrusted || this.undoWorkspaceId() !== journal.workspaceId) {
+        throw new Error('The active request or workspace changed while Undo was being reviewed.');
+      }
+      for (const file of journal.files.filter(item => item.before !== null)) {
+        await this.assertNoWorkspaceSymlink(folder, file.path, true);
+        const parent = file.path.split('/').slice(0, -1);
+        if (parent.length > 0) {
+          await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(folder.uri, ...parent));
+        }
+      }
+      assertUndoSnapshotsMatch(journal, await this.readUndoSnapshots(folder, journal.files.map(file => file.path)));
+      const edit = new vscode.WorkspaceEdit();
+      for (const file of journal.files) {
+        const uri = vscode.Uri.joinPath(folder.uri, ...file.path.split('/'));
+        if (file.before === null) {
+          edit.deleteFile(uri, { recursive: false, ignoreIfNotExists: false });
+        } else {
+          // Resource edits preserve BOMs, line endings and encodings exactly, including restored deleted files.
+          edit.createFile(uri, { overwrite: file.after !== null, ignoreIfExists: false, contents: Buffer.from(file.before, 'base64') });
+        }
+      }
+      if (!await vscode.workspace.applyEdit(edit)) {
+        throw new Error('VS Code could not apply Undo. Review the files before trying again.');
+      }
+      for (const file of journal.files.filter(item => item.before !== null)) {
+        const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(folder.uri, ...file.path.split('/')));
+        if (document.isDirty || !await document.save()) {
+          throw new Error('Undo applied, but a restored file could not be confirmed as saved. Review the files.');
+        }
+      }
+      assertUndoSnapshotsMatch({ ...journal, files: journal.files.map(file => ({ ...file, after: file.before })) },
+        await this.readUndoSnapshots(folder, journal.files.map(file => file.path)));
+      await this.queueUndo(async () => {
+        this.undoJournal = createRequestUndo(journal.workspaceId, journal.requestId);
+        await this.persistRequestUndo();
+      });
+      this.activeRequestDiffs.clear();
+      this.events.postStatus('Undid the last request’s direct file changes.');
+      return true;
+    } finally {
+      this.undoInProgress = false;
+      previewUris.forEach(uri => this.diffDocuments.delete(uri.toString()));
+    }
+  }
+
+  private undoWorkspaceId(): string | undefined {
+    const id = vscode.workspace.workspaceFolders?.[0]?.uri.toString();
+    return process.platform === 'win32' ? id?.toLocaleLowerCase() : id;
+  }
+
+  private undoStorageUri(): vscode.Uri | undefined {
+    const base = this.extensionContext.storageUri ?? this.extensionContext.globalStorageUri;
+    const workspaceId = this.undoWorkspaceId();
+    return base && workspaceId ? vscode.Uri.joinPath(base, `request-undo-${createHash('sha256').update(workspaceId).digest('hex').slice(0, 20)}.json`) : undefined;
+  }
+
+  private async loadRequestUndo(): Promise<void> {
+    const uri = this.undoStorageUri();
+    const workspaceId = this.undoWorkspaceId();
+    if (!uri || !workspaceId) {
+      return;
+    }
+    const stat = await vscode.workspace.fs.stat(uri);
+    if (stat.size > MAX_UNDO_STORAGE_BYTES) {
+      return;
+    }
+    const bytes = Buffer.from(await vscode.workspace.fs.readFile(uri));
+    if (bytes.length <= MAX_UNDO_STORAGE_BYTES) {
+      this.undoJournal = parseRequestUndo(JSON.parse(bytes.toString('utf8')), workspaceId);
+    }
+  }
+
+  private queueUndo(work: () => Promise<void>): Promise<void> {
+    this.undoQueue = this.undoQueue.then(work).catch(async () => {
+      this.undoPersistenceFailed = true;
+      if (this.undoJournal) {
+        this.undoJournal = disableRequestUndo(this.undoJournal, 'Undo unavailable: the request snapshots could not be saved.');
+        try {
+          await this.persistRequestUndo();
+        } catch {
+          // The existing write-ahead marker already prevents offering an incomplete request after reload.
+        }
+      }
+    });
+    return this.undoQueue;
+  }
+
+  private async persistRequestUndo(value = this.undoJournal): Promise<void> {
+    const uri = this.undoStorageUri();
+    const base = this.extensionContext.storageUri ?? this.extensionContext.globalStorageUri;
+    if (!uri || !base || !value) {
+      throw new Error('Extension storage is unavailable.');
+    }
+    let bytes = Buffer.from(JSON.stringify(value));
+    if (bytes.length > MAX_UNDO_STORAGE_BYTES) {
+      this.undoJournal = disableRequestUndo(value, 'Undo unavailable: this request exceeded the snapshot storage limit.');
+      bytes = Buffer.from(JSON.stringify(this.undoJournal));
+    }
+    await vscode.workspace.fs.createDirectory(base);
+    await vscode.workspace.fs.writeFile(uri, bytes);
+    this.undoPersistenceFailed = false;
+  }
+
+  private async readUndoSnapshots(folder: vscode.WorkspaceFolder, paths: string[]): Promise<UndoFileSnapshot[]> {
+    const snapshots: UndoFileSnapshot[] = [];
+    let totalBytes = 0;
+    for (const relativePath of paths) {
+      if (normalizeWorkspaceRelativePath(relativePath) !== relativePath || shouldSkipProjectFile(relativePath)) {
+        throw new Error(`Undo will not access the protected or unsafe path ${relativePath}.`);
+      }
+      await this.assertNoWorkspaceSymlink(folder, relativePath, true);
+      const uri = vscode.Uri.joinPath(folder.uri, ...relativePath.split('/'));
+      if ((vscode.workspace.textDocuments ?? []).some(document => document.uri.toString() === uri.toString() && document.isDirty)) {
+        throw new Error(`Save or discard your unsaved changes in ${relativePath} before using Undo.`);
+      }
+      try {
+        const stat = await vscode.workspace.fs.stat(uri);
+        if ((stat.type & vscode.FileType.File) === 0 || totalBytes + stat.size > MAX_UNDO_BYTES) {
+          throw new Error(`${relativePath} is not a supported file for Undo.`);
+        }
+        const bytes = Buffer.from(await vscode.workspace.fs.readFile(uri));
+        totalBytes += bytes.length;
+        if (totalBytes > MAX_UNDO_BYTES) {
+          throw new Error('The request snapshots exceed the 2 MB Undo limit.');
+        }
+        snapshots.push({ path: relativePath, bytes: bytes.toString('base64') });
+      } catch (error) {
+        if (error instanceof vscode.FileSystemError && error.code === 'FileNotFound') {
+          snapshots.push({ path: relativePath, bytes: null });
+          continue;
+        }
+        throw error;
+      }
+    }
+    return snapshots;
+  }
+
+  private async captureUndoBefore(folder: vscode.WorkspaceFolder, paths: string[]): Promise<UndoFileSnapshot[] | undefined> {
+    await this.undoQueue;
+    const folderId = process.platform === 'win32' ? folder.uri.toString().toLocaleLowerCase() : folder.uri.toString();
+    if (folderId !== this.undoWorkspaceId()) {
+      throw new Error('The workspace changed before the file edit could be applied.');
+    }
+    if (this.undoPersistenceFailed) {
+      throw new Error('DevMate could not safely prepare the Undo journal before changing files.');
+    }
+    if (this.undoJournal?.unavailableReason) {
+      return undefined;
+    }
+    try {
+      const snapshots = await this.readUndoSnapshots(folder, paths);
+      await this.queueUndo(async () => {
+        this.undoJournal ??= createRequestUndo(this.undoWorkspaceId()!, randomUUID());
+        // A reload between applying and recording a mutation must not offer older, incomplete snapshots.
+        await this.persistRequestUndo(disableRequestUndo(this.undoJournal,
+          'Undo unavailable: the last file change was interrupted before its snapshots were saved.'));
+      });
+      if (this.undoPersistenceFailed) {
+        throw new Error('DevMate could not safely prepare the Undo journal before changing files.');
+      }
+      return this.undoJournal?.unavailableReason ? undefined : snapshots;
+    } catch {
+      await this.queueUndo(async () => {
+        this.undoJournal = disableRequestUndo(this.undoJournal ?? createRequestUndo(this.undoWorkspaceId()!, randomUUID()),
+          'Undo unavailable: a file could not be captured before this request changed it.');
+        await this.persistRequestUndo();
+      });
+      if (this.undoPersistenceFailed) {
+        throw new Error('DevMate could not safely prepare the Undo journal before changing files.');
+      }
+      return undefined;
+    }
+  }
+
+  private async captureUndoAfter(folder: vscode.WorkspaceFolder, before?: UndoFileSnapshot[]): Promise<void> {
+    if (!before) {
+      return;
+    }
+    await this.queueUndo(async () => {
+      const after = await this.readUndoSnapshots(folder, before.map(file => file.path));
+      this.undoJournal = recordRequestUndo(this.undoJournal ?? createRequestUndo(this.undoWorkspaceId()!, randomUUID()),
+        before.map((file, index) => ({ path: file.path, before: file.bytes, after: after[index].bytes })));
+      await this.persistRequestUndo();
+    });
   }
 
   diffIdForPath(filePath: string): string | undefined {
@@ -216,6 +498,7 @@ export class ToolExecutor implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.stopAllManagedCommands();
     this.cancelPendingWork();
     this.activeTerminalCaptures.clear();
     this.diffDocuments.clear();
@@ -493,6 +776,7 @@ export class ToolExecutor implements vscode.Disposable {
         label,
         cwd: cwd || 'Workspace root',
         rememberable,
+        allowRemember: rememberable,
         title: options.title,
         warning: options.warning
       });
@@ -525,8 +809,12 @@ export class ToolExecutor implements vscode.Disposable {
    */
   async executeAgentToolCall(
     call: AgentToolCall,
-    remainingMutationCharacters = MAX_TOTAL_CHANGE_CHARACTERS
+    remainingMutationCharacters = MAX_TOTAL_CHANGE_CHARACTERS,
+    remainingFileEdits = MAX_AGENT_FILE_MUTATIONS
   ): Promise<AgentToolExecution> {
+    if (this.undoInProgress) {
+      return this.rejectedToolExecution(call, 'Finish or cancel the Undo review before running another project tool.');
+    }
     let parsedCall: ParsedAgentToolCall;
     try {
       parsedCall = parseAgentToolCall(call);
@@ -550,7 +838,7 @@ export class ToolExecutor implements vscode.Disposable {
     this.postAgentToolActivity(call.id, activity.title, activity.detail, 'running');
 
     try {
-      const execution = await this.runAgentTool(parsedCall, remainingMutationCharacters);
+      const execution = await this.runAgentTool(parsedCall, remainingMutationCharacters, remainingFileEdits);
       this.postAgentToolActivity(
         call.id,
         activity.title,
@@ -571,6 +859,7 @@ export class ToolExecutor implements vscode.Disposable {
         usedFiles: execution.usedFiles,
         mutationCharacters: execution.mutationCharacters,
         mutationApplied: execution.mutationApplied,
+        mutationFiles: execution.mutationFiles,
         commandAttempted: execution.commandAttempted,
         missingDependency: execution.missingDependency,
         pythonEnvironment: execution.pythonEnvironment,
@@ -610,7 +899,7 @@ export class ToolExecutor implements vscode.Disposable {
     }
   }
 
-  private async runAgentTool(call: ParsedAgentToolCall, remainingMutationCharacters: number): Promise<AgentToolResult> {
+  private async runAgentTool(call: ParsedAgentToolCall, remainingMutationCharacters: number, remainingFileEdits: number): Promise<AgentToolResult> {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) {
       throw new Error('Open a workspace folder before using project tools.');
@@ -625,6 +914,10 @@ export class ToolExecutor implements vscode.Disposable {
       case 'list_files': return this.listAgentFiles(call, folder, settings);
       case 'read_file': return this.readAgentFile(call, folder, settings);
       case 'search_code': return this.searchAgentCode(call, folder, settings);
+      case 'get_project_info': return this.readProjectInfo(call, folder);
+      case 'get_git_changes': return this.readProjectGitChanges(call, folder);
+      case 'rename_symbol':
+      case 'format_file': return this.applyLanguageEdits(call, folder, remainingMutationCharacters, remainingFileEdits);
       case 'get_diagnostics': return this.readWorkspaceDiagnostics(call, folder);
       case 'get_symbols': return this.readDocumentSymbols(call, folder);
       case 'find_definition':
@@ -632,6 +925,11 @@ export class ToolExecutor implements vscode.Disposable {
       case 'read_terminal_errors': return this.readTerminalErrors(call, settings);
       case 'install_dependencies': return this.runDependencyInstallation(call, folder);
       case 'run_command': return this.runVerificationCommand(call, folder);
+      case 'stop_command': {
+        this.stopManagedCommand(call.arguments.id);
+        return { result: 'DevMate closed the owned command terminal. Detached child processes may need to be stopped manually.',
+          resultSummary: 'Closed command terminal', usedFiles: [], mutationCharacters: 0 };
+      }
     }
   }
 
@@ -669,6 +967,115 @@ export class ToolExecutor implements vscode.Disposable {
       mutationCharacters: call.arguments.content.length,
       mutationApplied: true
     };
+  }
+
+  /** Read a small manifest summary instead of repeatedly sending whole configuration files. */
+  private async readProjectInfo(call: Extract<ParsedAgentToolCall, { name: 'get_project_info' }>, folder: vscode.WorkspaceFolder): Promise<AgentToolResult> {
+    const uris = await this.findAgentFiles(folder, call.arguments.path);
+    const paths = uris.map(uri => normalizeWorkspaceRelativePath(path.relative(folder.uri.fsPath, uri.fsPath).replace(/\\/g, '/')));
+    const info = await collectProjectInfo(paths, async relative => {
+      const candidate = await this.workspaceContext.readProjectCandidate(vscode.Uri.joinPath(folder.uri, ...relative.split('/')));
+      return candidate?.content;
+    }, call.arguments.path);
+    const access = parseCommandAccess(this.extensionContext.workspaceState.get(COMMAND_ACCESS_STORAGE_KEY)) === 'extended' ? 'Extended (fresh approval per command)' : 'Standard';
+    return { result: `${info.result}\nCommand access: ${access}.`, resultSummary: 'Project manifests and available checks',
+      usedFiles: info.usedFiles.map(relative => vscode.Uri.joinPath(folder.uri, ...relative.split('/')).fsPath), mutationCharacters: 0 };
+  }
+
+  private async readProjectGitChanges(call: Extract<ParsedAgentToolCall, { name: 'get_git_changes' }>, folder: vscode.WorkspaceFolder): Promise<AgentToolResult> {
+    const info = await readGitChanges({ rootPath: folder.uri.fsPath, path: call.arguments.path, staged: call.arguments.staged,
+      signal: this.events.getActiveSignal(), isPathAllowed: async relative => {
+        try {
+          const normalized = normalizeWorkspaceRelativePath(relative);
+          if (shouldSkipProjectFile(normalized)) return false;
+          await this.assertNoWorkspaceSymlink(folder, normalized, true);
+          const uri = vscode.Uri.joinPath(folder.uri, ...normalized.split('/'));
+          try { await vscode.workspace.fs.stat(uri); }
+          catch (error) { return error instanceof vscode.FileSystemError && error.code === 'FileNotFound'; }
+          return Boolean(await this.workspaceContext.readProjectCandidate(uri));
+        } catch { return false; }
+      } });
+    return { result: info.result, resultSummary: 'Current Git changes',
+      usedFiles: info.usedFiles.map(relative => vscode.Uri.joinPath(folder.uri, ...relative.split('/')).fsPath), mutationCharacters: 0 };
+  }
+
+  /** Convert language-provider edits into ordinary reviewed file changes, keeping budgets and Undo intact. */
+  private async applyLanguageEdits(
+    call: Extract<ParsedAgentToolCall, { name: 'rename_symbol' | 'format_file' }>,
+    folder: vscode.WorkspaceFolder, remainingCharacters: number, remainingFiles: number
+  ): Promise<AgentToolResult> {
+    if (!vscode.workspace.isTrusted) throw new Error('Trust this workspace before using editor refactoring tools.');
+    const sourcePath = call.arguments.path;
+    if (shouldSkipProjectFile(sourcePath)) throw new Error('This file is excluded from DevMate tools.');
+    await this.assertNoWorkspaceSymlink(folder, sourcePath, false);
+    const uri = vscode.Uri.joinPath(folder.uri, ...sourcePath.split('/'));
+    const document = await vscode.workspace.openTextDocument(uri);
+    if (document.isDirty) throw new Error(`Save or discard unsaved changes in ${sourcePath} first.`);
+    const source = document.getText();
+    const openSnapshots = new Map((vscode.workspace.textDocuments ?? []).map(doc => [doc.uri.toString(), doc.getText()]));
+    let entries: [vscode.Uri, vscode.TextEdit[]][];
+    if (call.name === 'rename_symbol') {
+      const position = new vscode.Position(call.arguments.line - 1, call.arguments.column - 1);
+      // Validate the requested position without relying on VS Code's clamping of out-of-range locations.
+      applyProviderTextEdits(source, [{ range: { start: position, end: position }, newText: '' }]);
+      const edit = await vscode.commands.executeCommand<vscode.WorkspaceEdit>('vscode.executeDocumentRenameProvider', uri, position, call.arguments.newName);
+      if (!edit || typeof edit.entries !== 'function') throw new Error('No rename provider is available for this symbol. Check the language extension.');
+      // First discover the affected files, then request fresh offsets against their saved snapshots.
+      // A rename can include closed files, so snapshotting only visible editors would miss a concurrent save.
+      const discovered = edit.entries();
+      if (discovered.length > 10 || discovered.length > remainingFiles) throw new Error('This refactoring exceeds the remaining file-edit budget. No changes were applied.');
+      for (const [target] of discovered) {
+        if (target.scheme !== 'file') throw new Error('The language provider returned a non-workspace resource.');
+        const relative = normalizeWorkspaceRelativePath(path.relative(folder.uri.fsPath, target.fsPath).replace(/\\/g, '/'));
+        if (shouldSkipProjectFile(relative)) throw new Error('The language provider returned an excluded target.');
+        await this.assertNoWorkspaceSymlink(folder, relative, false);
+        const targetDocument = await vscode.workspace.openTextDocument(target);
+        if (targetDocument.isDirty) throw new Error(`Save or discard unsaved changes in ${relative} first.`);
+        if (!openSnapshots.has(target.toString())) openSnapshots.set(target.toString(), targetDocument.getText());
+      }
+      const fresh = await vscode.commands.executeCommand<vscode.WorkspaceEdit>('vscode.executeDocumentRenameProvider', uri, position, call.arguments.newName);
+      if (!fresh || typeof fresh.entries !== 'function') throw new Error('The rename provider could not produce a fresh edit. No changes were applied.');
+      // We rebuild text edits ourselves; provider file operations or commands are never executed.
+      entries = fresh.entries();
+    } else {
+      const options = vscode.workspace.getConfiguration('editor', uri);
+      const tabSize = options.get<unknown>('tabSize', 2);
+      const edits = await vscode.commands.executeCommand<vscode.TextEdit[]>('vscode.executeFormatDocumentProvider', uri,
+        { tabSize: typeof tabSize === 'number' && Number.isInteger(tabSize) && tabSize > 0 ? tabSize : 2,
+          insertSpaces: options.get<unknown>('insertSpaces', true) !== false });
+      if (!edits) throw new Error('No formatter is available for this file. Configure its language formatter in VS Code.');
+      entries = [[uri, edits]];
+    }
+    if (document.isDirty || document.getText() !== source) throw new Error('The source changed while the language provider was working. Retry after saving it.');
+    if (entries.length > 10 || entries.length > remainingFiles) throw new Error('This refactoring exceeds the remaining file-edit budget. No changes were applied.');
+    const originals = new Map<string, string>();
+    const proposals: { path: string; content: string }[] = [];
+    for (const [target, edits] of entries) {
+      if (target.scheme !== 'file') throw new Error('The language provider returned a non-workspace resource.');
+      const relative = normalizeWorkspaceRelativePath(path.relative(folder.uri.fsPath, target.fsPath).replace(/\\/g, '/'));
+      if (shouldSkipProjectFile(relative) || originals.has(relative)) throw new Error('The language provider returned an excluded or repeated target.');
+      if (call.name === 'rename_symbol' && !openSnapshots.has(target.toString())) throw new Error('The rename targets changed during preparation. Retry after saving the project.');
+      await this.assertNoWorkspaceSymlink(folder, relative, false);
+      const targetDocument = await vscode.workspace.openTextDocument(target);
+      const original = targetDocument.getText();
+      if (targetDocument.isDirty || openSnapshots.has(target.toString()) && openSnapshots.get(target.toString()) !== original) {
+        throw new Error(`${relative} changed while the language provider was working.`);
+      }
+      const content = applyProviderTextEdits(original, edits);
+      originals.set(relative, original);
+      if (content !== original) proposals.push({ path: relative, content });
+    }
+    if (!proposals.length) return { result: 'No text changes were needed.', resultSummary: 'No changes needed', usedFiles: [uri.fsPath], mutationCharacters: 0, mutationApplied: false };
+    const changes = validateFileChanges(proposals);
+    const size = changes.reduce((total, change) => total + change.content.length, 0);
+    if (size > remainingCharacters) throw new Error('This refactoring exceeds the remaining file-size budget. No changes were applied.');
+    const outcome = await this.confirmAndApplyFileChanges(changes,
+      call.name === 'rename_symbol' ? `Rename symbol to ${call.arguments.newName}` : `Format ${sourcePath}`,
+      this.events.getActiveSignal() ?? new AbortController().signal, originals);
+    if (!outcome.startsWith('Applied file changes:')) throw new Error('Permission to apply the editor changes was denied.');
+    return { result: outcome, resultSummary: `Updated ${changes.length} ${changes.length === 1 ? 'file' : 'files'}`,
+      usedFiles: changes.map(change => vscode.Uri.joinPath(folder.uri, ...change.path.split('/')).fsPath),
+      mutationCharacters: size, mutationApplied: true, mutationFiles: changes.length };
   }
 
   /** Apply exact replacements to a saved file, then pass the full proposed contents through diff review. */
@@ -754,7 +1161,6 @@ export class ToolExecutor implements vscode.Disposable {
     ) {
       throw new Error('The file does not exist or is excluded from DevMate context.');
     }
-    const lines = candidate.content.split(/\r?\n/);
     const startLine = call.arguments.startLine ?? 1;
     const requestedEndLine = call.arguments.endLine
       ?? startLine + toolSettings.readFileMaxLines - 1;
@@ -763,21 +1169,16 @@ export class ToolExecutor implements vscode.Disposable {
         `read_file is configured to return at most ${toolSettings.readFileMaxLines} lines per call.`
       );
     }
-    const endLine = Math.min(requestedEndLine, lines.length);
-    if (startLine > lines.length && lines.length > 0) {
-      throw new Error(`${call.arguments.path} has only ${lines.length} lines.`);
-    }
-    const selectedContent = lines.slice(startLine - 1, endLine).join('\n');
-    const result = truncateAgentToolResult([
-      `Path: ${call.arguments.path}`,
-      `Language: ${candidate.languageId}`,
-      `Lines: ${startLine}-${Math.max(startLine, endLine)} of ${lines.length}`,
-      'Content:',
-      selectedContent
-    ].join('\n'));
+    const read = formatReadFileResult({
+      path: call.arguments.path,
+      languageId: candidate.languageId,
+      content: candidate.content,
+      startLine,
+      endLine: requestedEndLine,
+      maxCharacters: MAX_AGENT_TOOL_RESULT_CHARACTERS
+    });
     return {
-      result,
-      resultSummary: `${selectedContent.length} characters read`,
+      ...read,
       usedFiles: [candidate.filePath],
       mutationCharacters: 0
     };
@@ -809,8 +1210,8 @@ export class ToolExecutor implements vscode.Disposable {
     folder: vscode.WorkspaceFolder,
     toolSettings: AgentToolSettings
   ): Promise<AgentToolResult> {
-    const uris = await this.findAgentFiles(folder, call.arguments.path);
-    const query = call.arguments.query.toLocaleLowerCase();
+    const uris = (await this.findAgentFiles(folder, call.arguments.path)).filter(uri =>
+      matchesSearchFilePattern(normalizeRelativeWorkspacePath(vscode.workspace.asRelativePath(uri, false)), call.arguments.filePattern));
     const matches: string[] = [];
     const usedFiles = new Set<string>();
     const maxSearchResults = Math.min(
@@ -818,6 +1219,8 @@ export class ToolExecutor implements vscode.Disposable {
       toolSettings.searchCodeMaxResults
     );
     const batchSize = 20;
+    let outputCharacters = 0;
+    let outputLimited = false;
     for (let offset = 0; offset < uris.length && matches.length < maxSearchResults; offset += batchSize) {
       const candidates = await Promise.all(
         uris.slice(offset, offset + batchSize).map((uri) => this.workspaceContext.readProjectCandidate(uri))
@@ -827,25 +1230,38 @@ export class ToolExecutor implements vscode.Disposable {
           continue;
         }
         const relativePath = normalizeRelativeWorkspacePath(candidate.relativePath);
-        const lines = candidate.content.split(/\r?\n/);
-        for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-          if (!lines[lineIndex].toLocaleLowerCase().includes(query)) {
-            continue;
+        const snippets = searchCodeSnippets(candidate.content, call.arguments.query, {
+          caseSensitive: call.arguments.caseSensitive, wholeWord: call.arguments.wholeWord,
+          contextLines: call.arguments.contextLines, maxResults: maxSearchResults - matches.length
+        });
+        for (const snippet of snippets) {
+          const text = snippet.startLine === snippet.endLine
+            ? `${relativePath}:${snippet.line}: ${snippet.text}`
+            : `${relativePath}:${snippet.line} (lines ${snippet.startLine}-${snippet.endLine}):\n${snippet.text}`;
+          if (outputCharacters + text.length > MAX_AGENT_TOOL_RESULT_CHARACTERS - 300) {
+            const remaining = MAX_AGENT_TOOL_RESULT_CHARACTERS - 300 - outputCharacters;
+            if (remaining > 100) {
+              matches.push(text.slice(0, remaining) + '\n[Excerpt shortened.]');
+              usedFiles.add(candidate.filePath);
+            }
+            outputLimited = true;
+            offset = uris.length;
+            break;
           }
-          const snippet = lines[lineIndex].trim().slice(0, 240);
-          matches.push(`${relativePath}:${lineIndex + 1}: ${snippet}`);
+          matches.push(text);
+          outputCharacters += text.length + 1;
           usedFiles.add(candidate.filePath);
           if (matches.length >= maxSearchResults) {
             break;
           }
         }
-        if (matches.length >= maxSearchResults) {
+        if (matches.length >= maxSearchResults || outputLimited) {
           break;
         }
       }
     }
     const result = matches.length > 0
-      ? `Matches for "${call.arguments.query}" (${matches.length}):\n${matches.join('\n')}`
+      ? `Matches for "${call.arguments.query}" (${matches.length}):\n${matches.join('\n')}${outputLimited ? '\nOutput limit reached. Narrow the search or read the matching file.' : ''}`
       : `No matches found for "${call.arguments.query}".`;
     return {
       result,
@@ -1178,10 +1594,19 @@ export class ToolExecutor implements vscode.Disposable {
     await this.revalidateAgentLifecycleFile(source);
 
     this.events.postStatus('Deleting file');
+    const undoBefore = await this.captureUndoBefore(folder, [call.arguments.path]);
+    if (signal?.aborted) {
+      await this.queueUndo(() => this.persistRequestUndo());
+      throw new Error('The file deletion was cancelled.');
+    }
     const workspaceEdit = new vscode.WorkspaceEdit();
     workspaceEdit.deleteFile(source.uri, { recursive: false, ignoreIfNotExists: false });
-    if (!await vscode.workspace.applyEdit(workspaceEdit)) {
-      throw new Error('VS Code could not delete the approved file.');
+    try {
+      if (!await vscode.workspace.applyEdit(workspaceEdit)) {
+        throw new Error('VS Code could not delete the approved file.');
+      }
+    } finally {
+      await this.captureUndoAfter(folder, undoBefore);
     }
     this.rememberCompletedFileDiff(call.arguments.path, source.content, '');
     return {
@@ -1240,13 +1665,22 @@ export class ToolExecutor implements vscode.Disposable {
       await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(folder.uri, ...parentSegments));
     }
     this.events.postStatus(operation === 'rename' ? 'Renaming file' : 'Moving file');
+    const undoBefore = await this.captureUndoBefore(folder, [call.arguments.path, call.arguments.newPath]);
+    if (signal?.aborted) {
+      await this.queueUndo(() => this.persistRequestUndo());
+      throw new Error(`The file ${operation} was cancelled.`);
+    }
     const workspaceEdit = new vscode.WorkspaceEdit();
     workspaceEdit.renameFile(source.uri, destinationUri, {
       overwrite: false,
       ignoreIfExists: false
     });
-    if (!await vscode.workspace.applyEdit(workspaceEdit)) {
-      throw new Error(`VS Code could not ${operation} the approved file.`);
+    try {
+      if (!await vscode.workspace.applyEdit(workspaceEdit)) {
+        throw new Error(`VS Code could not ${operation} the approved file.`);
+      }
+    } finally {
+      await this.captureUndoAfter(folder, undoBefore);
     }
     this.rememberCompletedFileDiff(
       call.arguments.newPath,
@@ -1385,8 +1819,11 @@ export class ToolExecutor implements vscode.Disposable {
     if (!vscode.workspace.isTrusted) {
       throw new Error('Trust this workspace before allowing DevMate to run verification commands.');
     }
-    const cwdUri = call.arguments.cwd
-      ? vscode.Uri.joinPath(folder.uri, ...call.arguments.cwd.split('/'))
+    const access = parseCommandAccess(this.extensionContext.workspaceState.get(COMMAND_ACCESS_STORAGE_KEY));
+    const requestedCommand = parseRunCommandArguments(call.arguments, access);
+    if (requestedCommand.background) { this.managedCommands.assertCapacity(); }
+    const cwdUri = requestedCommand.cwd
+      ? vscode.Uri.joinPath(folder.uri, ...requestedCommand.cwd.split('/'))
       : folder.uri;
     if (call.arguments.cwd) {
       await this.assertNoWorkspaceSymlink(folder, call.arguments.cwd, false);
@@ -1411,15 +1848,45 @@ export class ToolExecutor implements vscode.Disposable {
       );
     }
 
-    const requestedCommand: ValidatedCommand = call.arguments;
-    const resolvedPython = await this.resolveWorkspacePythonCommand(requestedCommand, folder);
+    const prepare = async () => {
+      await this.validateCommandPaths(requestedCommand, folder);
+      const python = await this.resolveWorkspacePythonCommand(requestedCommand, folder);
+      const resolved = folder.uri.scheme === 'file'
+        ? await resolveCommandExecutable(python.command, folder.uri.fsPath) : python.command;
+      const command = { ...resolved, args: commandExecutionArguments(requestedCommand) };
+      const identity = await commandApprovalIdentity(command, folder.uri.fsPath, {
+        canonicalPath: async (value) => (await import('fs/promises')).realpath(value),
+        readFile: async (value) => {
+          const uri = vscode.Uri.file(value);
+          try {
+            const stat = await vscode.workspace.fs.stat(uri);
+            if (stat.type & vscode.FileType.SymbolicLink || stat.size > 2_000_000) {
+              throw new Error('Command identity cannot include a link or oversized file.');
+            }
+            return await vscode.workspace.fs.readFile(uri);
+          } catch (error) {
+            if (error instanceof vscode.FileSystemError && error.code === 'FileNotFound') { return undefined; }
+            throw error;
+          }
+        }
+      });
+      return { command, identity, environment: python.environment };
+    };
+    const resolvedPython = await prepare();
     const command = resolvedPython.command;
     const requestedLabel = commandLabel(requestedCommand);
     const label = resolvedPython.environment
       ? `${requestedLabel} · ${resolvedPython.environment}`
       : requestedLabel;
-    const signature = commandSignature(command);
-    const allowed = await this.requestCommandPermission(signature, label, command.cwd);
+    const allowed = await this.requestCommandPermission(resolvedPython.identity.signature, label, command.cwd, {
+      rememberable: canRememberCommandApproval(access, resolvedPython.identity.rememberable),
+      title: access === 'extended' ? 'Allow Extended command once?' : 'Allow project command?',
+      warning: access === 'extended'
+        ? 'This command can change files, install packages, or start a server. Extended access is not a sandbox.'
+        : !resolvedPython.identity.rememberable
+          ? 'Project scripts can execute other code. This command needs a fresh approval because its full identity cannot be safely remembered.'
+          : undefined
+    });
     if (!allowed) {
       throw new Error('Permission to run the verification command was denied.');
     }
@@ -1431,15 +1898,23 @@ export class ToolExecutor implements vscode.Disposable {
       throw new Error('The verification command was cancelled.');
     }
 
-    const configuredTimeout = vscode.workspace.getConfiguration('devMate').get<number>(
-      'commandTimeoutSeconds',
-      DEFAULT_COMMAND_TIMEOUT_SECONDS
-    );
-    const timeoutSeconds = Math.min(
-      command.timeoutSeconds,
-      MAX_COMMAND_TIMEOUT_SECONDS,
-      Math.max(MIN_COMMAND_TIMEOUT_SECONDS, configuredTimeout)
-    );
+    const recheck = async () => {
+      if (!vscode.workspace.isTrusted || signal.aborted
+        || parseCommandAccess(this.extensionContext.workspaceState.get(COMMAND_ACCESS_STORAGE_KEY)) !== access) {
+        throw new Error('Command access, Workspace Trust, or cancellation changed; the command was not run.');
+      }
+      const current = await prepare();
+      if (!vscode.workspace.isTrusted || signal.aborted
+        || parseCommandAccess(this.extensionContext.workspaceState.get(COMMAND_ACCESS_STORAGE_KEY)) !== access) {
+        throw new Error('Command access, Workspace Trust, or cancellation changed; the command was not run.');
+      }
+      if (current.identity.signature !== resolvedPython.identity.signature) {
+        throw new Error('The command, script, wrapper, or configuration changed after approval. Request the command again for a fresh review.');
+      }
+    };
+    await recheck();
+    // The runner supplies the resolved user limit; never silently override it with a stale legacy setting.
+    const timeoutSeconds = Math.min(command.timeoutSeconds, MAX_COMMAND_TIMEOUT_SECONDS);
     const terminal = vscode.window.createTerminal({
       name: `DevMate: ${label.slice(0, 60)}`,
       cwd: cwdUri,
@@ -1453,7 +1928,16 @@ export class ToolExecutor implements vscode.Disposable {
       throw new Error('VS Code terminal shell integration was unavailable after 5 seconds; the command was not run.');
     }
 
+    try { await recheck(); } catch (error) {
+      terminal.dispose();
+      this.commandTerminals.delete(call.id);
+      throw error;
+    }
+
     const execution = shellIntegration.executeCommand(command.executable, command.args);
+    if (command.background) {
+      return this.trackBackgroundCommand(call.id, label, terminal, execution, timeoutSeconds, signal);
+    }
     const startedAt = Date.now();
     let output = '';
     const outputReader = (async () => {
@@ -1951,10 +2435,105 @@ export class ToolExecutor implements vscode.Disposable {
   }
 
   disposeCommandTerminals(): void {
-    for (const terminal of this.commandTerminals.values()) {
-      terminal.dispose();
+    for (const [id, terminal] of this.commandTerminals) {
+      if (!this.backgroundTerminals.has(terminal)) {
+        terminal.dispose();
+        this.commandTerminals.delete(id);
+      }
     }
-    this.commandTerminals.clear();
+  }
+
+  postManagedCommandState(): void {
+    this.events.postMessage({ command: 'managedCommandsUpdated', commands: this.managedCommands.active() });
+  }
+
+  stopManagedCommand(id: string): void {
+    if (!this.managedCommands.stop(id)) { throw new Error('That command ID does not belong to a DevMate command in this window.'); }
+  }
+
+  stopAllManagedCommands(): void { this.managedCommands.stopAll(); }
+
+  /** Recheck workspace paths after permission; a relative cwd alone does not contain program behaviour. */
+  private async validateCommandPaths(command: ValidatedCommand, folder: vscode.WorkspaceFolder): Promise<void> {
+    if (command.cwd) { await this.assertNoWorkspaceSymlink(folder, command.cwd, false); }
+    const cwdUri = command.cwd ? vscode.Uri.joinPath(folder.uri, ...command.cwd.split('/')) : folder.uri;
+    if (!((await vscode.workspace.fs.stat(cwdUri)).type & vscode.FileType.Directory)) {
+      throw new Error('The command working directory is not a directory.');
+    }
+    const script = commandProjectScript(command);
+    const paths = [...(command.executable.startsWith('./') ? [command.executable.slice(2)] : []), ...(script ? [script] : [])];
+    for (const relative of paths) {
+      const filePath = normalizeWorkspaceRelativePath([command.cwd, relative].filter(Boolean).join('/'));
+      await this.assertNoWorkspaceSymlink(folder, filePath, false);
+      if (!((await vscode.workspace.fs.stat(vscode.Uri.joinPath(folder.uri, ...filePath.split('/')))).type & vscode.FileType.File)) {
+        throw new Error('The command script or wrapper must be an existing project file.');
+      }
+    }
+    const name = command.executable.replace(/\.(exe|cmd|bat)$/i, '').toLowerCase();
+    if (['npm', 'pnpm', 'yarn'].includes(name)
+      && !['--version', 'list', 'ls'].includes(command.args[0] ?? '')) {
+      const manifest = vscode.Uri.joinPath(cwdUri, 'package.json');
+      await this.assertNoWorkspaceSymlink(folder, [command.cwd, 'package.json'].filter(Boolean).join('/'), false);
+      const stat = await vscode.workspace.fs.stat(manifest);
+      if (stat.size > 1_000_000) { throw new Error('package.json is too large to review for command approval.'); }
+      const content = JSON.parse(Buffer.from(await vscode.workspace.fs.readFile(manifest)).toString('utf8')) as { scripts?: Record<string, unknown> };
+      const operation = command.args[0];
+      if (!['install', 'ci', 'add'].includes(operation)) {
+        const scriptName = operation === 'run' ? command.args[1] : operation;
+        if (typeof content.scripts?.[scriptName] !== 'string') {
+          throw new Error(`package.json does not define the requested ${scriptName} script.`);
+        }
+      }
+    }
+  }
+
+  /** Keep bounded server logs and a stop handle, and never accept arbitrary terminal IDs from the model. */
+  private async trackBackgroundCommand(
+    callId: string, label: string, terminal: vscode.Terminal, execution: vscode.TerminalShellExecution,
+    timeoutSeconds: number, signal: AbortSignal
+  ): Promise<{ result: string; resultSummary: string; usedFiles: string[]; mutationCharacters: number; commandAttempted: boolean }> {
+    let end: vscode.Disposable | undefined;
+    let closed: vscode.Disposable | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    this.backgroundTerminals.add(terminal);
+    const id = this.managedCommands.add(label, (stop) => {
+      if (timeout) { clearTimeout(timeout); }
+      end?.dispose();
+      closed?.dispose();
+      this.backgroundTerminals.delete(terminal);
+      this.commandTerminals.delete(callId);
+      this.commandTerminals.delete(id);
+      if (stop) { terminal.dispose(); }
+    });
+    this.commandTerminals.set(id, terminal);
+    end = vscode.window.onDidEndTerminalShellExecution((event) => {
+      if (event.execution === execution) { this.managedCommands.finish(id, `exited (${event.exitCode ?? 'unknown'})`); }
+    });
+    closed = vscode.window.onDidCloseTerminal?.((value) => {
+      if (value === terminal) { this.managedCommands.finish(id, 'terminal closed'); }
+    });
+    timeout = setTimeout(() => this.managedCommands.stop(id), timeoutSeconds * 1_000);
+    const cancel = () => this.managedCommands.stop(id);
+    signal.addEventListener('abort', cancel, { once: true });
+    if (signal.aborted) { cancel(); }
+    void (async () => {
+      try {
+        for await (const chunk of execution.read()) {
+          this.managedCommands.append(id, chunk);
+          const current = this.managedCommands.read(id);
+          this.postAgentToolActivity(callId, 'Background command', label, 'running', current?.output, true);
+        }
+      } catch { /* Terminal closure can end output collection without a final chunk. */ }
+    })();
+    await wait(300);
+    signal.removeEventListener('abort', cancel);
+    const current = this.managedCommands.read(id)!;
+    return { result: [`Command ID: ${id}`, `Command: ${label}`, `Status: ${current.status}`,
+      `Automatic terminal stop after ${timeoutSeconds} seconds.`,
+      'Use stop_command with this ID, or Stop in the DevMate panel. Readiness and network binding are determined by the project script.',
+      current.output ? `Output:\n${boundedModelCommandOutput(current.output)}` : 'Output: (none yet)'].join('\n'),
+      resultSummary: current.status === 'running' ? `Background command started (${id})` : current.status,
+      usedFiles: [], mutationCharacters: 0, commandAttempted: true };
   }
 
   private async findAgentFiles(
@@ -2027,22 +2606,26 @@ export class ToolExecutor implements vscode.Disposable {
     mode: AssistantMode,
     fileMutationCalls: number,
     commandCalls: number,
-    dependencyInstallCalls: number
+    dependencyInstallCalls: number,
+    limits?: { maxFileEdits: number; maxCommands: number; enabledTools: AgentToolName[] }
   ): AgentToolName[] {
     const tools: AgentToolName[] = [...READ_ONLY_AGENT_TOOL_NAMES];
+    const enabled = (available: AgentToolName[]) => limits
+      ? available.filter(name => limits.enabledTools.includes(name)) : available;
     if (mode === 'ideas' || !vscode.workspace.isTrusted) {
-      return tools;
+      return enabled(tools);
     }
-    if (fileMutationCalls < MAX_AGENT_FILE_MUTATIONS) {
+    if (fileMutationCalls < (limits?.maxFileEdits ?? MAX_AGENT_FILE_MUTATIONS)) {
       tools.push(...FILE_MUTATION_AGENT_TOOL_NAMES);
     }
     if (dependencyInstallCalls < MAX_AGENT_DEPENDENCY_INSTALLS) {
       tools.push('install_dependencies');
     }
-    if (commandCalls < MAX_AGENT_COMMAND_CALLS) {
+    if (commandCalls < (limits?.maxCommands ?? MAX_AGENT_COMMAND_CALLS)) {
       tools.push('run_command');
     }
-    return tools;
+    tools.push('stop_command');
+    return enabled(tools);
   }
 
   rejectedToolExecution(call: AgentToolCall, result: string): AgentToolExecution {
@@ -2079,8 +2662,12 @@ export class ToolExecutor implements vscode.Disposable {
   async confirmAndApplyFileChanges(
     changes: ValidatedFileChange[],
     summary: string,
-    signal: AbortSignal
+    signal: AbortSignal,
+    expectedOriginals?: ReadonlyMap<string, string>
   ): Promise<string> {
+    if (this.undoInProgress) {
+      throw new Error('Finish or cancel the Undo review before applying file changes.');
+    }
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) {
       throw new Error('Open a workspace folder before applying file changes.');
@@ -2115,6 +2702,9 @@ export class ToolExecutor implements vscode.Disposable {
             );
           }
         }
+        if (expectedOriginals?.has(change.path) && expectedOriginals.get(change.path) !== originalContent) {
+          throw new Error(`${change.path} changed before review. No changes were applied.`);
+        }
         return { ...change, uri, exists, originalContent };
       })
     );
@@ -2144,6 +2734,7 @@ export class ToolExecutor implements vscode.Disposable {
 
     // The user may have edited or created files during review. Do not overwrite anything outside the approved snapshot.
     for (const change of plannedChanges) {
+      await this.assertNoWorkspaceSymlink(folder, change.path, !change.exists);
       if (change.exists) {
         const document = await vscode.workspace.openTextDocument(change.uri);
         if (document.isDirty || document.getText() !== change.originalContent) {
@@ -2186,17 +2777,26 @@ export class ToolExecutor implements vscode.Disposable {
       }
     }
 
-    const applied = await vscode.workspace.applyEdit(workspaceEdit);
-    if (!applied) {
-      throw new Error('VS Code could not apply the proposed workspace edit.');
+    const undoBefore = await this.captureUndoBefore(folder, plannedChanges.map(change => change.path));
+    if (signal.aborted) {
+      await this.queueUndo(() => this.persistRequestUndo());
+      return 'Proposed file changes were not applied.';
     }
+    try {
+      const applied = await vscode.workspace.applyEdit(workspaceEdit);
+      if (!applied) {
+        throw new Error('VS Code could not apply the proposed workspace edit.');
+      }
 
-    const saved = await Promise.all(plannedChanges.map(async (change) => {
-      const document = await vscode.workspace.openTextDocument(change.uri);
-      return document.save();
-    }));
-    if (saved.some((didSave) => !didSave)) {
-      throw new Error('DevMate applied the changes, but VS Code could not save every file.');
+      const saved = await Promise.all(plannedChanges.map(async (change) => {
+        const document = await vscode.workspace.openTextDocument(change.uri);
+        return document.save();
+      }));
+      if (saved.some((didSave) => !didSave)) {
+        throw new Error('DevMate applied the changes, but VS Code could not save every file.');
+      }
+    } finally {
+      await this.captureUndoAfter(folder, undoBefore);
     }
     for (const change of plannedChanges) {
       this.rememberCompletedFileDiff(
@@ -2289,6 +2889,11 @@ function boundedCodeNavigationText(value: unknown, maximum: number): string {
 }
 
 function describeAgentToolCall(call: ParsedAgentToolCall): { title: string; detail: string } {
+  if (call.name === 'get_project_info') return { title: 'Reading project setup', detail: call.arguments.path || 'Project root' };
+  if (call.name === 'get_git_changes') return { title: 'Reading Git changes', detail: call.arguments.path || (call.arguments.staged ? 'Staged changes' : 'Working tree') };
+  if (call.name === 'rename_symbol') return { title: 'Renaming symbol', detail: `${call.arguments.path}:${call.arguments.line} → ${call.arguments.newName}` };
+  if (call.name === 'format_file') return { title: 'Formatting file', detail: call.arguments.path };
+  if (call.name === 'stop_command') return { title: 'Stopping command', detail: call.arguments.id };
   if (call.name === 'list_files') {
     return {
       title: 'Listing project files',
@@ -2369,7 +2974,7 @@ function describeAgentToolCall(call: ParsedAgentToolCall): { title: string; deta
   }
   if (call.name === 'run_command') {
     return {
-      title: 'Running verification command',
+      title: call.arguments.background ? 'Starting local command' : 'Running project command',
       detail: call.arguments.executable
     };
   }

@@ -8,10 +8,22 @@ from typing import Annotated, Literal
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from .code_changes import CodeChangeParseError, parse_code_change_response
 from .prompts import AssistantMode, ScopeType, build_chat_messages
+from .provider_state import (
+    MAX_PROVIDER_STATE_HISTORY_CHARACTERS,
+    serialized_provider_state_size,
+    validate_provider_state,
+)
 from .providers import (
     ChatCompletion,
     ChatCompletionRequest,
@@ -26,6 +38,7 @@ from .text_tool_calls import (
     looks_like_text_tool_call,
     parse_text_tool_calls,
 )
+from .tool_schemas import omit_optional_nulls
 from .tool_catalog import (
     AGENT_TOOL_DEFINITIONS,
     MUTATING_AGENT_TOOLS,
@@ -63,6 +76,7 @@ class LlmSettings(BaseModel):
     provider: ProviderName
     model: str = Field(min_length=1, max_length=120)
     baseUrl: str | None = Field(default=None, max_length=2_048)
+    api: Literal["auto", "chat_completions", "responses"] = "auto"
     maxTokens: int = Field(ge=128, le=32_000)
     temperature: float = Field(ge=0, le=2)
     reasoningEffort: ReasoningEffort = "auto"
@@ -144,6 +158,12 @@ class AgentToolStep(BaseModel):
     arguments: dict[str, object] = Field(default_factory=dict)
     result: str = Field(max_length=MAX_AGENT_TOOL_RESULT_CHARACTERS)
     isError: bool = False
+    providerState: dict[str, object] | None = None
+
+    @field_validator("providerState", mode="before")
+    @classmethod
+    def validate_provider_state_field(cls, value: object) -> dict[str, object] | None:
+        return None if value is None else validate_provider_state(value)
 
     @model_validator(mode="after")
     def validate_arguments_size(self) -> "AgentToolStep":
@@ -159,6 +179,7 @@ class ConversationTurn(BaseModel):
 
 class AskRequest(BaseModel):
     question: str = Field(min_length=1)
+    instructions: str = Field(default="", max_length=12_000)
     mode: AssistantMode
     scope: AskScope
     settings: LlmSettings
@@ -184,6 +205,11 @@ class AskRequest(BaseModel):
             raise ValueError("tool history contains duplicate call ids")
         if sum(len(step.result) for step in self.toolHistory) > MAX_AGENT_TOOL_HISTORY_CHARACTERS:
             raise ValueError("tool history is too large")
+        if sum(
+            serialized_provider_state_size(step.providerState)
+            for step in self.toolHistory if step.providerState is not None
+        ) > MAX_PROVIDER_STATE_HISTORY_CHARACTERS:
+            raise ValueError("tool history provider state is too large")
         if self.enabledTools is not None and len(self.enabledTools) != len(set(self.enabledTools)):
             raise ValueError("enabled tools contains duplicates")
         if sum(
@@ -213,6 +239,14 @@ class AgentToolCall(BaseModel):
     id: str = Field(min_length=1, max_length=120)
     name: AgentToolName
     arguments: dict[str, object]
+    providerState: dict[str, object] | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, object]:
+        result = handler(self)
+        if self.providerState is None:
+            result.pop("providerState", None)
+        return result
 
 
 class TokenUsage(BaseModel):
@@ -430,6 +464,7 @@ def _build_completion_request(
         mode=request.mode,
         scope_type=request.scope.type,
         question=request.question,
+        instructions=request.instructions,
         context_items=request.scope.items,
         tool_steps=request.toolHistory,
         tools_enabled=bool(enabled_tools),
@@ -440,6 +475,7 @@ def _build_completion_request(
     )
     return ChatCompletionRequest(
         provider=request.settings.provider,
+        api=request.settings.api,
         model=request.settings.model,
         base_url=request.settings.baseUrl,
         api_key=api_key if request.settings.provider == "openai" else None,
@@ -519,7 +555,7 @@ def _ask_result_from_completion(
 
     # Tool-based edits were handled by the extension; only the proposal mode returns full files here.
     changes: list[FileChange] = []
-    if request.mode == "code" and not request.agentEditsEnabled:
+    if request.mode == "code" and not request.agentEditsEnabled and not request.forceFinalAnswer:
         try:
             answer, parsed_changes = parse_code_change_response(answer)
         except CodeChangeParseError as error:
@@ -637,9 +673,17 @@ def _parse_agent_tool_calls(
             raise HTTPException(status_code=502, detail="The model returned invalid tool arguments.") from error
         if not isinstance(arguments, dict):
             raise HTTPException(status_code=502, detail="The model returned invalid tool arguments.")
+        definition = next(tool for tool in AGENT_TOOL_DEFINITIONS if tool.name == name)
+        arguments = omit_optional_nulls(arguments, definition.parameters)
+        provider_state = getattr(tool_call, "provider_state", None)
+        if provider_state is not None:
+            try:
+                provider_state = validate_provider_state(provider_state)
+            except ValueError:
+                raise HTTPException(status_code=502, detail="The model returned invalid provider state.") from None
         seen_ids.add(call_id)
         parsed_calls.append(
-            AgentToolCall(id=call_id, name=name, arguments=arguments)
+            AgentToolCall(id=call_id, name=name, arguments=arguments, providerState=provider_state)
         )
     return parsed_calls
 

@@ -53,6 +53,7 @@ export function activate(context: vscode.ExtensionContext): void {
     chatViewProvider?.notifyWorkspaceTrustChanged();
   });
   const backendConfigurationRegistration = vscode.workspace.onDidChangeConfiguration((event) => {
+    if (event.affectsConfiguration('devMate')) chatViewProvider?.notifyConfigurationChanged();
     if (
       event.affectsConfiguration('devMate.backendUrl')
       || event.affectsConfiguration('devMate.manageLocalBackend')

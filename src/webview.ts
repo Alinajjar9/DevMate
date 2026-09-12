@@ -90,7 +90,10 @@ export function getChatWebviewHtml(
 
     <section id="status" class="status" aria-live="polite" hidden></section>
 
-    <section id="messages" class="messages" aria-label="Chat messages"></section>
+    <section id="messages" class="messages" aria-label="Chat messages">
+      <div id="requestUndoPanel" class="request-undo-panel" hidden><span id="requestUndoLabel"></span><button id="undoRequest" class="scope-button" type="button">Undo last request</button></div>
+      <details id="managedCommandsPanel" class="managed-commands" hidden><summary id="managedCommandsSummary">Running commands</summary><div id="managedCommandsList"></div></details>
+    </section>
 
     <section class="composer" aria-label="Message composer">
       <div class="ask-panel">
@@ -112,7 +115,6 @@ export function getChatWebviewHtml(
               ></button>
             </div>
           </div>
-          <div id="scopeDetail" class="scope-meta"></div>
         </div>
         <div id="attachmentPanel" class="attachment-panel" hidden>
           <span class="attachment-panel-title">Selected files</span>
@@ -129,6 +131,7 @@ export function getChatWebviewHtml(
             <span id="llmProfileLabel" class="model-selector-label">Add model</span>
             <span class="model-selector-chevron" aria-hidden="true">▼</span>
           </button>
+          <span id="extendedAccessBadge" class="extended-access-badge" title="Extended command access is enabled for this workspace" hidden>Extended</span>
           <div id="intelligenceControl" class="intelligence-control" hidden>
             <button
               id="intelligenceButton"
@@ -241,6 +244,32 @@ export function getChatWebviewHtml(
           >
           <p id="llmProfileApiKeyHelp" class="field-help">The key is transferred to the extension and saved in VS Code SecretStorage.</p>
         </div>
+        <div class="profile-field">
+          <label for="llmProfileApi">Provider API</label>
+          <select id="llmProfileApi" aria-describedby="llmProfileApiHelp">
+            <option value="auto">Auto</option>
+            <option value="chat_completions">Chat Completions</option>
+            <option value="responses">Responses</option>
+          </select>
+          <p id="llmProfileApiHelp" class="field-help">Auto uses Responses at OpenAI's official endpoint and Chat Completions for other providers. A full /responses URL also selects Responses.</p>
+          <p class="field-help">Reasoning levels depend on the provider and model. Auto keeps the provider default; unsupported explicit choices return an error.</p>
+        </div>
+        <details class="configuration-details">
+          <summary>Settings for this model</summary>
+          <p class="field-help">Leave numeric fields blank to use your defaults. Reasoning is shared with the control beside this model in chat.</p>
+          <div class="settings-value-grid">
+            <div class="profile-field"><label for="profileMaxTokens">Output tokens</label><input id="profileMaxTokens" type="number" min="128" max="32000" step="1" placeholder="Inherit"></div>
+            <div class="profile-field"><label for="profileTemperature">Temperature</label><input id="profileTemperature" type="number" min="0" max="2" step="0.1" placeholder="Inherit"></div>
+            <div class="profile-field"><label for="profileTimeoutSeconds">Timeout (seconds)</label><input id="profileTimeoutSeconds" type="number" min="10" max="1800" step="1" placeholder="Inherit"></div>
+            <div class="profile-field"><label for="profileContextCharacters">Context characters</label><input id="profileContextCharacters" type="number" min="1000" max="40000" step="1" placeholder="Inherit"></div>
+            <div class="profile-field"><label for="profileReasoningEffort">Reasoning</label><select id="profileReasoningEffort"><option value="auto">Auto</option><option value="none">Off</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Maximum</option></select></div>
+          </div>
+        </details>
+        <section id="profileTestSection" class="settings-section" hidden>
+          <button id="testLlmProfile" class="action-button secondary" type="button">Test saved profile</button>
+          <p class="field-help">Sends two small synthetic requests to the saved model and may incur usage. No project files are sent. Save your changes before testing.</p>
+          <div id="profileTestResult" class="configuration-result" role="status" hidden></div>
+        </section>
         <div id="llmProfileFormError" class="profile-form-error" role="alert" hidden></div>
       </div>
       <footer class="profile-form-actions">
@@ -252,67 +281,41 @@ export function getChatWebviewHtml(
   </dialog>
 
   <dialog id="permissionDialog" class="profile-dialog" aria-labelledby="permissionDialogTitle">
-    <form id="permissionForm" class="profile-form">
-      <header class="profile-form-header">
-        <h2 id="permissionDialogTitle">DevMate settings</h2>
-        <p>Control model requests and what DevMate may change without pausing.</p>
-      </header>
+    <form id="permissionForm" class="profile-form" novalidate>
+      <header class="profile-form-header"><h2 id="permissionDialogTitle">DevMate settings</h2><p>Set your defaults. Changes apply to new requests.</p></header>
       <div class="profile-form-body">
+        <div class="profile-field"><label for="settingsScope">Save settings for</label><select id="settingsScope"><option value="global">All projects</option><option value="workspace">This workspace</option></select></div>
         <section class="settings-section" aria-labelledby="modelRequestSettingsTitle">
-          <h3 id="modelRequestSettingsTitle" class="settings-section-title">Model requests</h3>
+          <h3 id="modelRequestSettingsTitle" class="settings-section-title">Model defaults</h3>
+          <p class="field-help">A saved model can use its own values. Choose reasoning beside the model in chat or in its settings.</p>
           <div class="settings-value-grid">
-            <div class="profile-field">
-              <label for="settingsTimeoutSeconds">Timeout (seconds)</label>
-              <input id="settingsTimeoutSeconds" type="number" min="10" max="1800" step="1" required>
-              <p id="settingsTimeoutHelp" class="field-help">Approximately 15 min.</p>
-            </div>
-            <div class="profile-field">
-              <label for="settingsCommandTimeoutSeconds">Command timeout (seconds)</label>
-              <input id="settingsCommandTimeoutSeconds" type="number" min="10" max="1800" step="1" required>
-              <p class="field-help">Maximum runtime for each verification command.</p>
-            </div>
-            <div class="profile-field">
-              <label for="settingsMaxTokens">Maximum output tokens</label>
-              <input id="settingsMaxTokens" type="number" min="128" max="32000" step="1" required>
-              <p class="field-help">Shared by reasoning and final output.</p>
-            </div>
-            <div class="profile-field">
-              <label for="settingsToolCallLimit">Tool calls per request</label>
-              <input id="settingsToolCallLimit" type="number" min="4" max="100" step="1" required>
-              <p class="field-help">16 recommended; 100 maximum. High limits add time, cost, context pressure, and loop risk.</p>
-            </div>
-            <div class="profile-field">
-              <label for="settingsTemperature">Temperature</label>
-              <input id="settingsTemperature" type="number" min="0" max="2" step="0.1" required>
-              <p class="field-help">Lower values are more deterministic.</p>
-            </div>
-          </div>
-          <button id="openAgentToolSettings" class="settings-subdialog-button" type="button">
-            <span class="settings-subdialog-copy">
-              <strong>Agent tools</strong>
-              <span>Configure read ranges and result limits for project tools.</span>
-            </span>
-            <span class="settings-subdialog-chevron" aria-hidden="true">›</span>
-          </button>
-        </section>
-        <section class="settings-section" aria-labelledby="backendSettingsTitle">
-          <h3 id="backendSettingsTitle" class="settings-section-title">Local backend</h3>
-          <div class="permission-setting-list">
-            <div class="permission-setting-row">
-              <span class="permission-setting-copy">
-                <strong id="backendSettingsLabel">Checking backend</strong>
-                <span id="backendSettingsDetail">Checking the configured backend.</span>
-              </span>
-              <span id="backendSettingsBadge" class="permission-blocked-badge">Checking</span>
-            </div>
-            <div class="backend-settings-actions">
-              <button id="restartBackend" class="action-button secondary" type="button">Restart backend</button>
-              <button id="openBackendLogs" class="action-button secondary" type="button">Open backend logs</button>
-            </div>
+            <div class="profile-field"><label for="settingsMaxTokens">Output tokens per call</label><input id="settingsMaxTokens" type="number" min="128" max="32000" step="1"><p class="field-help">Shared by reasoning and final output.</p></div>
+            <div class="profile-field"><label for="settingsTemperature">Temperature</label><input id="settingsTemperature" type="number" min="0" max="2" step="0.1"></div>
+            <div class="profile-field"><label for="settingsTimeoutSeconds">Call timeout (seconds)</label><input id="settingsTimeoutSeconds" type="number" min="10" max="1800" step="1"><p id="settingsTimeoutHelp" class="field-help">Approximately 15 min.</p></div>
+            <div class="profile-field"><label for="settingsToolCallLimit">Tool calls per request</label><input id="settingsToolCallLimit" type="number" min="4" max="100" step="1"><p class="field-help">16 recommended; larger runs can take longer and cost more.</p></div>
           </div>
         </section>
-        <section class="settings-section" aria-labelledby="filePermissionSettingsTitle">
-          <h3 id="filePermissionSettingsTitle" class="settings-section-title">File permissions</h3>
+        <details id="advancedSettings" class="configuration-details">
+          <summary>Advanced</summary>
+          <p class="field-help">Usually the defaults are enough. Lower limits can reduce context and cost.</p>
+          <div class="settings-value-grid">
+            <div class="profile-field"><label for="settingsCommandTimeoutSeconds">Command timeout (seconds)</label><input id="settingsCommandTimeoutSeconds" type="number" min="10" max="1800" step="1"></div>
+            <div class="profile-field"><label for="configurationMaxFileEdits">File edits per request</label><input id="configurationMaxFileEdits" type="number" min="0" max="100" step="1"></div>
+            <div class="profile-field"><label for="configurationMaxCommands">Commands per request</label><input id="configurationMaxCommands" type="number" min="0" max="100" step="1"></div>
+            <div class="profile-field"><label for="configurationMaxRepairAttempts">Failed attempts per tool and file</label><input id="configurationMaxRepairAttempts" type="number" min="1" max="10" step="1"></div>
+            <div class="profile-field"><label for="configurationContextCharacters">Starting context (characters)</label><input id="configurationContextCharacters" type="number" min="1000" max="40000" step="1"></div>
+            <div class="profile-field"><label for="configurationHistoryCharacters">Tool history (characters)</label><input id="configurationHistoryCharacters" type="number" min="10000" max="80000" step="1"></div>
+            <div class="profile-field"><label for="configurationRunTokenBudget">Total run token budget</label><input id="configurationRunTokenBudget" type="number" min="0" max="5000000" step="1"><p class="field-help">0 means unlimited. Checked between calls; the last call can exceed this budget. Usage may be estimated.</p></div>
+          </div>
+          <button id="openAgentToolSettings" class="action-button secondary" type="button">Agent tools</button>
+          <p class="field-help">Choose which tools DevMate can use and how much they return.</p>
+          <button id="resetSettings" class="action-button secondary" type="button">Reset defaults for this scope</button>
+          <p class="field-help">Loads inherited defaults for the settings shown here. Save to apply; file permissions stay unchanged.</p>
+        </details>
+        <details id="permissionsSettings" class="configuration-details">
+          <summary id="filePermissionSettingsTitle">Permissions</summary>
+          <p class="field-help">Permissions apply only to this workspace.</p>
+          <h3 class="settings-section-title">Files</h3>
           <div class="permission-setting-list">
             <label class="permission-setting-row" for="permissionCreateFiles">
               <span class="permission-setting-copy">
@@ -341,10 +344,19 @@ export function getChatWebviewHtml(
               </span>
               <span class="permission-blocked-badge">Always ask</span>
             </div>
+          </div>
+          <p class="field-help">Instant permission never bypasses workspace boundaries, protected-file rules, or file-size limits.</p>
+          <section class="settings-section" aria-labelledby="commandAccessTitle">
+            <h3 id="commandAccessTitle" class="settings-section-title">Command access</h3>
+            <div class="profile-field"><label for="commandAccess">For this workspace</label><select id="commandAccess" aria-describedby="commandAccessHelp" disabled><option value="standard">Standard</option><option value="extended">Extended</option></select></div>
+            <p id="commandAccessHelp" class="field-help">Extended asks before each command. Commands are not sandboxed.</p>
+            <p class="field-help">Access changes apply immediately after approval, separately from the settings draft. Cancel in Settings does not undo an approved access change.</p>
+            <p id="commandAccessStatus" class="field-help" role="status"></p>
+            <div class="permission-setting-list">
             <div class="permission-setting-row">
               <span class="permission-setting-copy">
-                <strong>Verification commands</strong>
-                <span>New exact commands ask first and are remembered only for this workspace.</span>
+                <strong>Runtime version commands</strong>
+                <span>In Standard access, runtime version commands can be remembered for this workspace. Verification scripts ask every time.</span>
               </span>
               <span id="workspaceTrustBadge" class="permission-blocked-badge" hidden>Workspace untrusted</span>
             </div>
@@ -357,24 +369,40 @@ export function getChatWebviewHtml(
             </div>
             <ul id="rememberedCommandList" class="remembered-command-list"></ul>
             <button id="clearRememberedCommands" class="action-button secondary" type="button">Clear remembered commands</button>
+            </div>
+          </section>
+        </details>
+        <details class="configuration-details">
+          <summary id="backendSettingsTitle">Local backend</summary>
+          <div class="permission-setting-list">
+            <div class="permission-setting-row">
+              <span class="permission-setting-copy">
+                <strong id="backendSettingsLabel">Checking backend</strong>
+                <span id="backendSettingsDetail">Checking the configured backend.</span>
+              </span>
+              <span id="backendSettingsBadge" class="permission-blocked-badge">Checking</span>
+            </div>
+            <div class="backend-settings-actions">
+              <button id="restartBackend" class="action-button secondary" type="button">Restart backend</button>
+              <button id="openBackendLogs" class="action-button secondary" type="button">Open backend logs</button>
+            </div>
           </div>
-          <p class="field-help">Instant permission never bypasses workspace boundaries, protected-file rules, or file-size limits.</p>
-        </section>
+        </details>
+
+        <div id="settingsError" class="profile-form-error" role="alert" hidden></div>
+        <div id="settingsNotice" class="field-help" role="status" hidden></div>
       </div>
-      <footer class="profile-form-actions">
-        <button id="cancelPermissionSettings" class="action-button secondary" type="button">Cancel</button>
-        <button class="action-button primary" type="submit">Save settings</button>
-      </footer>
+      <footer class="profile-form-actions"><button id="cancelPermissionSettings" class="action-button secondary" type="button">Cancel</button><button id="saveSettings" class="action-button primary" type="submit">Save settings</button></footer>
     </form>
   </dialog>
 
-  <dialog id="agentToolSettingsDialog" class="profile-dialog" aria-labelledby="agentToolSettingsTitle">
-    <form id="agentToolSettingsForm" class="profile-form">
-      <header class="profile-form-header">
-        <h2 id="agentToolSettingsTitle">Agent tools</h2>
-        <p>Set how much information each tool may return in one call. Higher values use more model context.</p>
-      </header>
+  <dialog id="agentToolsDialog" class="profile-dialog" aria-labelledby="agentToolsTitle">
+    <section class="profile-form">
+      <header class="profile-form-header"><h2 id="agentToolsTitle">Agent tools</h2><p>Tool choices stay in your settings draft. Save settings in the main dialog to apply them.</p></header>
       <div class="profile-form-body">
+        <div id="configurationTools" class="agent-tool-groups" aria-label="Available agent tools"></div>
+        <details id="toolResultLimits" class="configuration-details">
+          <summary>Tool result limits</summary>
         <div class="settings-value-grid agent-tool-limit-grid">
           <div class="profile-field">
             <label for="settingsReadFileMaxLines">Read file — maximum lines</label>
@@ -407,12 +435,13 @@ export function getChatWebviewHtml(
             <p class="field-help">Shared by symbols, definitions, and references. Default 100.</p>
           </div>
         </div>
+
+
+        </details>
+        <div id="agentToolsError" class="profile-form-error" role="alert" hidden></div>
       </div>
-      <footer class="profile-form-actions">
-        <button id="cancelAgentToolSettings" class="action-button secondary" type="button">Back</button>
-        <button class="action-button primary" type="submit">Save tool settings</button>
-      </footer>
-    </form>
+      <footer class="profile-form-actions"><button id="closeAgentTools" class="action-button primary" type="button">Done</button></footer>
+    </section>
   </dialog>
 
   <script nonce="${nonce}" src="${scriptUri}"></script>

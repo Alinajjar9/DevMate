@@ -7,6 +7,8 @@ from .providers import ChatToolDefinition
 
 AgentToolName = Literal[
     "list_files",
+    "get_project_info",
+    "get_git_changes",
     "read_file",
     "search_code",
     "get_symbols",
@@ -19,12 +21,17 @@ AgentToolName = Literal[
     "delete_file",
     "rename_file",
     "move_file",
+    "rename_symbol",
+    "format_file",
     "install_dependencies",
     "run_command",
+    "stop_command",
 ]
 # Ideas mode exposes only this group; editing, installation, and commands belong to the next group.
 READ_ONLY_AGENT_TOOLS: tuple[AgentToolName, ...] = (
     "list_files",
+    "get_project_info",
+    "get_git_changes",
     "read_file",
     "search_code",
     "get_symbols",
@@ -39,13 +46,43 @@ MUTATING_AGENT_TOOLS: tuple[AgentToolName, ...] = (
     "delete_file",
     "rename_file",
     "move_file",
+    "rename_symbol",
+    "format_file",
     "install_dependencies",
     "run_command",
+    "stop_command",
 )
 
 
 # These schemas guide the model. The extension still validates arguments and permissions before execution.
 AGENT_TOOL_DEFINITIONS = (
+    ChatToolDefinition(
+        name="get_project_info",
+        description=(
+            "Summarize eligible project manifests, detected frameworks, package managers, available scripts, "
+            "verification commands and nested projects without running project code. Use this to discover how a project is built or tested."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {"path": {"type": "string", "description": "Optional workspace-relative directory; empty means the project root."}},
+            "additionalProperties": False,
+        },
+    ),
+    ChatToolDefinition(
+        name="get_git_changes",
+        description=(
+            "Read the current Git branch, eligible changed paths and bounded diffs. "
+            "Use staged=true for staged diffs; the default shows unstaged diffs. Protected file contents and untracked contents are omitted."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Optional file or directory relative to the workspace; empty means the project root."},
+                "staged": {"type": "boolean"},
+            },
+            "additionalProperties": False,
+        },
+    ),
     ChatToolDefinition(
         name="list_files",
         description="List eligible workspace text files, optionally below a relative directory.",
@@ -67,7 +104,11 @@ AGENT_TOOL_DEFINITIONS = (
     ),
     ChatToolDefinition(
         name="read_file",
-        description="Read one eligible text file using its workspace-relative path.",
+        description=(
+            "Read complete lines from one eligible text file using its workspace-relative path. "
+            "The result states the actual returned range and the next line when more remains. "
+            "For edit_file, copy text from Content only, not the header or continuation note."
+        ),
         parameters={
             "type": "object",
             "properties": {
@@ -84,7 +125,7 @@ AGENT_TOOL_DEFINITIONS = (
     ),
     ChatToolDefinition(
         name="search_code",
-        description="Search eligible project text files for a plain-text query and return matching lines.",
+        description="Search eligible project text files for a literal query, with optional case/whole-word matching, a file glob and nearby lines. The query is never a regular expression.",
         parameters={
             "type": "object",
             "properties": {
@@ -98,6 +139,10 @@ AGENT_TOOL_DEFINITIONS = (
                     "minimum": 1,
                     "maximum": 200,
                 },
+                "caseSensitive": {"type": "boolean"},
+                "wholeWord": {"type": "boolean"},
+                "filePattern": {"type": "string", "maxLength": 200, "description": "Optional relative glob, such as **/*.ts or **/*.{ts,tsx}. A plain *.ts pattern matches in every directory."},
+                "contextLines": {"type": "integer", "minimum": 0, "maximum": 5},
             },
             "required": ["query"],
             "additionalProperties": False,
@@ -238,7 +283,14 @@ AGENT_TOOL_DEFINITIONS = (
     ChatToolDefinition(
         name="edit_file",
         description=(
-            "Edit an existing text file with 1-20 sequential exact replacements. Each oldText must match exactly once."
+            "Edit an existing text file with 1-20 sequential exact replacements in a replacements array. "
+            "Each oldText must be non-empty and match exactly once; newText must be a string. "
+            "Use newText=\"\" to delete the matched text. An empty replacements array does nothing and is invalid. "
+            "All replacements are checked before saving; a failed replacement leaves the file unchanged. "
+            "Examples: replace {\"oldText\":\"colour\",\"newText\":\"color\"}; "
+            "delete {\"oldText\":\"obsolete text\",\"newText\":\"\"}; "
+            "insert after an anchor {\"oldText\":\"</head>\",\"newText\":\"<link rel=\\\"stylesheet\\\" href=\\\"styles.css\\\">\\n</head>\"}. "
+            "Put these objects inside replacements and use exact current file text for the anchors."
         ),
         parameters={
             "type": "object",
@@ -254,8 +306,10 @@ AGENT_TOOL_DEFINITIONS = (
                     "items": {
                         "type": "object",
                         "properties": {
-                            "oldText": {"type": "string", "minLength": 1},
-                            "newText": {"type": "string"},
+                            "oldText": {"type": "string", "minLength": 1,
+                                        "description": "Exact existing text, including whitespace; must match once. Never empty."},
+                            "newText": {"type": "string",
+                                        "description": "Literal replacement text. Empty string deletes oldText; null or omission is invalid."},
                         },
                         "required": ["oldText", "newText"],
                         "additionalProperties": False,
@@ -354,12 +408,43 @@ AGENT_TOOL_DEFINITIONS = (
         },
     ),
     ChatToolDefinition(
+        name="rename_symbol",
+        description=(
+            "Rename a code symbol and its references using the installed VS Code language service. "
+            "Specify a one-based source position and the new symbol name. The extension reviews eligible text edits and applies them together after permission."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Workspace-relative source file containing the symbol."},
+                "line": {"type": "integer", "minimum": 1, "maximum": 10_000_000},
+                "column": {"type": "integer", "minimum": 1, "maximum": 10_000_000},
+                "newName": {"type": "string", "minLength": 1, "maxLength": 200},
+            },
+            "required": ["path", "line", "column", "newName"],
+            "additionalProperties": False,
+        },
+    ),
+    ChatToolDefinition(
+        name="format_file",
+        description=(
+            "Format one eligible file using its installed VS Code formatter and project formatting settings. "
+            "Requires an available formatter and permission to apply the resulting text edits."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {"path": {"type": "string", "description": "Workspace-relative text file path."}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    ),
+    ChatToolDefinition(
         name="run_command",
         description=(
-            "Run one approved verification command such as a test, lint, type-check, or build command. "
-            "Installation, Git, shells, servers, generators, and writable formatters are blocked. "
-            "If pytest is unavailable, convert the tests to Python unittest and run "
-            "python -m unittest <test-file> -v instead of trying to install pytest."
+            "Run one command allowed by the workspace's command-access setting after approval. "
+            "Standard access is limited to verification commands; Extended access permits additional project commands. "
+            "Use background=true only for a long-running process such as a development server, when Extended access permits it; "
+            "retain its returned id and stop it with stop_command when finished."
         ),
         parameters={
             "type": "object",
@@ -379,8 +464,19 @@ AGENT_TOOL_DEFINITIONS = (
                     "minimum": 10,
                     "maximum": 1800,
                 },
+                "background": {"type": "boolean"},
             },
             "required": ["executable"],
+            "additionalProperties": False,
+        },
+    ),
+    ChatToolDefinition(
+        name="stop_command",
+        description="Stop a background command started by DevMate using the id returned by run_command. This cannot stop unrelated user terminals or processes.",
+        parameters={
+            "type": "object",
+            "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 200}},
+            "required": ["id"],
             "additionalProperties": False,
         },
     ),

@@ -1,5 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const { providerState } = require('./helpers/providerState');
+const { normalizeAgentConfiguration } = require('../out/configuration');
 
 const {
   MAX_AGENT_CHECKPOINT_AGE_MS,
@@ -23,6 +25,31 @@ test('accepts every read-only tool in checkpoint history', () => {
     { ...toolStep(5), name: 'find_references', arguments: { path: 'main.py', line: 4, column: 1 } }
   ];
   assert.deepEqual(parseAgentRunCheckpoint(checkpoint, now), checkpoint);
+});
+
+test('restores provider continuation data and refuses invalid or excessive saved state', () => {
+  const checkpoint = validCheckpoint();
+  checkpoint.toolHistory[0].providerState = providerState(checkpoint.toolHistory[0].callId);
+  const restored = parseAgentRunCheckpoint(JSON.parse(JSON.stringify(checkpoint)), now);
+  assert.deepEqual(restored, checkpoint);
+  checkpoint.toolHistory[0].providerState.outputItems[0].summary = ['private'];
+  assert.equal(parseAgentRunCheckpoint(checkpoint, now), undefined);
+
+  const largeCheckpoint = validCheckpoint();
+  largeCheckpoint.toolHistory = Array.from({ length: 9 }, (_, index) => {
+    const state = providerState(`call-${index}`);
+    state.outputItems[0].encrypted_content = 'x'.repeat(999_900);
+    return { ...toolStep(index), providerState: state };
+  });
+  assert.equal(parseAgentRunCheckpoint(largeCheckpoint, now), undefined);
+});
+
+test('checkpoints preserve configuration and reject invalid or oversized instruction overrides', () => {
+  const checkpoint = { ...validCheckpoint(), configuration: normalizeAgentConfiguration({ maxFileEdits: 12, maxCommands: 8 }),
+    instructions: 'Use the saved project conventions.', fileMutationCalls: 7, commandCalls: 4 };
+  assert.deepEqual(parseAgentRunCheckpoint(JSON.parse(JSON.stringify(checkpoint)), now), checkpoint);
+  assert.equal(parseAgentRunCheckpoint({ ...checkpoint, configuration: { maxCommands: -1 } }, now), undefined);
+  assert.equal(parseAgentRunCheckpoint({ ...checkpoint, instructions: 'x'.repeat(12001) }, now), undefined);
 });
 
 test('rejects stale, oversized, duplicate, and invalid agent checkpoints', () => {

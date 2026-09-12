@@ -5,6 +5,9 @@ import { parseFileChangeSummary } from './fileTools';
 import type { FileChangeSummaryItem } from './fileTools';
 import { AGENT_TOOL_NAMES } from './agentTools';
 import type { AgentToolName } from './agentTools';
+import { MAX_PROVIDER_HISTORY_CHARACTERS, parseProviderState } from './providerState';
+import { normalizeAgentConfiguration, validateConfigurationOverrides } from './configuration';
+import type { AgentConfiguration } from './configuration';
 
 export const CONVERSATION_SESSIONS_STORAGE_KEY = 'devMate.conversationSessions.v2';
 export const LEGACY_CONVERSATION_SESSIONS_STORAGE_KEY = 'devMate.conversationSessions.v1';
@@ -31,6 +34,8 @@ export type AgentRunCheckpoint = {
   question: string;
   mode: AssistantMode;
   scopeKind: 'project' | 'activeFile' | 'selection';
+  configuration?: AgentConfiguration;
+  instructions?: string;
   toolHistory: AgentToolStep[];
   toolUsedFiles: string[];
   toolSignatures: AgentToolSignatureCheckpoint[];
@@ -94,9 +99,9 @@ export function parseAgentRunCheckpoint(
     || value.toolUsedFiles.length > 100
     || !Array.isArray(value.toolSignatures)
     || value.toolSignatures.length > 100
-    || !validCounter(value.fileMutationCalls, 6)
+    || !validCounter(value.fileMutationCalls, 100)
     || !validCounter(value.mutationCharacters, 500_000)
-    || !validCounter(value.commandCalls, 3)
+    || !validCounter(value.commandCalls, 100)
     || !validCounter(value.dependencyInstallCalls, 1)
     || !validCounter(value.workspaceRevision, 200)
     || typeof value.forceFinalAnswer !== 'boolean'
@@ -123,6 +128,10 @@ export function parseAgentRunCheckpoint(
   if (!toolHistory || !toolUsedFiles || !toolSignatures) {
     return undefined;
   }
+  if ((value.configuration !== undefined && validateConfigurationOverrides(value.configuration))
+    || (value.instructions !== undefined && (typeof value.instructions !== 'string' || value.instructions.length > 12_000))) {
+    return undefined;
+  }
 
   return {
     version: 1,
@@ -131,6 +140,8 @@ export function parseAgentRunCheckpoint(
     question: value.question as string,
     mode: value.mode as AssistantMode,
     scopeKind: value.scopeKind as AgentRunCheckpoint['scopeKind'],
+    ...(value.configuration !== undefined ? { configuration: normalizeAgentConfiguration(value.configuration) } : {}),
+    ...(typeof value.instructions === 'string' ? { instructions: value.instructions } : {}),
     toolHistory,
     toolUsedFiles,
     toolSignatures,
@@ -155,6 +166,7 @@ function parseToolHistory(value: unknown[]): AgentToolStep[] | undefined {
   const parsed: AgentToolStep[] = [];
   const callIds = new Set<string>();
   let resultCharacters = 0;
+  let providerStateCharacters = 0;
   for (const item of value) {
     if (!isRecord(item)
       || !boundedString(item.callId, 120)
@@ -171,13 +183,22 @@ function parseToolHistory(value: unknown[]): AgentToolStep[] | undefined {
     if (resultCharacters > 80_000) {
       return undefined;
     }
+    const providerState = item.providerState === undefined ? undefined : parseProviderState(item.providerState);
+    if (item.providerState !== undefined && !providerState) {
+      return undefined;
+    }
+    providerStateCharacters += providerState ? JSON.stringify(providerState).length : 0;
+    if (providerStateCharacters > MAX_PROVIDER_HISTORY_CHARACTERS) {
+      return undefined;
+    }
     callIds.add(item.callId);
     parsed.push({
       callId: item.callId,
       name: item.name as AgentToolName,
       arguments: item.arguments,
       result: item.result,
-      isError: item.isError
+      isError: item.isError,
+      ...(providerState ? { providerState } : {})
     });
   }
   return parsed;

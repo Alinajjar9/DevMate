@@ -362,17 +362,6 @@ button:disabled {
   display: none;
 }
 
-.scope-meta {
-  color: var(--muted);
-  line-height: 1.35;
-  overflow-wrap: anywhere;
-  font-size: 11px;
-}
-
-.scope-meta:empty {
-  display: none;
-}
-
 .ask-panel {
   display: grid;
   gap: 10px;
@@ -1351,6 +1340,7 @@ button:focus-visible {
   max-height: calc(100vh - 32px);
   padding: 0;
   overflow: auto;
+  scroll-padding-bottom: 76px;
   border: 1px solid var(--border);
   border-radius: 10px;
   color: var(--vscode-foreground);
@@ -1430,6 +1420,115 @@ button:focus-visible {
   outline-offset: 0;
 }
 
+.request-undo-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.configuration-details {
+  min-width: 0;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.configuration-details > summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.configuration-details > :not(summary) {
+  margin-top: 12px;
+}
+
+.configuration-details > summary:focus-visible {
+  outline: 1px solid var(--focus);
+}
+
+.agent-tool-groups {
+  display: grid;
+  gap: 20px;
+}
+
+.agent-tool-group {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.agent-tool-group legend {
+  padding: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.configuration-tool {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 8px 0;
+  font-size: 12px;
+}
+
+.configuration-tool > input {
+  margin: 2px 0 0;
+}
+
+.configuration-tool .field-help {
+  display: block;
+  margin-top: 3px;
+}
+
+.extended-access-badge {
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.managed-commands {
+  margin: 10px 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.managed-commands > summary {
+  cursor: pointer;
+}
+
+.managed-command-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.managed-command-row > span {
+  overflow-wrap: anywhere;
+}
+
+.configuration-result {
+  margin-top: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .profile-form-error {
   padding: 8px 10px;
   border: 1px solid var(--vscode-editorError-foreground);
@@ -1444,6 +1543,10 @@ button:focus-visible {
 }
 
 .profile-form-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  background: var(--surface);
   display: flex;
   gap: 8px;
   align-items: center;
@@ -1680,44 +1783,6 @@ button:focus-visible {
 
 .settings-value-grid .profile-field:last-child {
   grid-column: 1 / -1;
-}
-
-.settings-subdialog-button {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
-  width: 100%;
-  margin-top: 10px;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--vscode-foreground);
-  background: var(--surface-soft);
-  text-align: left;
-  cursor: pointer;
-}
-
-.settings-subdialog-button:hover {
-  border-color: var(--focus);
-  background: var(--vscode-list-hoverBackground);
-}
-
-.settings-subdialog-copy {
-  display: grid;
-  gap: 2px;
-}
-
-.settings-subdialog-copy strong {
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.settings-subdialog-copy span,
-.settings-subdialog-chevron {
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.4;
 }
 
 .agent-tool-limit-grid .profile-field:last-child {

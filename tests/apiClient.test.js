@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const test = require('node:test');
+const { providerState } = require('./helpers/providerState');
 
 const {
   ask,
@@ -126,6 +127,71 @@ test('parses progressive backend events and returns the validated final result',
       { type: 'delta', text: 'world' }
     ]);
   });
+});
+
+test('JSON and streaming transports roundtrip opaque provider output without exposing it as progress', async () => {
+  for (const streaming of [false, true]) {
+    const state = providerState();
+    const payload = { status: 'ok', data: {
+      answer: '', usedFiles: [], changes: [],
+      toolCalls: [{ id: 'call-one', name: 'read_file', arguments: { path: 'app.ts' }, providerState: state }]
+    } };
+    const events = [];
+    let nextRequest;
+    await withServer((request, response) => {
+      let body = '';
+      request.on('data', (chunk) => { body += chunk; });
+      request.on('end', () => {
+        nextRequest = JSON.parse(body);
+        if (streaming) {
+          response.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+          response.end(JSON.stringify({ type: 'final', result: payload }) + '\n');
+        } else {
+          sendJson(response, 200, payload);
+        }
+      });
+    }, async (backendUrl) => {
+      const result = streaming
+        ? (await askStream(backendUrl, askRequest(), undefined, 10_000, undefined, event => events.push(event))).result
+        : await ask(backendUrl, askRequest(), undefined, 10_000);
+      assert.equal(result.status, 'ok');
+      assert.deepEqual(result.data.toolCalls[0].providerState, state);
+      const request = askRequest();
+      request.toolHistory = [{
+        callId: 'call-one', name: 'read_file', arguments: { path: 'app.ts' }, result: 'contents', isError: false,
+        providerState: result.data.toolCalls[0].providerState
+      }];
+      await ask(backendUrl, request, undefined, 10_000);
+      assert.deepEqual(nextRequest.toolHistory[0].providerState, state);
+      assert.deepEqual(events, []);
+    });
+  }
+});
+
+test('JSON and streaming transports reject malformed continuation data', async () => {
+  for (const streaming of [false, true]) {
+    const state = providerState();
+    state.outputItems[0].summary = ['unsupported reasoning'];
+    const payload = { status: 'ok', data: {
+      answer: '', usedFiles: [], changes: [],
+      toolCalls: [{ id: 'call-one', name: 'read_file', arguments: { path: 'app.ts' }, providerState: state }]
+    } };
+    await withServer((_request, response) => {
+      if (streaming) {
+        response.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+        response.end(JSON.stringify({ type: 'final', result: payload }) + '\n');
+      } else {
+        sendJson(response, 200, payload);
+      }
+    }, async (backendUrl) => {
+      const result = streaming
+        ? (await askStream(backendUrl, askRequest(), undefined, 10_000)).result
+        : await ask(backendUrl, askRequest(), undefined, 10_000);
+      assert.equal(result.status, 'error');
+      assert.equal(result.errorKind, 'invalid-response');
+      assert.match(result.message, /invalid provider continuation/);
+    });
+  }
 });
 
 test('marks an older backend stream endpoint as unsupported for fallback', async () => {

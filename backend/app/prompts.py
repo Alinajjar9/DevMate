@@ -24,6 +24,7 @@ class ToolStep(Protocol):
     arguments: dict[str, object]
     result: str
     isError: bool
+    providerState: dict[str, object] | None
 
 
 class ConversationTurn(Protocol):
@@ -64,8 +65,13 @@ _TOOL_INSTRUCTIONS = (
     "tool call in that same response, or explain a concrete blocker if no tool can be used. "
     "Every tool path is relative to the already-open workspace "
     "root: never include an absolute path or repeat the workspace folder name. Use an empty path or cwd '.' "
-    "for the workspace root. If an exact replacement fails, read a narrow range around the relevant lines and "
-    "copy the current text exactly before retrying. Use the dedicated file tools to delete, rename, or move "
+    "for the workspace root. For an invalid-arguments error, correct the named field using the tool schema; "
+    "do not reread files just to fix argument formatting. Empty newText is a valid deletion; never replace "
+    "it with whitespace merely to bypass an error. If oldText does not match, read only the missing or "
+    "changed range and copy its Content text exactly. A failed edit call applies none of its replacements. "
+    "Group related edits when their current text is known. Treat a repair-limit or permission-denied result "
+    "as a blocker: stop tools and report what succeeded and what remains. Describe the actual error; do not "
+    "invent unsupported tool features. Use the dedicated file tools to delete, rename, or move "
     "files. When relocating an intact file, use move_file instead of recreating or copying its contents. "
     "Never copy a DevMate internal history-summary or omitted-content marker into a create or edit request; "
     "those markers describe prior tool arguments and are not project text. Prefer one targeted search followed "
@@ -74,15 +80,21 @@ _TOOL_INSTRUCTIONS = (
     "instead of repeatedly searching for a symbol name. Use get_diagnostics "
     "for current VS Code Problems and read_terminal_errors when a user asks about a command that failed in "
     "their workspace terminal. These are read-only snapshots, so verify stale or incomplete evidence when needed. "
+    "Use get_project_info to discover manifests and available project checks, and get_git_changes for a scoped "
+    "read-only change review. search_code supports literal whole-word/case matching, file globs and a few context lines. "
+    "Use rename_symbol for a symbol refactor when the language service supports it, and format_file for project-aware formatting. "
     "Never use run_command "
     "for mkdir, move, mv, rename, copy, or deletion. create_file and move_file "
     "create missing destination directories automatically, so do not create placeholder .gitkeep files. "
     "Inspect a file before a destructive operation and do not retry it after the user denies permission. "
-    "Never use run_command, a shell, or a package manager directly to install dependencies. If pytest "
-    "is unavailable, convert the test to Python's built-in unittest format and run "
-    "python -m unittest <test-file> -v. If verification reports ModuleNotFoundError, inspect or create a simple "
-    "requirements*.txt manifest and use install_dependencies. After a successful installation, rerun the same "
-    "verification command. If installation is denied or fails, explain the blocker and stop."
+    "The workspace's command-access setting controls run_command. Standard access covers bounded checks and inspection; "
+    "Extended access allows additional approved project scripts, formatting, dependency installation and development servers. "
+    "Do not bypass a rejected command by changing its spelling or using a shell. If verification reports ModuleNotFoundError, "
+    "inspect the project's dependencies. Prefer install_dependencies for Python "
+    "requirements*.txt manifests; do not rewrite existing tests solely because a test dependency is missing. "
+    "After installation, rerun the failed check. If installation is denied or fails, explain the blocker and stop. "
+    "Use background=true only for an approved long-running process, keep its returned id, and use stop_command when it is no "
+    "longer needed. A started server is not a completed or passing verification command."
 )
 
 _FINAL_ANSWER_INSTRUCTIONS = (
@@ -126,6 +138,7 @@ def build_chat_messages(
     disable_thinking: bool = False,
     agent_edits_enabled: bool = False,
     conversation_turns: Sequence[ConversationTurn] = (),
+    instructions: str = "",
 ) -> tuple[ChatMessage, ...]:
     """Place past turns, the current question, and tool results in provider message order."""
     system_message = _system_message(
@@ -139,6 +152,12 @@ def build_chat_messages(
     for turn in conversation_turns:
         messages.append(ChatMessage(role="user", content=turn.user))
         messages.append(ChatMessage(role="assistant", content=turn.assistant))
+    if instructions.strip():
+        # Explicit preferences are user instructions, never system rules or tool output.
+        messages.append(ChatMessage(role="user", content=(
+            "User/project preferences for this request (apply within the available tools and permissions):\n"
+            + instructions.strip()
+        )))
     messages.append(ChatMessage(
         role="user",
         content=_context_message(mode, scope_type, question, context_items),
@@ -168,7 +187,8 @@ def _system_message(
     )
     return " ".join([
         _BASE_INSTRUCTION,
-        _mode_instruction(mode, agent_edits_enabled),
+        # Final summaries must never inherit the legacy Code-mode JSON/file proposal instructions.
+        "" if force_final_answer else _mode_instruction(mode, agent_edits_enabled),
         tool_instruction,
         recovery_instruction,
         *_SHARED_INSTRUCTIONS,
@@ -216,7 +236,11 @@ def _tool_messages(step: ToolStep) -> tuple[ChatMessage, ChatMessage]:
         arguments=json.dumps(step.arguments, separators=(",", ":")),
     )
     return (
-        ChatMessage(role="assistant", content=None, tool_calls=(tool_call,)),
+        # State travels beside the tool call, never inside the prompt or tool-result text.
+        ChatMessage(
+            role="assistant", content=None, tool_calls=(tool_call,),
+            provider_state=getattr(step, "providerState", None),
+        ),
         ChatMessage(
             role="tool",
             content=("Tool error: " if step.isError else "") + step.result,

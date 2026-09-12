@@ -145,6 +145,110 @@
           "minimum": 10,
           "maximum": 300,
           "description": "Maximum locations returned by get_symbols, find_definition, or find_references."
+        },
+        "devMate.configuration": {
+          "type": "object",
+          "default": {},
+          "scope": "window",
+          "additionalProperties": false,
+          "properties": {
+            "maxTokens": {
+              "type": "integer",
+              "minimum": 128,
+              "maximum": 32000,
+              "description": "Maximum output tokens for one provider response."
+            },
+            "temperature": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 2,
+              "description": "Sampling temperature, when accepted by the model."
+            },
+            "timeoutSeconds": {
+              "type": "integer",
+              "minimum": 10,
+              "maximum": 1800,
+              "description": "Timeout for each provider call in seconds."
+            },
+            "commandTimeoutSeconds": {
+              "type": "integer",
+              "minimum": 10,
+              "maximum": 1800,
+              "description": "Maximum runtime of an approved verification command."
+            },
+            "toolCallLimit": {
+              "type": "integer",
+              "minimum": 4,
+              "maximum": 100,
+              "description": "Total tool calls allowed in one request."
+            },
+            "maxFileEdits": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100,
+              "description": "Maximum file-changing calls in one request; 0 disables them."
+            },
+            "maxCommands": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100,
+              "description": "Maximum verification command calls; 0 disables them."
+            },
+            "maxRepairAttempts": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10,
+              "description": "Failed attempts on the same tool and target before stopping."
+            },
+            "contextCharacters": {
+              "type": "integer",
+              "minimum": 1000,
+              "maximum": 40000,
+              "description": "Maximum characters of code in starting context."
+            },
+            "historyCharacters": {
+              "type": "integer",
+              "minimum": 10000,
+              "maximum": 80000,
+              "description": "Maximum characters retained in tool-result history."
+            },
+            "runTokenBudget": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 5000000,
+              "description": "Cumulative request token budget; 0 disables it. Estimated checks stop before another call, but are not a billing cap."
+            },
+            "instructions": {
+              "type": "string",
+              "maxLength": 12000,
+              "description": "Project or personal instructions. Tool restrictions remain enforced."
+            },
+            "pinnedFiles": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 5,
+              "description": "Workspace-relative files included before automatic context retrieval."
+            },
+            "excludedPaths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "description": "Paths or *, ** and ? patterns excluded from starting context. This does not restrict tool access."
+            },
+            "enabledTools": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string"
+              },
+              "description": "Tools available to the agent, further restricted by mode and permissions."
+            }
+          },
+          "description": "Agent defaults and project overrides. Adjust model values and advanced limits in DevMate settings."
         }
       }
     }

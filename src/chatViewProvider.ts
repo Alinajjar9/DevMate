@@ -1,19 +1,21 @@
 import { randomUUID } from 'crypto';
 import * as vscode from 'vscode';
+import { ConfigurationManager } from './configurationManager';
+import { testModelConfiguration } from './modelProbe';
+import { COMMAND_ACCESS_STORAGE_KEY, parseCommandAccess } from './commandTools';
+import type { CommandAccess } from './commandTools';
+import { normalizeAgentConfiguration, validateConfigurationOverrides, validateModelProfileSettings } from './configuration';
+import type { AgentConfiguration, ConfigurationScope, ModelProfileSettings } from './configuration';
 import type { AgentRunInput, AgentRunResult, AgentTransport } from './agentRunner';
 import { AgentRunner } from './agentRunner';
 import type { AgentToolSettings } from './agentTools';
 import {
-  boundedAgentToolCallLimit,
-  DEFAULT_AGENT_TOOL_CALL_LIMIT,
   DEFAULT_CODE_NAVIGATION_MAX_RESULTS,
   DEFAULT_DIAGNOSTICS_MAX_RESULTS,
   DEFAULT_LIST_FILES_MAX_RESULTS,
   DEFAULT_READ_FILE_MAX_LINES,
   DEFAULT_SEARCH_CODE_MAX_RESULTS,
   DEFAULT_TERMINAL_ERRORS_MAX_RESULTS,
-  MAX_AGENT_TOOL_CALL_LIMIT,
-  MIN_AGENT_TOOL_CALL_LIMIT,
   normalizeAgentToolSettings
 } from './agentTools';
 import type {
@@ -21,11 +23,6 @@ import type {
 } from './api/types';
 import type { ManagedBackendStatus } from './backendManager';
 import { backendStatusLabel, LocalBackendManager } from './backendManager';
-import {
-  DEFAULT_COMMAND_TIMEOUT_SECONDS,
-  MAX_COMMAND_TIMEOUT_SECONDS,
-  MIN_COMMAND_TIMEOUT_SECONDS
-} from './commandTools';
 import {
   collectFileChangeSummary,
   parseAppliedFileChangeOutcome,
@@ -35,6 +32,7 @@ import type {
   LlmProfile,
   LlmProfileDraft,
   LlmProvider,
+  LlmApi,
   ReasoningEffort
 } from './llmProfiles';
 import {
@@ -50,8 +48,8 @@ import {
   parseStoredProfiles,
   profilesWithBuiltInNemotron,
   providerLabelForProfile,
-  REASONING_EFFORT_LABELS,
   reasoningEffortForProfile,
+  REASONING_EFFORT_LABELS,
   reasoningEffortOptionsForProfile,
   secretKeyForProfile,
   validateProfileDraft
@@ -97,21 +95,30 @@ type LlmProfileFormSubmission = {
   provider: LlmProvider;
   model: string;
   baseUrl?: string;
+  api?: LlmApi;
   apiKey?: string;
+  settings?: ModelProfileSettings;
 };
 
 type DevMateSettingsSubmission = {
-  timeoutSeconds: number;
-  commandTimeoutSeconds: number;
-  toolCallLimit: number;
-  maxTokens: number;
-  temperature: number;
+  configuration?: Partial<AgentConfiguration>;
+  agentTools?: Partial<AgentToolSettings>;
+  // Older open webviews can finish a save while the extension is being upgraded.
+  timeoutSeconds?: number;
+  commandTimeoutSeconds?: number;
+  toolCallLimit?: number;
+  maxTokens?: number;
+  temperature?: number;
   policy: FilePermissionPolicy;
+  scope?: ConfigurationScope;
 };
 
-type AgentToolSettingsSubmission = AgentToolSettings;
-
 type WebviewMessage =
+  | { command: 'openConfiguration' | 'setConfigurationScope' | 'saveConfiguration'; [key: string]: unknown }
+  | { command: 'testLlmProfile'; profileId: string }
+  | { command: 'undoRequest' }
+  | { command: 'setCommandAccess'; access: CommandAccess }
+  | { command: 'stopManagedCommand'; id: string }
   | {
     command: 'ask';
     mode: AssistantMode;
@@ -131,8 +138,7 @@ type WebviewMessage =
   | { command: 'editLlmProfile'; profileId: string }
   | { command: 'deleteLlmProfile'; profileId: string }
   | { command: 'saveLlmProfile'; profile: LlmProfileFormSubmission }
-  | { command: 'saveSettings'; settings: DevMateSettingsSubmission }
-  | { command: 'saveAgentToolSettings'; settings: AgentToolSettingsSubmission }
+  | { command: 'saveSettings'; settings: DevMateSettingsSubmission; scope?: ConfigurationScope }
   | { command: 'reviewPermissionDiff'; requestId: string; path: string }
   | { command: 'revokeRememberedCommand'; signature: string }
   | { command: 'clearRememberedCommands' }
@@ -163,6 +169,10 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
   private readonly workspaceContext: WorkspaceContext;
   private readonly tools: ToolExecutor;
   private readonly runner: AgentRunner;
+  private readonly configuration: ConfigurationManager;
+  private auxiliaryBusy = false;
+  private activeRunConfiguration?: AgentConfiguration;
+  private auxiliaryAbort?: AbortController;
   static readonly viewId = 'devmate.dedicatedAssistantView';
 
   static readonly containerId = 'devmate-dedicated-chat';
@@ -188,6 +198,12 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
     transport?: AgentTransport
   ) {
     this.extensionUri = extensionContext.extensionUri;
+    this.configuration = new ConfigurationManager(extensionContext, {
+      postMessage: message => this.postMessage(message),
+      getActiveProfile: () => this.getActiveLlmProfile(),
+      getReasoningPreferences: () => this.getReasoningEffortPreferences(),
+      changed: async () => { await this.postLlmProfileState(); this.postSettingsState(); }
+    });
     this.workspaceContext = new WorkspaceContext(extensionContext, {
       postMessage: message => this.postMessage(message),
       postStatus: (text, level) => this.postStatus(text, level)
@@ -273,6 +289,14 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
 
   notifyWorkspaceTrustChanged(): void {
     this.postSettingsState();
+    this.postCommandAccessState();
+    if (!vscode.workspace.isTrusted) void this.tools.stopAllManagedCommands();
+  }
+
+  notifyConfigurationChanged(): void {
+    this.postSettingsState();
+    this.configuration.postState();
+    void this.postLlmProfileState();
   }
 
   notifyBackendStatusChanged(_status: ManagedBackendStatus): void {
@@ -301,6 +325,7 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
 
   /** Stop work tied to this view, including a request waiting for a permission decision. */
   private disposeViewDisposables(): void {
+    this.auxiliaryAbort?.abort();
     this.activeRequest?.abort();
     this.activeRequest = undefined;
     this.tools.cancelPendingWork();
@@ -311,7 +336,36 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
 
   /** Route chat actions to their owners and allow only one active model request at a time. */
   private async handleMessage(message: WebviewMessage): Promise<void> {
+    if (configurationMessages.has(message.command)) {
+      if (this.auxiliaryBusy || this.activeRequest && !['openConfiguration', 'setConfigurationScope'].includes(message.command)) {
+        this.postMessage({ command: 'configurationError', message: 'Finish or cancel the current work before changing configuration.' });
+        return;
+      }
+      const wasBusy = this.auxiliaryBusy;
+      this.auxiliaryBusy = true;
+      try { await this.configuration.handle(message as { command: string; [key: string]: unknown }); }
+      finally { this.auxiliaryBusy = wasBusy; }
+      return;
+    }
+    if (this.auxiliaryBusy && !['cancelRequest', 'ready', 'openBackendLogs', 'stopManagedCommand', 'setCommandAccess'].includes(message.command)) {
+      if (message.command === 'ask' || message.command === 'continueAgentRun') {
+        this.postRequestFailure('Finish the configuration test or undo before starting another request.');
+      } else if (message.command === 'saveSettings') {
+        this.postMessage({ command: 'settingsError', message: 'Finish the current action before saving settings.' });
+      } else { this.postStatus('Finish the current configuration action first.', 'warning'); }
+      return;
+    }
     switch (message.command) {
+      case 'setCommandAccess': await this.setCommandAccess(message.access); return;
+      case 'stopManagedCommand':
+        try {
+          if (typeof message.id === 'string' && message.id.length <= 200) await this.tools.stopManagedCommand(message.id);
+        } catch (error) {
+          this.postStatus(error instanceof Error ? error.message : 'Could not stop this command.');
+        } finally { this.tools.postManagedCommandState(); }
+        return;
+      case 'testLlmProfile': await this.testLlmProfile(message.profileId); return;
+      case 'undoRequest': await this.undoLastRequest(); return;
       case 'setScope':
         await this.updateScope(message.scope);
         return;
@@ -335,6 +389,8 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
           if (this.activeRequest === requestController) {
             this.activeRequest = undefined;
           }
+          this.activeRunConfiguration = undefined;
+          await this.postUndoState();
         }
         return;
       case 'continueAgentRun': {
@@ -379,6 +435,8 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
           if (this.activeRequest === requestController) {
             this.activeRequest = undefined;
           }
+          this.activeRunConfiguration = undefined;
+          await this.postUndoState();
         }
         return;
       }
@@ -413,10 +471,13 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
         await this.saveLlmProfile(message.profile);
         return;
       case 'saveSettings':
-        await this.saveSettings(message.settings);
-        return;
-      case 'saveAgentToolSettings':
-        await this.saveAgentToolSettings(message.settings);
+        if (this.activeRequest) {
+          this.postMessage({ command: 'settingsError', message: 'Finish or cancel the current request before saving settings.' });
+          return;
+        }
+        this.auxiliaryBusy = true;
+        try { await this.saveSettings({ ...message.settings, scope: message.scope ?? message.settings.scope }); }
+        finally { this.auxiliaryBusy = false; }
         return;
       case 'reviewPermissionDiff':
         await this.tools.reviewPermissionDiff(message.requestId, message.path);
@@ -482,13 +543,19 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
         return;
       case 'ready':
         this.workspaceContext.postAttachmentState();
+        try { await this.configuration.cleanupRemovedFeatures(); }
+        catch { this.postStatus('Obsolete saved presets are ignored, but their local storage could not be cleared.', 'warning'); }
         await this.migrateBuiltInNemotronProfile();
         await this.postLlmProfileState();
         await this.promptForBuiltInNemotronKey();
         this.postPermissionPolicyState();
         this.postSettingsState();
+        this.postCommandAccessState();
+        this.tools.postManagedCommandState();
         this.postBackendStatus();
         this.postSessionState(false);
+        this.configuration.postState();
+        await this.postUndoState();
         return;
       default:
         this.postStatus('Unsupported command received.', 'error');
@@ -681,12 +748,7 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
 
   private postAgentCheckpointState(): void {
     const checkpoint = this.currentAgentCheckpoint();
-    const limit = boundedAgentToolCallLimit(
-      vscode.workspace.getConfiguration('devMate').get<number>(
-        'toolCallLimit',
-        DEFAULT_AGENT_TOOL_CALL_LIMIT
-      )
-    );
+    const limit = checkpoint?.configuration?.toolCallLimit ?? this.configuration.effective().toolCallLimit;
     this.postMessage({
       command: 'agentCheckpointUpdated',
       available: Boolean(checkpoint),
@@ -768,24 +830,25 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
       await this.postLlmProfileState();
       return;
     }
-    const preferences = { ...this.getReasoningEffortPreferences() };
-    if (effort === 'auto') {
-      delete preferences[profile.id];
-    } else {
-      preferences[profile.id] = effort;
-    }
+    await this.saveModelReasoningPreference(profile.id, effort);
+    await this.postLlmProfileState();
+    this.configuration.postState();
+    this.postStatus('Ready');
+  }
+
+  /** The model editor and chat menu write the same preference, including an explicit Auto choice. */
+  private async saveModelReasoningPreference(profileId: string, effort: ReasoningEffort): Promise<void> {
     await this.extensionContext.globalState.update(
       LLM_REASONING_EFFORT_STORAGE_KEY,
-      preferences
+      { ...this.getReasoningEffortPreferences(), [profileId]: effort }
     );
-    await this.postLlmProfileState();
-    this.postStatus('Ready');
   }
 
   /** Move an older equivalent profile and its saved key to the built-in profile without asking for the key again. */
   private async migrateBuiltInNemotronProfile(): Promise<void> {
     const storedProfiles = this.getStoredLlmProfiles();
-    const equivalentProfiles = storedProfiles.filter(isEquivalentNemotronProfile);
+    const equivalentProfiles = storedProfiles.filter(profile => profile.id !== BUILT_IN_NEMOTRON_PROFILE_ID
+      && profile.settings === undefined && isEquivalentNemotronProfile(profile));
     if (equivalentProfiles.length === 0) {
       return;
     }
@@ -816,6 +879,14 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
       }
 
       const equivalentIds = new Set(equivalentProfiles.map((profile) => profile.id));
+      const preferences = { ...this.getReasoningEffortPreferences() };
+      const migratedEffort = keyCandidates.map(profile => preferences[profile.id]).find(Boolean);
+      const builtInEffort = storedProfiles.find(profile => profile.id === BUILT_IN_NEMOTRON_PROFILE_ID)?.settings?.reasoningEffort;
+      if (preferences[BUILT_IN_NEMOTRON_PROFILE_ID] === undefined && migratedEffort) {
+        preferences[BUILT_IN_NEMOTRON_PROFILE_ID] = builtInEffort ?? migratedEffort;
+      }
+      for (const id of equivalentIds) delete preferences[id];
+      await this.extensionContext.globalState.update(LLM_REASONING_EFFORT_STORAGE_KEY, preferences);
       await this.extensionContext.globalState.update(
         LLM_PROFILES_STORAGE_KEY,
         storedProfiles.filter((profile) => !equivalentIds.has(profile.id))
@@ -886,6 +957,7 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
     );
     await this.postLlmProfileState();
     await this.promptForBuiltInNemotronKey();
+    this.configuration.postState();
     this.postStatus('Ready');
   }
 
@@ -900,6 +972,7 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
 
   /** Abort provider work and release pending permissions so a cancelled request cannot remain waiting. */
   private cancelActiveRequest(): void {
+    this.auxiliaryAbort?.abort();
     if (!this.activeRequest || this.activeRequest.signal.aborted) {
       return;
     }
@@ -943,7 +1016,9 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
           provider: profile.provider,
           model: profile.model,
           baseUrl: profile.baseUrl,
-          builtIn: isBuiltInLlmProfile(profile)
+          api: profile.api ?? 'auto',
+          builtIn: isBuiltInLlmProfile(profile),
+          settings: { ...profile.settings, reasoningEffort: reasoningEffortForProfile(profile, this.getReasoningEffortPreferences()) }
         }
         : undefined,
       hasApiKey
@@ -958,7 +1033,9 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
       || !['openai', 'ollama'].includes(submission.provider)
       || typeof submission.model !== 'string'
       || (submission.baseUrl !== undefined && typeof submission.baseUrl !== 'string')
+      || (submission.api !== undefined && !['auto', 'chat_completions', 'responses'].includes(submission.api))
       || (submission.apiKey !== undefined && typeof submission.apiKey !== 'string')
+      || (submission.settings !== undefined && Boolean(validateModelProfileSettings(submission.settings)))
     ) {
       this.postMessage({
         command: 'llmProfileFormError',
@@ -981,7 +1058,7 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
     }
 
     if (existingProfile && isBuiltInLlmProfile(existingProfile)) {
-      await this.saveBuiltInNemotronApiKey(submission.apiKey);
+      await this.saveBuiltInNemotronApiKey(submission.apiKey, submission.settings);
       return;
     }
 
@@ -989,7 +1066,9 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
       name: submission.name,
       provider: submission.provider,
       model: submission.model,
-      baseUrl: submission.baseUrl
+      baseUrl: submission.baseUrl,
+      api: submission.api ?? existingProfile?.api ?? 'auto',
+      settings: submission.settings
     });
     const validationError = validateProfileDraft(draft, profiles, existingProfile?.id);
     if (validationError) {
@@ -1026,6 +1105,7 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
         LLM_PROFILES_STORAGE_KEY,
         updatedProfiles
       );
+      await this.saveModelReasoningPreference(profile.id, profile.settings?.reasoningEffort ?? 'auto');
       if (!existingProfile) {
         await this.extensionContext.globalState.update(
           ACTIVE_LLM_PROFILE_STORAGE_KEY,
@@ -1047,11 +1127,12 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
     }
 
     await this.postLlmProfileState();
+    this.configuration.postState();
     this.postMessage({ command: 'closeLlmProfileForm' });
     this.postStatus(existingProfile ? `${profile.name} updated.` : `${profile.name} selected.`);
   }
 
-  private async saveBuiltInNemotronApiKey(apiKey: string | undefined): Promise<void> {
+  private async saveBuiltInNemotronApiKey(apiKey: string | undefined, settings?: ModelProfileSettings): Promise<void> {
     const secretKey = secretKeyForProfile(BUILT_IN_NEMOTRON_PROFILE_ID);
     const submittedApiKey = apiKey?.trim();
     const existingApiKey = await this.extensionContext.secrets.get(secretKey);
@@ -1067,6 +1148,9 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
       if (submittedApiKey) {
         await this.extensionContext.secrets.store(secretKey, submittedApiKey);
       }
+      const stored = this.getStoredLlmProfiles().filter(profile => profile.id !== BUILT_IN_NEMOTRON_PROFILE_ID);
+      await this.extensionContext.globalState.update(LLM_PROFILES_STORAGE_KEY, [...stored, { ...BUILT_IN_NEMOTRON_PROFILE, settings }]);
+      await this.saveModelReasoningPreference(BUILT_IN_NEMOTRON_PROFILE_ID, settings?.reasoningEffort ?? 'auto');
     } catch {
       this.postMessage({
         command: 'llmProfileFormError',
@@ -1076,6 +1160,7 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
     }
 
     await this.postLlmProfileState();
+    this.configuration.postState();
     this.postMessage({ command: 'closeLlmProfileForm' });
     this.postStatus(`${BUILT_IN_NEMOTRON_PROFILE.name} is ready.`);
   }
@@ -1129,6 +1214,7 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
     }
 
     await this.postLlmProfileState();
+    this.configuration.postState();
     this.postMessage({ command: 'closeLlmProfileForm' });
     this.postStatus(`${profile.name} deleted.`);
   }
@@ -1149,9 +1235,7 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
     const reasoningOptions = activeProfile
       ? reasoningEffortOptionsForProfile(activeProfile)
       : ['auto'] as ReasoningEffort[];
-    const reasoningEffort = activeProfile
-      ? reasoningEffortForProfile(activeProfile, this.getReasoningEffortPreferences())
-      : 'auto';
+    const reasoningEffort = activeProfile ? this.configuration.effective(activeProfile).reasoningEffort : 'auto';
     this.postMessage({
       command: 'llmProfilesUpdated',
       profileCount: profiles.length,
@@ -1163,6 +1247,7 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
           providerLabel: providerLabelForProfile(activeProfile),
           model: activeProfile.model,
           reasoningEffort,
+          reasoningEffortLabel: REASONING_EFFORT_LABELS[reasoningEffort],
           reasoningEffortOptions: reasoningOptions.map((value) => ({
             value,
             label: REASONING_EFFORT_LABELS[value]
@@ -1178,135 +1263,95 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
     this.postSettingsState();
   }
 
-  /** Validate values submitted by the webview before updating VS Code settings and workspace permissions. */
+  /** Save one form after validating every section; unchanged fields keep inheriting their defaults. */
   private async saveSettings(settings: DevMateSettingsSubmission): Promise<void> {
-    if (
-      !Number.isInteger(settings.timeoutSeconds)
-      || settings.timeoutSeconds < 10
-      || settings.timeoutSeconds > 1800
-      || !Number.isInteger(settings.commandTimeoutSeconds)
-      || settings.commandTimeoutSeconds < MIN_COMMAND_TIMEOUT_SECONDS
-      || settings.commandTimeoutSeconds > MAX_COMMAND_TIMEOUT_SECONDS
-      || !Number.isInteger(settings.toolCallLimit)
-      || settings.toolCallLimit < MIN_AGENT_TOOL_CALL_LIMIT
-      || settings.toolCallLimit > MAX_AGENT_TOOL_CALL_LIMIT
-      || !Number.isInteger(settings.maxTokens)
-      || settings.maxTokens < 128
-      || settings.maxTokens > 32_000
-      || !Number.isFinite(settings.temperature)
-      || settings.temperature < 0
-      || settings.temperature > 2
-    ) {
-      this.postStatus('The settings contain an invalid value.', 'warning');
-      return;
-    }
-
-    const normalizedPolicy = parseFilePermissionPolicy(settings.policy);
-    const config = vscode.workspace.getConfiguration('devMate');
     try {
-      await Promise.all([
-        config.update(
-          'requestTimeoutSeconds',
-          settings.timeoutSeconds,
-          vscode.ConfigurationTarget.Global
-        ),
-        config.update(
-          'commandTimeoutSeconds',
-          settings.commandTimeoutSeconds,
-          vscode.ConfigurationTarget.Global
-        ),
-        config.update(
-          'toolCallLimit',
-          settings.toolCallLimit,
-          vscode.ConfigurationTarget.Global
-        ),
-        config.update('maxTokens', settings.maxTokens, vscode.ConfigurationTarget.Global),
-        config.update('temperature', settings.temperature, vscode.ConfigurationTarget.Global),
-        this.extensionContext.workspaceState.update(
-          FILE_PERMISSION_POLICY_STORAGE_KEY,
-          normalizedPolicy
-        )
-      ]);
-    } catch {
-      this.postStatus('DevMate could not save the settings.', 'error');
-      return;
+      const scope = settings.scope ?? this.configuration.scope;
+      if (scope !== 'global' && scope !== 'workspace'
+        || scope === 'workspace' && !vscode.workspace.workspaceFolders?.length) {
+        throw new Error('Choose an available settings scope.');
+      }
+      this.configuration.scope = scope;
+      // Accept the old form during an upgrade, but persist request settings in one place.
+      const configuration = settings.configuration ?? {
+        ...this.configuration.overrides,
+        timeoutSeconds: settings.timeoutSeconds, commandTimeoutSeconds: settings.commandTimeoutSeconds,
+        toolCallLimit: settings.toolCallLimit, maxTokens: settings.maxTokens, temperature: settings.temperature
+      };
+      const issue = validateConfigurationOverrides(configuration);
+      if (issue) throw new Error(issue);
+      const agentTools = settings.agentTools ?? this.getAgentToolOverrides(scope);
+      if (!agentTools || typeof agentTools !== 'object' || Array.isArray(agentTools)) {
+        throw new Error('Tool limits must be a settings object.');
+      }
+      const normalizedTools = normalizeAgentToolSettings(agentTools);
+      if (Object.entries(agentTools).some(([key, value]) =>
+        !AGENT_TOOL_SETTING_NAMES.includes(key as keyof AgentToolSettings)
+        || value !== normalizedTools[key as keyof AgentToolSettings])) {
+        throw new Error('The tool limits contain an invalid value.');
+      }
+      const policy = parseFilePermissionPolicy(settings.policy);
+      const target = scope === 'workspace' ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+      const config = vscode.workspace.getConfiguration('devMate');
+      await this.configuration.saveConfiguration(scope, configuration);
+      for (const key of AGENT_TOOL_SETTING_NAMES) {
+        const saved = config.inspect(key);
+        const previous = scope === 'workspace' ? saved?.workspaceValue : saved?.globalValue;
+        if (previous !== agentTools[key]) await config.update(key, agentTools[key], target);
+      }
+      await this.extensionContext.workspaceState.update(FILE_PERMISSION_POLICY_STORAGE_KEY, policy);
+      this.configuration.postState();
+      this.postPermissionPolicyState();
+      this.postSettingsState();
+      await this.postLlmProfileState();
+      this.postMessage({ command: 'settingsSaved' });
+    } catch (error) {
+      this.postMessage({ command: 'settingsError', message: error instanceof Error ? error.message : 'DevMate could not save the settings.' });
     }
-
-    this.postPermissionPolicyState();
-    this.postSettingsState();
-    this.postMessage({ command: 'settingsSaved' });
   }
 
-  private getAgentToolSettings(): AgentToolSettings {
+  /** Only explicitly stored tool values belong in a save; inherited values must remain inherited. */
+  private getAgentToolOverrides(scope: ConfigurationScope): Partial<AgentToolSettings> {
     const config = vscode.workspace.getConfiguration('devMate');
+    const result: Partial<AgentToolSettings> = {};
+    for (const key of AGENT_TOOL_SETTING_NAMES) {
+      const inspected = config.inspect<number>(key);
+      const value = scope === 'workspace' ? inspected?.workspaceValue : inspected?.globalValue;
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        result[key] = normalizeAgentToolSettings({ [key]: value })[key];
+      }
+    }
+    return result;
+  }
+
+  private getAgentToolSettings(scope: ConfigurationScope = 'workspace'): AgentToolSettings {
+    const config = vscode.workspace.getConfiguration('devMate');
+    const read = (name: string, fallback: number) => scope === 'workspace'
+      ? config.get<number>(name, fallback)
+      : config.inspect<number>(name)?.globalValue ?? fallback;
     return normalizeAgentToolSettings({
-      readFileMaxLines: config.get<number>('readFileMaxLines', DEFAULT_READ_FILE_MAX_LINES),
-      listFilesMaxResults: config.get<number>(
+      readFileMaxLines: read('readFileMaxLines', DEFAULT_READ_FILE_MAX_LINES),
+      listFilesMaxResults: read(
         'listFilesMaxResults',
         DEFAULT_LIST_FILES_MAX_RESULTS
       ),
-      searchCodeMaxResults: config.get<number>(
+      searchCodeMaxResults: read(
         'searchCodeMaxResults',
         DEFAULT_SEARCH_CODE_MAX_RESULTS
       ),
-      diagnosticsMaxResults: config.get<number>(
+      diagnosticsMaxResults: read(
         'diagnosticsMaxResults',
         DEFAULT_DIAGNOSTICS_MAX_RESULTS
       ),
-      terminalErrorsMaxResults: config.get<number>(
+      terminalErrorsMaxResults: read(
         'terminalErrorsMaxResults',
         DEFAULT_TERMINAL_ERRORS_MAX_RESULTS
       ),
-      codeNavigationMaxResults: config.get<number>(
+      codeNavigationMaxResults: read(
         'codeNavigationMaxResults',
         DEFAULT_CODE_NAVIGATION_MAX_RESULTS
       )
     });
-  }
-
-  private async saveAgentToolSettings(settings: AgentToolSettingsSubmission): Promise<void> {
-    const normalized = normalizeAgentToolSettings(settings);
-    if (Object.entries(normalized).some(([key, value]) => settings[key as keyof AgentToolSettings] !== value)) {
-      this.postStatus('The agent-tool settings contain an invalid value.', 'warning');
-      return;
-    }
-    const config = vscode.workspace.getConfiguration('devMate');
-    try {
-      await Promise.all([
-        config.update('readFileMaxLines', normalized.readFileMaxLines, vscode.ConfigurationTarget.Global),
-        config.update(
-          'listFilesMaxResults',
-          normalized.listFilesMaxResults,
-          vscode.ConfigurationTarget.Global
-        ),
-        config.update(
-          'searchCodeMaxResults',
-          normalized.searchCodeMaxResults,
-          vscode.ConfigurationTarget.Global
-        ),
-        config.update(
-          'diagnosticsMaxResults',
-          normalized.diagnosticsMaxResults,
-          vscode.ConfigurationTarget.Global
-        ),
-        config.update(
-          'terminalErrorsMaxResults',
-          normalized.terminalErrorsMaxResults,
-          vscode.ConfigurationTarget.Global
-        ),
-        config.update(
-          'codeNavigationMaxResults',
-          normalized.codeNavigationMaxResults,
-          vscode.ConfigurationTarget.Global
-        )
-      ]);
-    } catch {
-      this.postStatus('DevMate could not save the agent-tool settings.', 'error');
-      return;
-    }
-    this.postSettingsState();
-    this.postMessage({ command: 'agentToolSettingsSaved' });
-    this.postStatus('Ready');
   }
 
   private postPermissionPolicyState(): void {
@@ -1318,37 +1363,51 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
   }
 
   private postSettingsState(): void {
-    const config = vscode.workspace.getConfiguration('devMate');
-    this.postMessage({
-      command: 'settingsUpdated',
-      settings: {
-        timeoutSeconds: Math.min(
-          1800,
-          Math.max(10, config.get<number>('requestTimeoutSeconds', 900))
-        ),
-        commandTimeoutSeconds: Math.min(
-          MAX_COMMAND_TIMEOUT_SECONDS,
-          Math.max(
-            MIN_COMMAND_TIMEOUT_SECONDS,
-            config.get<number>('commandTimeoutSeconds', DEFAULT_COMMAND_TIMEOUT_SECONDS)
-          )
-        ),
-        toolCallLimit: boundedAgentToolCallLimit(
-          config.get<number>('toolCallLimit', DEFAULT_AGENT_TOOL_CALL_LIMIT)
-        ),
-        maxTokens: Math.min(
-          32_000,
-          Math.max(128, config.get<number>('maxTokens', 16_384))
-        ),
-        temperature: Math.min(
-          2,
-          Math.max(0, config.get<number>('temperature', 0.2))
-        ),
-        agentTools: this.getAgentToolSettings(),
-        rememberedCommands: this.getRememberedCommands(),
-        workspaceTrusted: vscode.workspace.isTrusted
+    this.postMessage({ command: 'settingsUpdated', settings: {
+      ...this.configuration.base(this.configuration.scope), scope: this.configuration.scope,
+      agentTools: this.getAgentToolSettings(this.configuration.scope),
+      agentToolOverrides: this.getAgentToolOverrides(this.configuration.scope),
+      inheritedAgentTools: this.configuration.scope === 'workspace' ? this.getAgentToolSettings('global') : normalizeAgentToolSettings({}),
+      rememberedCommands: this.getRememberedCommands(),
+      workspaceTrusted: vscode.workspace.isTrusted
+    } });
+  }
+
+  /** This permission lives outside settings.json, so project edits cannot grant command access. */
+  private postCommandAccessState(): void {
+    this.postMessage({ command: 'commandAccessUpdated',
+      access: parseCommandAccess(this.extensionContext.workspaceState.get(COMMAND_ACCESS_STORAGE_KEY)),
+      workspaceTrusted: vscode.workspace.isTrusted,
+      workspaceAvailable: Boolean(vscode.workspace.workspaceFolders?.length) });
+  }
+
+  private async setCommandAccess(access: CommandAccess): Promise<void> {
+    if (access !== 'standard' && access !== 'extended') { this.postCommandAccessState(); return; }
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (this.activeRequest || this.auxiliaryBusy || !folder || !vscode.workspace.isTrusted) {
+      this.postStatus('Open a trusted workspace and finish the current request before changing command access.', 'warning');
+      this.postCommandAccessState(); return;
+    }
+    this.auxiliaryBusy = true;
+    try {
+      const previous = parseCommandAccess(this.extensionContext.workspaceState.get(COMMAND_ACCESS_STORAGE_KEY));
+      if (access === 'extended' && previous !== access) {
+        const accepted = await vscode.window.showWarningMessage(
+          'Enable Extended commands for this workspace? DevMate can request project scripts, formatters, dependency installation and local servers. Each command asks for approval. Commands run with your user permissions and are not sandboxed; Undo cannot reverse their effects.',
+          { modal: true }, 'Enable Extended');
+        if (accepted !== 'Enable Extended') return;
       }
-    });
+      if (!vscode.workspace.isTrusted || vscode.workspace.workspaceFolders?.[0]?.uri.toString() !== folder.uri.toString()) {
+        throw new Error('The trusted workspace changed while command access was being reviewed.');
+      }
+      await this.extensionContext.workspaceState.update(COMMAND_ACCESS_STORAGE_KEY, access);
+      if (access === 'standard') await this.tools.stopAllManagedCommands();
+    } catch (error) {
+      this.postStatus(error instanceof Error ? error.message : 'Could not change command access.', 'error');
+    } finally {
+      this.auxiliaryBusy = false;
+      this.postCommandAccessState();
+    }
   }
 
   private postBackendStatus(): void {
@@ -1358,6 +1417,62 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
       status,
       label: backendStatusLabel(status)
     });
+  }
+
+  private async testLlmProfile(profileId: string): Promise<void> {
+    if (this.activeRequest) {
+      this.postMessage({ command: 'modelTestResult', profileId, result: {
+        connection: 'Not tested', tools: 'Not tested', streaming: 'Not tested', reasoning: 'Not tested',
+        detail: 'Finish or cancel the current request first.' } });
+      return;
+    }
+    this.auxiliaryBusy = true;
+    const controller = new AbortController();
+    this.auxiliaryAbort = controller;
+    try {
+      const profile = this.getLlmProfiles().find(item => item.id === profileId);
+      if (!profile) throw new Error('Save the model profile before testing it.');
+      const apiKey = profile.provider === 'openai' ? await this.extensionContext.secrets.get(secretKeyForProfile(profile.id)) : undefined;
+      if (profile.provider === 'openai' && !apiKey) throw new Error('Add an API key to this profile before testing it.');
+      if (!await this.backendManager.start()) throw new Error(this.backendManager.status.detail);
+      const settings = normalizeAgentConfiguration({ ...this.configuration.base(), ...profile.settings,
+        reasoningEffort: this.getReasoningEffortPreferences()[profile.id] ?? profile.settings?.reasoningEffort ?? this.configuration.base().reasoningEffort });
+      const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification,
+        title: `Testing ${profile.name} with synthetic input`, cancellable: true }, async (_progress, token) => {
+        const subscription = token.onCancellationRequested(() => controller.abort());
+        try {
+          return await testModelConfiguration(getBackendUrl(), {
+            provider: profile.provider, model: profile.model, baseUrl: profile.baseUrl, api: profile.api,
+            maxTokens: settings.maxTokens, temperature: settings.temperature,
+            timeoutSeconds: settings.timeoutSeconds, reasoningEffort: settings.reasoningEffort
+          }, apiKey, controller.signal);
+        } finally { subscription.dispose(); }
+      });
+      this.postMessage({ command: 'modelTestResult', profileId, result });
+    } catch (error) {
+      this.postMessage({ command: 'modelTestResult', profileId, result: {
+        connection: 'Not confirmed', tools: 'Not confirmed', streaming: 'Not confirmed', reasoning: 'Not confirmed',
+        detail: error instanceof Error ? error.message : 'Could not finish the model test.' } });
+    } finally { this.auxiliaryBusy = false; this.auxiliaryAbort = undefined; }
+  }
+
+  private async postUndoState(): Promise<void> {
+    try { this.postMessage({ command: 'undoState', ...await this.tools.getUndoState() }); }
+    catch { this.postMessage({ command: 'undoState', available: false, label: 'Undo is unavailable', files: 0 }); }
+  }
+
+  private async undoLastRequest(): Promise<void> {
+    if (this.activeRequest) { this.postStatus('Finish or cancel the current request before undoing it.', 'warning'); await this.postUndoState(); return; }
+    this.auxiliaryBusy = true;
+    try {
+      if (await this.tools.undoLastRequest()) {
+        // A checkpoint describes the changed filesystem and must not resume after reverting it.
+        await this.clearAgentCheckpoint();
+        this.postStatus('Undid the last request’s direct file changes.');
+      }
+    } catch (error) {
+      this.postStatus(error instanceof Error ? error.message : 'Could not undo the last request.', 'error');
+    } finally { this.auxiliaryBusy = false; await this.postUndoState(); }
   }
 
   private postStatus(text: string, level: 'info' | 'warning' | 'error' = 'info'): void {
@@ -1415,7 +1530,6 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
       this.postRequestFailure('Enter a question before asking.', { level: 'warning' });
       return;
     }
-    this.tools.beginRequest(Boolean(resumedCheckpoint));
 
     const activeSession = activeConversationSession(this.sessionStore);
     if (!activeSession || !sessionBelongsToWorkspace(activeSession, this.workspaceContext.getConversationWorkspace())) {
@@ -1451,7 +1565,11 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
 
     this.postStatus('Collecting context');
     // A resumed run may follow manual file edits, so collect context again instead of reusing a saved snapshot.
-    const collectedScope = await this.workspaceContext.collectScope(message.scope.kind, question);
+    const configuration = normalizeAgentConfiguration(resumedCheckpoint?.configuration ?? this.configuration.effective(activeProfile));
+    const instructions = resumedCheckpoint?.instructions ?? this.configuration.effective(activeProfile).instructions;
+    if (instructions.length > 12_000) throw new Error('Project instructions exceed 12000 characters. Shorten them before asking.');
+    configuration.instructions = instructions;
+    const collectedScope = await this.workspaceContext.collectScope(message.scope.kind, question, configuration);
     if (this.finishCancelledRequest(signal)) {
       return;
     }
@@ -1477,16 +1595,7 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
       return;
     }
 
-    const config = vscode.workspace.getConfiguration('devMate');
-    const maxTokens = config.get<number>('maxTokens', 16384);
-    const temperature = config.get<number>('temperature', 0.2);
-    const toolCallLimit = boundedAgentToolCallLimit(
-      config.get<number>('toolCallLimit', DEFAULT_AGENT_TOOL_CALL_LIMIT)
-    );
-    const modelTimeoutSeconds = Math.min(
-      1800,
-      Math.max(10, config.get<number>('requestTimeoutSeconds', 900))
-    );
+    const { maxTokens, temperature, toolCallLimit, timeoutSeconds: modelTimeoutSeconds } = configuration;
 
     const providerApiKey = activeProfile.provider === 'openai'
       ? await this.extensionContext.secrets.get(secretKeyForProfile(activeProfile.id))
@@ -1500,22 +1609,27 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
       return;
     }
 
+    this.tools.beginRequest(Boolean(resumedCheckpoint));
+    this.activeRunConfiguration = configuration;
     return {
       question,
+      configuration,
+      instructions,
       mode: message.mode,
       scopeKind: message.scope.kind,
       scope: collectedScope.apiScope,
       sessionId: activeSession.id,
-      getReasoningEffort: () => reasoningEffortForProfile(activeProfile, this.getReasoningEffortPreferences()),
+      getReasoningEffort: () => configuration.reasoningEffort,
       providerApiKey,
       toolCallLimit,
       settings: {
         provider: activeProfile.provider,
+        api: activeProfile.api ?? 'auto',
         model: activeProfile.model,
         baseUrl: activeProfile.baseUrl,
         maxTokens,
         temperature,
-        reasoningEffort: reasoningEffortForProfile(activeProfile, this.getReasoningEffortPreferences()),
+        reasoningEffort: configuration.reasoningEffort,
         timeoutSeconds: modelTimeoutSeconds
       }
     };
@@ -1535,6 +1649,25 @@ export class DevMateChatViewProvider implements vscode.WebviewViewProvider, vsco
     try {
       const fileChanges = validateFileChanges(finalData.changes ?? []);
       if (fileChanges.length > 0) {
+        const selected = this.activeRunConfiguration ?? this.configuration.effective();
+        const usedEdits = toolHistory.filter(step => !step.isError
+          && ['create_file', 'edit_file', 'delete_file', 'rename_file', 'move_file'].includes(step.name)).length;
+        if (fileChanges.length > selected.maxFileEdits - usedEdits) {
+          throw new Error('These proposed changes exceed the remaining file-edit budget.');
+        }
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        if (!folder) throw new Error('Open a project before applying file changes.');
+        for (const change of fileChanges) {
+          let exists = true;
+          try { await vscode.workspace.fs.stat(vscode.Uri.joinPath(folder.uri, change.path)); }
+          catch (error) {
+            if (error instanceof vscode.FileSystemError && error.code === 'FileNotFound') exists = false;
+            else throw error;
+          }
+          if (!selected.enabledTools.includes(exists ? 'edit_file' : 'create_file')) {
+            throw new Error(`This configuration does not allow ${exists ? 'editing' : 'creating'} ${change.path}.`);
+          }
+        }
         changeOutcome = await this.tools.confirmAndApplyFileChanges(
           fileChanges,
           finalData.answer,
@@ -1615,3 +1748,8 @@ function formatAskResponse(answer: string, usedFiles: string[]): string {
     ...usedFiles.map((file) => '- `' + file + '`')
   ].join('\n');
 }
+
+const AGENT_TOOL_SETTING_NAMES: Array<keyof AgentToolSettings> = ['readFileMaxLines', 'listFilesMaxResults',
+  'searchCodeMaxResults', 'diagnosticsMaxResults', 'terminalErrorsMaxResults', 'codeNavigationMaxResults'];
+
+const configurationMessages = new Set(['openConfiguration', 'setConfigurationScope', 'saveConfiguration']);

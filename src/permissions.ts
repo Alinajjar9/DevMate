@@ -1,4 +1,10 @@
 /** Workspace permission preferences and remembered command approvals, with asking as the default. */
+import type { CommandAccess } from './commandTools';
+
+/** Extended commands always need a fresh approval, even if Standard remembered the same invocation. */
+export function canRememberCommandApproval(access: CommandAccess, identityKnown: boolean): boolean {
+  return access === 'standard' && identityKnown;
+}
 
 export const FILE_PERMISSION_POLICY_STORAGE_KEY = 'devMate.filePermissionPolicy.v2';
 export const REMEMBERED_COMMANDS_STORAGE_KEY = 'devMate.rememberedCommands.v1';
